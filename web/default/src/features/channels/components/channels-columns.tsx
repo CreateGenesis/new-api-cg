@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  KeyRound,
   ListOrdered,
   Shuffle,
   SlidersHorizontal,
@@ -716,11 +717,17 @@ export function useChannelsColumns(
           const isMultiKey = isMultiKeyChannel(channel)
           const multiKeyMode = channel.channel_info?.multi_key_mode ?? 'random'
           const MultiKeyModeIcon =
-            multiKeyMode === 'random' ? Shuffle : ListOrdered
+            multiKeyMode === 'affinity'
+              ? KeyRound
+              : multiKeyMode === 'random'
+                ? Shuffle
+                : ListOrdered
           const multiKeyTooltip =
-            multiKeyMode === 'random'
-              ? t('Multi-key: Random rotation')
-              : t('Multi-key: Polling rotation')
+            multiKeyMode === 'affinity'
+              ? t('Multi-key: Cache affinity')
+              : multiKeyMode === 'random'
+                ? t('Multi-key: Random rotation')
+                : t('Multi-key: Polling rotation')
 
           const ionetMeta = parseIonetMeta(channel.other_info)
           const isIonet = ionetMeta?.source === 'ionet'

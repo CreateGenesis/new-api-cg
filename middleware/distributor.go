@@ -465,7 +465,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
+	key, index, newAPIError := channel.GetNextEnabledKeyWithAffinity(multiKeyAffinityValue(c))
 	if newAPIError != nil {
 		return newAPIError
 	}
@@ -502,6 +502,25 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set("bot_id", channel.Other)
 	}
 	return nil
+}
+
+func multiKeyAffinityValue(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	tokenKey := strings.TrimSpace(c.GetString("token_key"))
+	if tokenKey != "" {
+		return tokenKey
+	}
+	tokenID := c.GetInt("token_id")
+	if tokenID > 0 {
+		return fmt.Sprintf("token:%d", tokenID)
+	}
+	userID := c.GetInt("id")
+	if userID > 0 {
+		return fmt.Sprintf("user:%d", userID)
+	}
+	return ""
 }
 
 // extractModelNameFromGeminiPath 从 Gemini API URL 路径中提取模型名

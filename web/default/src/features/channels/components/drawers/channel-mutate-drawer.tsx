@@ -273,6 +273,8 @@ const SENSITIVE_FORM_FIELDS = [
   'openai_organization',
   'other',
   'key_mode',
+  'multi_key_type',
+  'multi_key_affinity_ttl_seconds',
   'param_override',
   'header_override',
   'settings',
@@ -958,6 +960,7 @@ export function ChannelMutateDrawer({
     formErrors.other ||
     formErrors.multi_key_mode ||
     formErrors.multi_key_type ||
+    formErrors.multi_key_affinity_ttl_seconds ||
     formErrors.key_mode ||
     formErrors.vertex_key_type ||
     formErrors.aws_key_type ||
@@ -3187,8 +3190,9 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
-                              {!isEditing &&
-                                multiKeyMode === 'multi_to_single' && (
+                              {((isEditing && isMultiKeyChannel) ||
+                                (!isEditing &&
+                                  multiKeyMode === 'multi_to_single')) && (
                                   <FormField
                                     control={form.control}
                                     name='multi_key_type'
@@ -3206,6 +3210,10 @@ export function ChannelMutateDrawer({
                                             {
                                               value: 'polling',
                                               label: t('Polling'),
+                                            },
+                                            {
+                                              value: 'affinity',
+                                              label: t('Cache affinity'),
                                             },
                                           ]}
                                           onValueChange={field.onChange}
@@ -3226,11 +3234,18 @@ export function ChannelMutateDrawer({
                                               <SelectItem value='polling'>
                                                 {t('Polling')}
                                               </SelectItem>
+                                              <SelectItem value='affinity'>
+                                                {t('Cache affinity')}
+                                              </SelectItem>
                                             </SelectGroup>
                                           </SelectContent>
                                         </Select>
                                         <FormDescription>
-                                          {multiKeyType === 'polling' ? (
+                                          {multiKeyType === 'affinity' ? (
+                                            t(
+                                              'Use the current user token to keep requests on the same upstream key until the affinity cache expires'
+                                            )
+                                          ) : multiKeyType === 'polling' ? (
                                             <span className='text-warning'>
                                               {t(
                                                 'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
@@ -3240,6 +3255,42 @@ export function ChannelMutateDrawer({
                                             t(
                                               'Randomly select a key from the pool for each request'
                                             )
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
+
+                              {((isEditing && isMultiKeyChannel) ||
+                                (!isEditing &&
+                                  multiKeyMode === 'multi_to_single')) &&
+                                multiKeyType === 'affinity' && (
+                                  <FormField
+                                    control={form.control}
+                                    name='multi_key_affinity_ttl_seconds'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Affinity TTL (seconds)')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            type='number'
+                                            min={1}
+                                            step={1}
+                                            {...field}
+                                            onChange={(e) =>
+                                              field.onChange(
+                                                Number(e.target.value)
+                                              )
+                                            }
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'How long a user token stays bound to the selected upstream key.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />

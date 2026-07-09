@@ -1,21 +1,27 @@
 package model
 
 import (
+	"crypto/sha256"
 	"database/sql/driver"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
+	"github.com/samber/hot"
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -61,13 +67,14 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize           int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList     map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	IsMultiKey                 bool                  `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize               int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList         map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason     map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime       map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex       int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
+	MultiKeyAffinityTTLSeconds int                   `json:"multi_key_affinity_ttl_seconds,omitempty"`
+	MultiKeyMode               constant.MultiKeyMode `json:"multi_key_mode"`
 }
 
 type ChannelSortOptions struct {
@@ -197,7 +204,42 @@ func (channel *Channel) GetKeys() []string {
 	return keys
 }
 
+const (
+	defaultMultiKeyAffinityTTLSeconds = 3600
+	multiKeyAffinityCacheNamespace    = "new-api:multi_key_affinity:v1"
+	multiKeyAffinityCacheCapacity     = 100_000
+)
+
+var (
+	multiKeyAffinityCacheOnce sync.Once
+	multiKeyAffinityCache     *cachex.HybridCache[int]
+)
+
+func getMultiKeyAffinityCache() *cachex.HybridCache[int] {
+	multiKeyAffinityCacheOnce.Do(func() {
+		multiKeyAffinityCache = cachex.NewHybridCache[int](cachex.HybridCacheConfig[int]{
+			Namespace: cachex.Namespace(multiKeyAffinityCacheNamespace),
+			Redis:     common.RDB,
+			RedisEnabled: func() bool {
+				return common.RedisEnabled && common.RDB != nil
+			},
+			RedisCodec: cachex.IntCodec{},
+			Memory: func() *hot.HotCache[string, int] {
+				return hot.NewHotCache[string, int](hot.LRU, multiKeyAffinityCacheCapacity).
+					WithTTL(time.Duration(defaultMultiKeyAffinityTTLSeconds) * time.Second).
+					WithJanitor().
+					Build()
+			},
+		})
+	})
+	return multiKeyAffinityCache
+}
+
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
+	return channel.GetNextEnabledKeyWithAffinity("")
+}
+
+func (channel *Channel) GetNextEnabledKeyWithAffinity(affinityValue string) (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
@@ -245,6 +287,9 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		// Randomly pick one enabled key
 		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
 		return keys[selectedIdx], selectedIdx, nil
+	case constant.MultiKeyModeAffinity:
+		selectedIdx := channel.selectMultiKeyAffinityIndex(enabledIdx, affinityValue, getStatus)
+		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModePolling:
 		// Use channel-specific lock to ensure thread-safe polling
 
@@ -281,6 +326,49 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	}
+}
+
+func (channel *Channel) selectMultiKeyAffinityIndex(enabledIdx []int, affinityValue string, getStatus func(int) int) int {
+	if len(enabledIdx) == 0 {
+		return 0
+	}
+	if channel.Id <= 0 || strings.TrimSpace(affinityValue) == "" {
+		return enabledIdx[rand.Intn(len(enabledIdx))]
+	}
+
+	cache := getMultiKeyAffinityCache()
+	cacheKey := multiKeyAffinityCacheKey(channel.Id, affinityValue)
+	if cachedIdx, found, err := cache.Get(cacheKey); err == nil && found {
+		if cachedIdx >= 0 && getStatus(cachedIdx) == common.ChannelStatusEnabled {
+			return cachedIdx
+		}
+	} else if err != nil {
+		common.SysError(fmt.Sprintf("multi-key affinity cache get failed: channel_id=%d, err=%v", channel.Id, err))
+	}
+
+	selectedIdx := selectMultiKeyAffinityIndex(enabledIdx, affinityValue)
+	ttlSeconds := channel.ChannelInfo.MultiKeyAffinityTTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = defaultMultiKeyAffinityTTLSeconds
+	}
+	if err := cache.SetWithTTL(cacheKey, selectedIdx, time.Duration(ttlSeconds)*time.Second); err != nil {
+		common.SysError(fmt.Sprintf("multi-key affinity cache set failed: channel_id=%d, err=%v", channel.Id, err))
+	}
+	return selectedIdx
+}
+
+func selectMultiKeyAffinityIndex(enabledIdx []int, affinityValue string) int {
+	if len(enabledIdx) == 0 {
+		return 0
+	}
+	sum := sha256.Sum256([]byte(affinityValue))
+	slot := binary.BigEndian.Uint64(sum[:8]) % uint64(len(enabledIdx))
+	return enabledIdx[int(slot)]
+}
+
+func multiKeyAffinityCacheKey(channelID int, affinityValue string) string {
+	sum := sha256.Sum256([]byte(affinityValue))
+	return fmt.Sprintf("%d:%s", channelID, hex.EncodeToString(sum[:16]))
 }
 
 func (channel *Channel) SaveChannelInfo() error {

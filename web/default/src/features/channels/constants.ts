@@ -185,6 +185,7 @@ export const MULTI_KEY_STATUS_CONFIG = {
 export const MULTI_KEY_MODES = [
   { value: 'random', label: 'Random' },
   { value: 'polling', label: 'Polling' },
+  { value: 'affinity', label: 'Cache affinity' },
 ] as const
 
 export const ADD_MODE_OPTIONS = [

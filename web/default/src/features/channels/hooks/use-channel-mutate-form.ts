@@ -114,10 +114,20 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
                 key_mode: data.key_mode,
               }
             : payload
+        const payloadWithMultiKeySettings = props.isMultiKeyChannel
+          ? {
+              ...payloadWithKeyMode,
+              multi_key_mode: data.multi_key_type,
+              multi_key_affinity_ttl_seconds: Math.max(
+                1,
+                Math.trunc(Number(data.multi_key_affinity_ttl_seconds) || 3600)
+              ),
+            }
+          : payloadWithKeyMode
 
         const response = await updateChannel(
           props.currentRow.id,
-          payloadWithKeyMode
+          payloadWithMultiKeySettings
         )
         if (!response.success) {
           throw new Error(response.message || t(ERROR_MESSAGES.UPDATE_FAILED))

@@ -62,6 +62,7 @@ function testChannel(settings: string): Channel {
       multi_key_size: 0,
       multi_key_polling_index: 0,
       multi_key_mode: 'random',
+      multi_key_affinity_ttl_seconds: 3600,
     },
     settings,
   }
@@ -100,5 +101,37 @@ describe('channel form status code retry settings', () => {
 
     assert.equal(form.status_code_retry_enabled, true)
     assert.equal(form.status_code_retry_interval_ms, 50)
+  })
+})
+
+describe('channel form multi-key affinity settings', () => {
+  test('saves affinity strategy and ttl for multi-key create payload', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_mode: 'multi_to_single',
+      multi_key_type: 'affinity',
+      multi_key_affinity_ttl_seconds: 7200,
+    })
+
+    assert.equal(payload.multi_key_mode, 'affinity')
+    assert.equal(payload.multi_key_affinity_ttl_seconds, 7200)
+  })
+
+  test('loads affinity ttl from existing multi-key channel', () => {
+    const channel = testChannel('{}')
+    channel.channel_info.is_multi_key = true
+    channel.channel_info.multi_key_mode = 'affinity'
+    channel.channel_info.multi_key_affinity_ttl_seconds = 1800
+
+    const form = transformChannelToFormDefaults(channel)
+
+    assert.equal(form.multi_key_type, 'affinity')
+    assert.equal(form.multi_key_affinity_ttl_seconds, 1800)
   })
 })
