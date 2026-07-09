@@ -266,21 +266,21 @@ func isSimulatedModelCacheDiskBodyPath(path string) bool {
 	return true
 }
 
-func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage) []byte {
+func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage, responseModel ...string) []byte {
 	if len(body) == 0 || usage == nil {
 		return body
 	}
 	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		return patchSimulatedModelCacheSSEBody(format, body, usage)
+		return patchSimulatedModelCacheSSEBody(format, body, usage, responseModel...)
 	}
-	patched, ok := patchSimulatedModelCacheJSONBody(format, body, usage)
+	patched, ok := patchSimulatedModelCacheJSONBody(format, body, usage, responseModel...)
 	if !ok {
 		return body
 	}
 	return patched
 }
 
-func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usage *dto.Usage) []byte {
+func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel ...string) []byte {
 	lines := strings.SplitAfter(string(body), "\n")
 	for i, line := range lines {
 		prefixLen := len(line) - len(strings.TrimLeft(line, " \t"))
@@ -292,7 +292,7 @@ func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usag
 		if data == "" || data == "[DONE]" {
 			continue
 		}
-		patched, ok := patchSimulatedModelCacheJSONBody(format, []byte(data), usage)
+		patched, ok := patchSimulatedModelCacheJSONBody(format, []byte(data), usage, responseModel...)
 		if !ok {
 			continue
 		}
@@ -309,12 +309,26 @@ func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usag
 	return []byte(strings.Join(lines, ""))
 }
 
-func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usage *dto.Usage) ([]byte, bool) {
+func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel ...string) ([]byte, bool) {
 	var payload map[string]any
 	if common.Unmarshal(body, &payload) != nil {
 		return nil, false
 	}
 	patched := false
+	if model := simulatedModelCacheResponseModel(format, responseModel...); model != "" {
+		if _, ok := payload["model"]; ok {
+			payload["model"] = model
+			patched = true
+		}
+		if responseAny, ok := payload["response"]; ok {
+			if responseMap, ok := responseAny.(map[string]any); ok {
+				if _, ok := responseMap["model"]; ok {
+					responseMap["model"] = model
+					patched = true
+				}
+			}
+		}
+	}
 	if usageAny, ok := payload["usage"]; ok {
 		if usageMap, ok := usageAny.(map[string]any); ok {
 			patchOpenAIStyleUsageMap(usageMap, usage)
@@ -338,6 +352,18 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 		return nil, false
 	}
 	return out, true
+}
+
+func simulatedModelCacheResponseModel(format types.RelayFormat, responseModel ...string) string {
+	if len(responseModel) == 0 || strings.TrimSpace(responseModel[0]) == "" {
+		return ""
+	}
+	switch format {
+	case types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
+		return responseModel[0]
+	default:
+		return ""
+	}
 }
 
 func patchOpenAIStyleUsageMap(usageMap map[string]any, usage *dto.Usage) {

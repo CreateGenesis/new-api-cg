@@ -17,6 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
@@ -25,12 +27,24 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !forceFormat && !thinkToContent {
+		if shouldRewriteResponseModel(info) {
+			patched, err := rewriteResponseModelInJSONData(info, data)
+			if err != nil {
+				return err
+			}
+			return helper.StringData(c, patched)
+		}
 		return helper.StringData(c, data)
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &lastStreamResponse); err != nil {
 		return err
+	}
+	rewriteStreamResponseModel(info, &lastStreamResponse)
+
+	if !forceFormat && !thinkToContent {
+		return helper.ObjectData(c, lastStreamResponse)
 	}
 
 	if !thinkToContent {
@@ -98,6 +112,64 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	return helper.ObjectData(c, lastStreamResponse)
+}
+
+func shouldRewriteResponseModel(info *relaycommon.RelayInfo) bool {
+	return info != nil && info.DownstreamModelName("") != ""
+}
+
+func downstreamResponseModel(info *relaycommon.RelayInfo, fallback string) string {
+	if info == nil {
+		return fallback
+	}
+	return info.DownstreamModelName(fallback)
+}
+
+func rewriteResponseModelInJSONData(info *relaycommon.RelayInfo, data string) (string, error) {
+	return rewriteResponseModelInJSONDataAtPaths(info, data, "model")
+}
+
+func rewriteResponseModelInJSONDataAtPaths(info *relaycommon.RelayInfo, data string, paths ...string) (string, error) {
+	model := downstreamResponseModel(info, "")
+	if model == "" {
+		return data, nil
+	}
+	patched := data
+	var err error
+	for _, path := range paths {
+		if path == "" || !gjson.Get(patched, path).Exists() {
+			continue
+		}
+		patched, err = sjson.Set(patched, path, model)
+		if err != nil {
+			return data, err
+		}
+	}
+	return patched, nil
+}
+
+func rewriteTextResponseModel(info *relaycommon.RelayInfo, response *dto.OpenAITextResponse) bool {
+	if response == nil {
+		return false
+	}
+	model := downstreamResponseModel(info, response.Model)
+	if model == response.Model {
+		return false
+	}
+	response.Model = model
+	return true
+}
+
+func rewriteStreamResponseModel(info *relaycommon.RelayInfo, response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	model := downstreamResponseModel(info, response.Model)
+	if model == response.Model {
+		return false
+	}
+	response.Model = model
+	return true
 }
 
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -215,6 +287,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	responseModelModified := rewriteTextResponseModel(info, &simpleResponse)
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
@@ -253,13 +326,18 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified {
+		if usageModified || responseModelModified {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
-			bodyMap["usage"] = simpleResponse.Usage
+			if usageModified {
+				bodyMap["usage"] = simpleResponse.Usage
+			}
+			if responseModelModified {
+				bodyMap["model"] = simpleResponse.Model
+			}
 			responseBody, _ = common.Marshal(bodyMap)
 		}
 		if forceFormat {

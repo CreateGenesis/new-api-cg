@@ -40,9 +40,6 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		c.Set("image_generation_call_size", responsesResponse.GetSize())
 	}
 
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
-
 	// compute usage
 	usage := dto.Usage{}
 	if responsesResponse.Usage != nil {
@@ -54,6 +51,8 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	}
 	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
+		responseBody = rewriteResponsesBodyModel(c, info, responseBody)
+		service.IOCopyBytesGracefully(c, resp, responseBody)
 		return &usage, nil
 	}
 	// 解析 Tools 用量
@@ -65,6 +64,8 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		buildToolinfo.CallCount++
 	}
+	responseBody = rewriteResponsesBodyModel(c, info, responseBody)
+	service.IOCopyBytesGracefully(c, resp, responseBody)
 	return &usage, nil
 }
 
@@ -88,7 +89,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		outData, err := rewriteResponseModelInJSONDataAtPaths(info, data, "model", "response.model")
+		if err != nil {
+			logger.LogError(c, "failed to rewrite responses stream model: "+err.Error())
+			sr.Error(err)
+			return
+		}
+		sendResponsesStreamData(c, streamResponse, outData)
 		switch streamResponse.Type {
 		case "response.completed":
 			if streamResponse.Response != nil {
@@ -147,4 +154,16 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return usage, nil
+}
+
+func rewriteResponsesBodyModel(c *gin.Context, info *relaycommon.RelayInfo, body []byte) []byte {
+	if !shouldRewriteResponseModel(info) {
+		return body
+	}
+	patched, err := rewriteResponseModelInJSONData(info, string(body))
+	if err != nil {
+		logger.LogError(c, "failed to rewrite responses model: "+err.Error())
+		return body
+	}
+	return []byte(patched)
 }

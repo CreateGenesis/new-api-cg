@@ -470,6 +470,48 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIUsage(t *testing.T) {
 	assert.Equal(t, float64(25), details["cached_tokens"])
 }
 
+func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIModelInSSE(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     2,
+		CompletionTokens: 3,
+		TotalTokens:      5,
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"id":"chatcmpl_test","model":"xopglm52","choices":[{"delta":{"content":"ok"},"index":0}]}`,
+		`data: {"id":"chatcmpl_test","model":"xopglm52","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAI, "text/event-stream", body, usage, "glm-5.2")
+
+	got := string(patched)
+	require.Contains(t, got, `"model":"glm-5.2"`)
+	require.NotContains(t, got, `"model":"xopglm52"`)
+	require.Contains(t, got, `data: [DONE]`)
+}
+
+func TestPatchSimulatedModelCacheResponseBodyUpdatesResponsesModelInSSE(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     2,
+		CompletionTokens: 3,
+		TotalTokens:      5,
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_test","model":"xopglm52"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test","model":"xopglm52","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAIResponses, "text/event-stream", body, usage, "glm-5.2")
+
+	got := string(patched)
+	require.Contains(t, got, `"model":"glm-5.2"`)
+	require.NotContains(t, got, `"model":"xopglm52"`)
+	require.Contains(t, got, `data: [DONE]`)
+}
+
 func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     100,

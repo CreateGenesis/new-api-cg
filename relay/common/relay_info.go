@@ -257,6 +257,13 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	}
 }
 
+func (info *RelayInfo) DownstreamModelName(fallback string) string {
+	if info != nil && info.IsModelMapped && strings.TrimSpace(info.OriginModelName) != "" {
+		return info.OriginModelName
+	}
+	return fallback
+}
+
 func (info *RelayInfo) ToString() string {
 	if info == nil {
 		return "RelayInfo<nil>"

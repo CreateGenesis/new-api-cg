@@ -198,7 +198,7 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		MatchRatio:  1,
 		ReplayCount: replay.ReplayCount,
 	})
-	body := service.PatchSimulatedModelCacheResponseBody(format, replay.Response.ContentType, replay.Response.Body, &usage)
+	body := service.PatchSimulatedModelCacheResponseBody(format, replay.Response.ContentType, replay.Response.Body, &usage, simulatedModelCacheResponseModel(info))
 	if !isSimulatedModelCacheStreamResponse(replay.Response) {
 		sleepSimulatedModelCacheLatency(c, replay.Response.DurationSeconds, replay.LoadDurationSeconds)
 	}
@@ -256,7 +256,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 				MatchRatio: match.MatchRatio,
 			})
 			if !recorder.passThrough {
-				body = service.PatchSimulatedModelCacheResponseBody(attempt.finalRequestFormat, recorder.Header().Get("Content-Type"), body, usage)
+				body = service.PatchSimulatedModelCacheResponseBody(attempt.finalRequestFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
 			}
 		}
 	}
@@ -307,6 +307,13 @@ func simulatedModelCacheSettings(info *relaycommon.RelayInfo) (dto.SimulatedMode
 		return dto.SimulatedModelCacheSettings{}, false
 	}
 	return settings, true
+}
+
+func simulatedModelCacheResponseModel(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	return info.DownstreamModelName("")
 }
 
 func isSimulatedModelCacheTextFormat(format types.RelayFormat) bool {

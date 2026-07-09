@@ -163,6 +163,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			if chunk.Message != nil && len(chunk.Message.ToolCalls) > 0 {
 				delta.Choices[0].Delta.ToolCalls, toolCallIndex = ollamaToolCallsToOpenAI(chunk.Message.ToolCalls, toolCallIndex, true)
 			}
+			delta.Model = info.DownstreamModelName(delta.Model)
 			if data, err := common.Marshal(delta); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
@@ -181,13 +182,14 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			finishReason = constant.FinishReasonToolCalls
 		}
 		// emit stop delta
-		if stop := helper.GenerateStopResponse(responseId, created, model, finishReason); stop != nil {
+		responseModel := info.DownstreamModelName(model)
+		if stop := helper.GenerateStopResponse(responseId, created, responseModel, finishReason); stop != nil {
 			if data, err := common.Marshal(stop); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
 		}
 		// emit usage frame
-		if final := helper.GenerateFinalUsageResponse(responseId, created, model, *usage); final != nil {
+		if final := helper.GenerateFinalUsageResponse(responseId, created, responseModel, *usage); final != nil {
 			if data, err := common.Marshal(final); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
@@ -297,6 +299,7 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if model == "" {
 		model = info.UpstreamModelName
 	}
+	model = info.DownstreamModelName(model)
 	created := toUnix(lastChunk.CreatedAt)
 	usage := &dto.Usage{PromptTokens: lastChunk.PromptEvalCount, CompletionTokens: lastChunk.EvalCount, TotalTokens: lastChunk.PromptEvalCount + lastChunk.EvalCount}
 	content := aggContent.String()
