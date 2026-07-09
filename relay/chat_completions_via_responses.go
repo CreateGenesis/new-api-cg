@@ -69,32 +69,32 @@ func applySystemPromptIfNeeded(c *gin.Context, info *relaycommon.RelayInfo, requ
 	}
 }
 
-func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, request *dto.GeneralOpenAIRequest) (*dto.Usage, *types.NewAPIError) {
+func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, request *dto.GeneralOpenAIRequest) (*dto.Usage, *types.NewAPIError, bool) {
 	chatJSON, err := common.Marshal(request)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 
 	chatJSON, err = relaycommon.RemoveDisabledFields(chatJSON, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 
 	if len(info.ParamOverride) > 0 {
 		chatJSON, err = relaycommon.ApplyParamOverrideWithRelayInfo(chatJSON, info)
 		if err != nil {
-			return nil, newAPIErrorFromParamOverride(err)
+			return nil, newAPIErrorFromParamOverride(err), false
 		}
 	}
 
 	var overriddenChatReq dto.GeneralOpenAIRequest
 	if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {
-		return nil, types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry()), false
 	}
 
 	responsesReq, err := service.ChatCompletionsRequestToResponsesRequest(&overriddenChatReq)
 	if err != nil {
-		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry()), false
 	}
 	info.AppendRequestConversion(types.RelayFormatOpenAIResponses)
 
@@ -110,23 +110,28 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 	relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
 	jsonData, err := common.Marshal(convertedRequest)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 
 	jsonData, err = relaycommon.RemoveDisabledFields(jsonData, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+	}
+
+	cacheAttempt, cacheHit := tryServeSimulatedModelCacheReplay(c, info, jsonData)
+	if cacheHit {
+		return nil, nil, true
 	}
 
 	body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 	defer closer.Close()
 	jsonData = nil
@@ -136,10 +141,10 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	var httpResp *http.Response
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError), false
 	}
 	if resp == nil {
-		return nil, types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		return nil, types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError), false
 	}
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
@@ -151,33 +156,29 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr
+		return nil, newApiErr, false
 	}
 
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
+	var usage *dto.Usage
+	var newApiErr *types.NewAPIError
 	if upstreamStream && clientStream {
-		usage, newApiErr := openaichannel.OaiResponsesToChatStreamHandler(c, info, httpResp)
-		if newApiErr != nil {
-			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-			return nil, newApiErr
-		}
-		return usage, nil
-	}
-	if upstreamStream {
+		usage, newApiErr = openaichannel.OaiResponsesToChatStreamHandler(c, info, httpResp)
+	} else if upstreamStream {
 		info.IsStream = false
-		usage, newApiErr := openaichannel.OaiResponsesToChatBufferedStreamHandler(c, info, httpResp)
-		if newApiErr != nil {
-			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-			return nil, newApiErr
-		}
-		return usage, nil
+		usage, newApiErr = openaichannel.OaiResponsesToChatBufferedStreamHandler(c, info, httpResp)
+	} else {
+		usage, newApiErr = openaichannel.OaiResponsesToChatHandler(c, info, httpResp)
 	}
-
-	usage, newApiErr := openaichannel.OaiResponsesToChatHandler(c, info, httpResp)
 	if newApiErr != nil {
+		restoreSimulatedModelCacheRecorder(c, recorder)
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr
+		return nil, newApiErr, false
 	}
-	return usage, nil
+	if recorder != nil {
+		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage)
+	}
+	return usage, nil, false
 }
 
 func isResponsesEventStreamContentType(contentType string) bool {

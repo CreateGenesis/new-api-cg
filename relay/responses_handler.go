@@ -71,10 +71,18 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 	adaptor.Init(info)
 	var requestBody io.Reader
+	var cacheAttempt *simulatedModelCacheAttempt
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
+		}
+		if requestBytes, bErr := storage.Bytes(); bErr == nil {
+			var cacheHit bool
+			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
+			if cacheHit {
+				return nil
+			}
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
@@ -103,6 +111,11 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)
+		var cacheHit bool
+		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
+		if cacheHit {
+			return nil
+		}
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -132,14 +145,25 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 	}
 
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		restoreSimulatedModelCacheRecorder(c, recorder)
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
 
 	usageDto := usage.(*dto.Usage)
+	isAudioResponse := strings.HasPrefix(info.OriginModelName, "gpt-4o-audio")
+	if recorder != nil {
+		if isAudioResponse {
+			restoreSimulatedModelCacheRecorder(c, recorder)
+			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
+		} else {
+			finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usageDto)
+		}
+	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		originModelName := info.OriginModelName
 		originPriceData := info.PriceData
@@ -157,7 +181,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return nil
 	}
 
-	if strings.HasPrefix(info.OriginModelName, "gpt-4o-audio") {
+	if isAudioResponse {
 		service.PostAudioConsumeQuota(c, info, usageDto, "")
 	} else {
 		service.PostTextConsumeQuota(c, info, usageDto, nil)

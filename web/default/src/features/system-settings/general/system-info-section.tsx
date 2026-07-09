@@ -62,6 +62,7 @@ const _systemInfoSchema = z.object({
   Logo: z.string().url().optional().or(z.literal('')),
   Footer: z.string().optional(),
   About: z.string().optional(),
+  TopUpHTML: z.string().optional(),
   HomePageContent: z.string().optional(),
   legal: z.object({
     user_agreement: z.string().optional(),
@@ -94,6 +95,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Logo: normalizeValue(defaultValues.Logo),
     Footer: normalizeValue(defaultValues.Footer),
     About: normalizeValue(defaultValues.About),
+    TopUpHTML: normalizeValue(defaultValues.TopUpHTML),
     HomePageContent: normalizeValue(defaultValues.HomePageContent),
     legal: {
       user_agreement: normalizeValue(defaultValues.legal?.user_agreement),
@@ -112,6 +114,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Logo: z.string().url().optional().or(z.literal('')),
     Footer: z.string().optional(),
     About: z.string().optional(),
+    TopUpHTML: z.string().optional(),
     HomePageContent: z.string().optional(),
     legal: z.object({
       user_agreement: z.string().optional(),
@@ -338,6 +341,33 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                   </FormItem>
                 )}
               />
+
+              <SettingsFormGridItem span='full'>
+                <FormField
+                  control={form.control}
+                  name='TopUpHTML'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Top-Up Replacement HTML')}</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder={t(
+                            'HTML shown in the wallet recharge area when online recharge is unavailable'
+                          )}
+                          rows={6}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Displayed only when no online recharge method is enabled. HTML is sanitized before rendering.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </SettingsFormGridItem>
 
               <SettingsFormGridItem span='full'>
                 <FormField

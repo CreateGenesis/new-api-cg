@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
+
 import {
   CHANNEL_STATUS,
   ERROR_MESSAGES,
@@ -31,6 +33,11 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import {
+  formatInputTokenRoutingRanges,
+  parseInputTokenRoutingRanges,
+  type InputTokenRoutingRange,
+} from './input-token-routing'
 
 // ============================================================================
 // Form Validation Schema
@@ -128,6 +135,10 @@ function addRequiredIssue(
   })
 }
 
+export const DEFAULT_STATUS_CODE_RETRY_STATUS_CODES =
+  '100-199,300-399,401-407,409-499,500-503,505-523,525-599'
+export const DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS = 50
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -205,6 +216,16 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     disable_task_polling_sleep: z.boolean().optional(),
+    simulated_model_cache_enabled: z.boolean().optional(),
+    simulated_model_cache_ttl_seconds: z.number().optional(),
+    simulated_model_cache_reuse_limit: z.number().optional(),
+    simulated_model_cache_min_match_ratio: z.number().optional(),
+    status_code_retry_enabled: z.boolean().optional(),
+    status_code_retry_times: z.number().optional(),
+    status_code_retry_interval_ms: z.number().optional(),
+    status_code_retry_status_codes: z.string().optional(),
+    input_token_routing_enabled: z.boolean().optional(),
+    input_token_routing_ranges: z.string().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -290,6 +311,85 @@ export const channelFormSchema = z
         'Vertex AI API Key mode does not support batch creation'
       )
     }
+
+    if (data.simulated_model_cache_enabled) {
+      if (
+        !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
+        Number(data.simulated_model_cache_ttl_seconds) < 1
+      ) {
+        addRequiredIssue(
+          ctx,
+          'simulated_model_cache_ttl_seconds',
+          'TTL seconds must be at least 1.'
+        )
+      }
+      if (
+        !Number.isInteger(data.simulated_model_cache_reuse_limit) ||
+        Number(data.simulated_model_cache_reuse_limit) < 1
+      ) {
+        addRequiredIssue(
+          ctx,
+          'simulated_model_cache_reuse_limit',
+          'Reuse limit must be at least 1.'
+        )
+      }
+      const minMatchRatio = Number(data.simulated_model_cache_min_match_ratio)
+      if (
+        !Number.isFinite(minMatchRatio) ||
+        minMatchRatio < 0.01 ||
+        minMatchRatio > 1
+      ) {
+        addRequiredIssue(
+          ctx,
+          'simulated_model_cache_min_match_ratio',
+          'Minimum match ratio must be between 0.01 and 1.'
+        )
+      }
+    }
+
+    if (data.status_code_retry_enabled) {
+      if (
+        !Number.isInteger(data.status_code_retry_times) ||
+        Number(data.status_code_retry_times) < 0
+      ) {
+        addRequiredIssue(
+          ctx,
+          'status_code_retry_times',
+          'Retry times must be 0 or greater.'
+        )
+      }
+      if (
+        !Number.isInteger(data.status_code_retry_interval_ms) ||
+        Number(data.status_code_retry_interval_ms) < 0
+      ) {
+        addRequiredIssue(
+          ctx,
+          'status_code_retry_interval_ms',
+          'Retry interval must be 0 or greater.'
+        )
+      }
+      const parsed = parseHttpStatusCodeRules(
+        data.status_code_retry_status_codes || ''
+      )
+      if (!parsed.ok) {
+        addRequiredIssue(
+          ctx,
+          'status_code_retry_status_codes',
+          'Invalid status code rules.'
+        )
+      }
+    }
+
+    if (
+      data.input_token_routing_enabled &&
+      !parseInputTokenRoutingRanges(data.input_token_routing_ranges).ok
+    ) {
+      addRequiredIssue(
+        ctx,
+        'input_token_routing_ranges',
+        'Invalid input token ranges.'
+      )
+    }
   })
 
 export type ChannelFormValues = z.infer<typeof channelFormSchema>
@@ -345,6 +445,16 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   disable_task_polling_sleep: false,
+  simulated_model_cache_enabled: false,
+  simulated_model_cache_ttl_seconds: 86400,
+  simulated_model_cache_reuse_limit: 3,
+  simulated_model_cache_min_match_ratio: 0.01,
+  status_code_retry_enabled: false,
+  status_code_retry_times: 10,
+  status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
+  status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
+  input_token_routing_enabled: false,
+  input_token_routing_ranges: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -401,6 +511,16 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
+  let simulatedModelCacheEnabled = false
+  let simulatedModelCacheTTLSeconds = 86400
+  let simulatedModelCacheReuseLimit = 3
+  let simulatedModelCacheMinMatchRatio = 0.01
+  let statusCodeRetryEnabled = false
+  let statusCodeRetryTimes = 10
+  let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
+  let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
+  let inputTokenRoutingEnabled = false
+  let inputTokenRoutingRanges = ''
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -421,6 +541,103 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      if (
+        parsed.simulated_model_cache &&
+        typeof parsed.simulated_model_cache === 'object'
+      ) {
+        const simulatedCache = parsed.simulated_model_cache as Record<
+          string,
+          unknown
+        >
+        simulatedModelCacheEnabled = simulatedCache.enabled === true
+        const ttlSeconds = Number(simulatedCache.ttl_seconds)
+        if (Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
+          simulatedModelCacheTTLSeconds = ttlSeconds
+        }
+        const reuseLimit = Number(simulatedCache.reuse_limit)
+        if (Number.isFinite(reuseLimit) && reuseLimit > 0) {
+          simulatedModelCacheReuseLimit = reuseLimit
+        }
+        const minMatchRatio = Number(simulatedCache.min_match_ratio)
+        if (
+          Number.isFinite(minMatchRatio) &&
+          minMatchRatio >= 0 &&
+          minMatchRatio <= 1
+        ) {
+          simulatedModelCacheMinMatchRatio = minMatchRatio
+        }
+      }
+      if (
+        parsed.status_code_retry &&
+        typeof parsed.status_code_retry === 'object'
+      ) {
+        const statusCodeRetry = parsed.status_code_retry as Record<
+          string,
+          unknown
+        >
+        statusCodeRetryEnabled = statusCodeRetry.enabled === true
+        const retryTimes = Number(statusCodeRetry.retry_times)
+        if (Number.isInteger(retryTimes) && retryTimes >= 0) {
+          statusCodeRetryTimes = retryTimes
+        }
+        const retryIntervalMS = Number(statusCodeRetry.retry_interval_ms)
+        if (Number.isInteger(retryIntervalMS) && retryIntervalMS >= 0) {
+          statusCodeRetryIntervalMS = retryIntervalMS
+        }
+        if (
+          typeof statusCodeRetry.status_codes === 'string' &&
+          statusCodeRetry.status_codes.trim()
+        ) {
+          statusCodeRetryStatusCodes = statusCodeRetry.status_codes
+        }
+      }
+      if (
+        parsed.input_token_routing &&
+        typeof parsed.input_token_routing === 'object'
+      ) {
+        const inputTokenRouting = parsed.input_token_routing as Record<
+          string,
+          unknown
+        >
+        inputTokenRoutingEnabled = inputTokenRouting.enabled === true
+        const ranges: InputTokenRoutingRange[] = []
+        if (Array.isArray(inputTokenRouting.ranges)) {
+          for (const item of inputTokenRouting.ranges) {
+            if (!item || typeof item !== 'object') continue
+            const range = item as Record<string, unknown>
+            const minTokens = Number(range.min_tokens ?? 0)
+            const maxTokens = Number(range.max_tokens ?? 0)
+            if (
+              Number.isSafeInteger(minTokens) &&
+              Number.isSafeInteger(maxTokens) &&
+              minTokens >= 0 &&
+              maxTokens >= 0 &&
+              (minTokens > 0 || maxTokens > 0)
+            ) {
+              ranges.push({
+                min_tokens: Math.min(minTokens, maxTokens),
+                max_tokens: Math.max(minTokens, maxTokens),
+              })
+            }
+          }
+        } else {
+          const minTokens = Number(inputTokenRouting.min_tokens ?? 0)
+          const maxTokens = Number(inputTokenRouting.max_tokens ?? 0)
+          if (
+            Number.isSafeInteger(minTokens) &&
+            Number.isSafeInteger(maxTokens) &&
+            minTokens >= 0 &&
+            maxTokens >= 0 &&
+            (minTokens > 0 || maxTokens > 0)
+          ) {
+            ranges.push({
+              min_tokens: Math.min(minTokens, maxTokens),
+              max_tokens: Math.max(minTokens, maxTokens),
+            })
+          }
+        }
+        inputTokenRoutingRanges = formatInputTokenRoutingRanges(ranges)
+      }
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -479,6 +696,16 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    simulated_model_cache_enabled: simulatedModelCacheEnabled,
+    simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
+    simulated_model_cache_reuse_limit: simulatedModelCacheReuseLimit,
+    simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
+    status_code_retry_enabled: statusCodeRetryEnabled,
+    status_code_retry_times: statusCodeRetryTimes,
+    status_code_retry_interval_ms: statusCodeRetryIntervalMS,
+    status_code_retry_status_codes: statusCodeRetryStatusCodes,
+    input_token_routing_enabled: inputTokenRoutingEnabled,
+    input_token_routing_ranges: inputTokenRoutingRanges,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -563,13 +790,18 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.allow_include_obfuscation === true
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
-    if ('disable_store' in settingsObj) delete settingsObj.disable_store
-    if ('allow_safety_identifier' in settingsObj)
+    if ('disable_store' in settingsObj) {
+      delete settingsObj.disable_store
+    }
+    if ('allow_safety_identifier' in settingsObj) {
       delete settingsObj.allow_safety_identifier
-    if ('allow_include_obfuscation' in settingsObj)
+    }
+    if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
-    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj)
+    }
+    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
       delete settingsObj.allow_inference_geo
+    }
   }
 
   // Anthropic (type 14): claude_beta_query, allow_inference_geo, allow_speed
@@ -578,12 +810,80 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.allow_speed = formData.allow_speed === true
     settingsObj.claude_beta_query = formData.claude_beta_query === true
   } else {
-    if ('allow_speed' in settingsObj) delete settingsObj.allow_speed
-    if ('claude_beta_query' in settingsObj) delete settingsObj.claude_beta_query
+    if ('allow_speed' in settingsObj) {
+      delete settingsObj.allow_speed
+    }
+    if ('claude_beta_query' in settingsObj) {
+      delete settingsObj.claude_beta_query
+    }
   }
 
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
+
+  if (formData.simulated_model_cache_enabled === true) {
+    const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
+    settingsObj.simulated_model_cache = {
+      enabled: true,
+      ttl_seconds: Math.max(
+        1,
+        Math.trunc(Number(formData.simulated_model_cache_ttl_seconds) || 86400)
+      ),
+      reuse_limit: Math.max(
+        1,
+        Math.trunc(Number(formData.simulated_model_cache_reuse_limit) || 3)
+      ),
+      min_match_ratio: Math.min(
+        1,
+        Math.max(0.01, Number.isFinite(minMatchRatio) ? minMatchRatio : 0.01)
+      ),
+    }
+  } else if ('simulated_model_cache' in settingsObj) {
+    delete settingsObj.simulated_model_cache
+  }
+
+  if (formData.status_code_retry_enabled === true) {
+    const retryTimes = Number(formData.status_code_retry_times)
+    const retryIntervalMS = Number(formData.status_code_retry_interval_ms)
+    const parsedStatusCodes = parseHttpStatusCodeRules(
+      formData.status_code_retry_status_codes || ''
+    )
+    settingsObj.status_code_retry = {
+      enabled: true,
+      retry_times: Math.max(
+        0,
+        Math.trunc(Number.isFinite(retryTimes) ? retryTimes : 10)
+      ),
+      retry_interval_ms: Math.max(
+        0,
+        Math.trunc(
+          Number.isFinite(retryIntervalMS)
+            ? retryIntervalMS
+            : DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
+        )
+      ),
+      status_codes:
+        parsedStatusCodes.ok && parsedStatusCodes.normalized
+          ? parsedStatusCodes.normalized
+          : DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
+    }
+  } else if ('status_code_retry' in settingsObj) {
+    delete settingsObj.status_code_retry
+  }
+
+  if (formData.input_token_routing_enabled === true) {
+    const parsedRanges = parseInputTokenRoutingRanges(
+      formData.input_token_routing_ranges
+    )
+    if (parsedRanges.ok) {
+      settingsObj.input_token_routing = {
+        enabled: true,
+        ranges: parsedRanges.ranges,
+      }
+    }
+  } else if ('input_token_routing' in settingsObj) {
+    delete settingsObj.input_token_routing
+  }
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {
@@ -592,14 +892,14 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.upstream_model_update_auto_sync_enabled =
       settingsObj.upstream_model_update_check_enabled === true &&
       formData.upstream_model_update_auto_sync_enabled === true
-    settingsObj.upstream_model_update_ignored_models = Array.from(
-      new Set(
+    settingsObj.upstream_model_update_ignored_models = [
+      ...new Set(
         String(formData.upstream_model_update_ignored_models || '')
           .split(',')
           .map((model) => model.trim())
           .filter(Boolean)
-      )
-    )
+      ),
+    ]
     if (
       !Array.isArray(settingsObj.upstream_model_update_last_detected_models) ||
       settingsObj.upstream_model_update_check_enabled !== true

@@ -68,6 +68,18 @@ func TestShouldRetryByStatusCode(t *testing.T) {
 	require.False(t, ShouldRetryByStatusCode(200))
 }
 
+func TestShouldRetryByStatusCodeRanges(t *testing.T) {
+	ranges, err := ParseHTTPStatusCodeRanges("429,500-599")
+	require.NoError(t, err)
+
+	require.True(t, ShouldRetryByStatusCodeRanges(ranges, 429))
+	require.True(t, ShouldRetryByStatusCodeRanges(ranges, 500))
+	require.False(t, ShouldRetryByStatusCodeRanges(ranges, 504))
+	require.False(t, ShouldRetryByStatusCodeRanges(ranges, 524))
+	require.False(t, ShouldRetryByStatusCodeRanges(ranges, 400))
+	require.False(t, ShouldRetryByStatusCodeRanges(ranges, 200))
+}
+
 func TestShouldRetryByStatusCode_DefaultMatchesLegacyBehavior(t *testing.T) {
 	require.False(t, ShouldRetryByStatusCode(200))
 	require.False(t, ShouldRetryByStatusCode(400))

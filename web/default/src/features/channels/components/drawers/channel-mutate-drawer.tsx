@@ -252,10 +252,13 @@ const CHANNEL_EDITOR_MAIN_SECTION_IDS = [
 ]
 const ADVANCED_SETTINGS_SECTION_IDS = {
   routingStrategy: 'channel-section-advanced-routing-strategy',
+  inputTokenRouting: 'channel-section-advanced-input-token-routing',
   internalNotes: 'channel-section-advanced-internal-notes',
   overrideRules: 'channel-section-advanced-override-rules',
   extraSettings: 'channel-section-advanced-extra-settings',
   fieldPassthrough: 'channel-section-advanced-field-passthrough',
+  statusCodeRetry: 'channel-section-advanced-status-code-retry',
+  simulatedModelCache: 'channel-section-advanced-simulated-model-cache',
   upstreamModelDetection: 'channel-section-advanced-upstream-model-detection',
 } as const
 const ADVANCED_SETTINGS_CHILD_SECTION_IDS: string[] = Object.values(
@@ -293,6 +296,16 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'simulated_model_cache_enabled',
+  'simulated_model_cache_ttl_seconds',
+  'simulated_model_cache_reuse_limit',
+  'simulated_model_cache_min_match_ratio',
+  'status_code_retry_enabled',
+  'status_code_retry_times',
+  'status_code_retry_interval_ms',
+  'status_code_retry_status_codes',
+  'input_token_routing_enabled',
+  'input_token_routing_ranges',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -338,6 +351,9 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
     values.claude_beta_query ||
+    values.simulated_model_cache_enabled ||
+    values.status_code_retry_enabled ||
+    values.input_token_routing_enabled ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -740,6 +756,16 @@ export function ChannelMutateDrawer({
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
+  const currentSimulatedModelCacheEnabled = form.watch(
+    'simulated_model_cache_enabled'
+  )
+  const currentStatusCodeRetryEnabled = form.watch('status_code_retry_enabled')
+  const currentInputTokenRoutingEnabled = form.watch(
+    'input_token_routing_enabled'
+  )
+  const currentInputTokenRoutingRanges = form.watch(
+    'input_token_routing_ranges'
+  )
   const currentUpstreamModelUpdateAutoSyncEnabled = form.watch(
     'upstream_model_update_auto_sync_enabled'
   )
@@ -1021,12 +1047,22 @@ export function ChannelMutateDrawer({
     currentUpstreamModelUpdateAutoSyncEnabled ||
     currentUpstreamModelUpdateIgnoredModels?.trim()
   )
+  const simulatedModelCacheConfigured = Boolean(
+    currentSimulatedModelCacheEnabled
+  )
+  const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
+  const inputTokenRoutingConfigured = Boolean(
+    currentInputTokenRoutingEnabled || currentInputTokenRoutingRanges?.trim()
+  )
   const advancedConfigured = Boolean(
     routingStrategyConfigured ||
+    inputTokenRoutingConfigured ||
     internalNotesConfigured ||
     overrideRulesConfigured ||
     extraSettingsConfigured ||
     fieldPassthroughConfigured ||
+    statusCodeRetryConfigured ||
+    simulatedModelCacheConfigured ||
     upstreamModelDetectionConfigured
   )
   const advancedNavChildren: ChannelEditorNavChildItem[] = [
@@ -1034,6 +1070,11 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.routingStrategy,
       title: t('Routing Strategy'),
       configured: routingStrategyConfigured,
+    },
+    {
+      id: ADVANCED_SETTINGS_SECTION_IDS.inputTokenRouting,
+      title: t('Input Token Routing'),
+      configured: inputTokenRoutingConfigured,
     },
     {
       id: ADVANCED_SETTINGS_SECTION_IDS.internalNotes,
@@ -1044,6 +1085,11 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.overrideRules,
       title: t('Override Rules'),
       configured: overrideRulesConfigured,
+    },
+    {
+      id: ADVANCED_SETTINGS_SECTION_IDS.statusCodeRetry,
+      title: t('Channel Retry Override'),
+      configured: statusCodeRetryConfigured,
     },
     {
       id: ADVANCED_SETTINGS_SECTION_IDS.extraSettings,
@@ -1058,6 +1104,11 @@ export function ChannelMutateDrawer({
       configured: fieldPassthroughConfigured,
     })
   }
+  advancedNavChildren.push({
+    id: ADVANCED_SETTINGS_SECTION_IDS.simulatedModelCache,
+    title: t('Simulated Model Cache'),
+    configured: simulatedModelCacheConfigured,
+  })
   if (MODEL_FETCHABLE_TYPES.has(currentType)) {
     advancedNavChildren.push({
       id: ADVANCED_SETTINGS_SECTION_IDS.upstreamModelDetection,
@@ -3692,6 +3743,78 @@ export function ChannelMutateDrawer({
                           </div>
 
                           <div
+                            id={ADVANCED_SETTINGS_SECTION_IDS.inputTokenRouting}
+                            className={configuredAdvancedSectionClassName(
+                              'flex scroll-mt-4 flex-col gap-4 border-t pt-4',
+                              inputTokenRoutingConfigured
+                            )}
+                          >
+                            <SubHeading
+                              title={t('Input Token Routing')}
+                              icon={<Route className='h-3.5 w-3.5' />}
+                            />
+                            <fieldset
+                              disabled={sensitiveLocked}
+                              className='space-y-4 disabled:opacity-60'
+                            >
+                              <div className='divide-border space-y-0 divide-y border-y'>
+                                <FormField
+                                  control={form.control}
+                                  name='input_token_routing_enabled'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel className='text-sm'>
+                                          {t('Enable input token routing')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Only use this channel when the estimated input tokens match one configured range'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              </div>
+
+                              <FormField
+                                control={form.control}
+                                name='input_token_routing_ranges'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('Token ranges')}</FormLabel>
+                                    <FormControl>
+                                      <Textarea
+                                        placeholder={'0-200\n1000000-5000000'}
+                                        rows={3}
+                                        disabled={
+                                          !currentInputTokenRoutingEnabled ||
+                                          isSubmitting
+                                        }
+                                        className='font-mono text-xs'
+                                        {...field}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'One range per line, for example 0-200 or 1000000-5000000'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </fieldset>
+                          </div>
+
+                          <div
                             id={ADVANCED_SETTINGS_SECTION_IDS.internalNotes}
                             className={configuredAdvancedSectionClassName(
                               'flex scroll-mt-4 flex-col gap-4 border-t pt-4',
@@ -4011,6 +4134,145 @@ export function ChannelMutateDrawer({
                           </div>
                         </div>
 
+                        <div
+                          id={ADVANCED_SETTINGS_SECTION_IDS.statusCodeRetry}
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              statusCodeRetryConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Channel Retry Override')}
+                            icon={<RefreshCw className='h-4 w-4' />}
+                          />
+                          <fieldset
+                            disabled={sensitiveLocked}
+                            className='space-y-4 disabled:opacity-60'
+                          >
+                            <div className='divide-border space-y-0 divide-y border-y'>
+                              <FormField
+                                control={form.control}
+                                name='status_code_retry_enabled'
+                                render={({ field }) => (
+                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                    <div className='space-y-0.5'>
+                                      <FormLabel className='text-sm'>
+                                        {t('Enable channel retry override')}
+                                      </FormLabel>
+                                      <FormDescription>
+                                        {t(
+                                          'Override global request retry for this channel'
+                                        )}
+                                      </FormDescription>
+                                    </div>
+                                    <FormControl>
+                                      <Switch
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                      />
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+
+                            <div className='grid gap-4 sm:grid-cols-2'>
+                              <FormField
+                                control={form.control}
+                                name='status_code_retry_times'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('Retry times')}</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        step={1}
+                                        disabled={
+                                          !currentStatusCodeRetryEnabled
+                                        }
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Maximum retries for this channel; no upper limit is enforced'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='status_code_retry_interval_ms'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Retry interval (ms)')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        step={1}
+                                        disabled={
+                                          !currentStatusCodeRetryEnabled
+                                        }
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Delay before each same-channel retry, in milliseconds.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='status_code_retry_status_codes'
+                                render={({ field }) => (
+                                  <FormItem className='sm:col-span-2'>
+                                    <FormLabel>
+                                      {t('Channel retry status codes')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Textarea
+                                        rows={3}
+                                        disabled={
+                                          !currentStatusCodeRetryEnabled
+                                        }
+                                        placeholder='100-199,300-399,401-407,409-499,500-503,505-523,525-599'
+                                        className='font-mono text-xs'
+                                        {...field}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Accepts comma-separated status codes and inclusive ranges.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+                          </fieldset>
+                        </div>
+
                         {/* ── Extra Settings ── */}
                         <div
                           id={ADVANCED_SETTINGS_SECTION_IDS.extraSettings}
@@ -4213,6 +4475,147 @@ export function ChannelMutateDrawer({
                                 </FormItem>
                               )}
                             />
+                          </fieldset>
+                        </div>
+
+                        <div
+                          id={ADVANCED_SETTINGS_SECTION_IDS.simulatedModelCache}
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              simulatedModelCacheConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Simulated Model Cache')}
+                            icon={<Sparkles className='h-4 w-4' />}
+                          />
+                          <fieldset
+                            disabled={sensitiveLocked}
+                            className='space-y-4 disabled:opacity-60'
+                          >
+                            <div className='divide-border space-y-0 divide-y border-y'>
+                              <FormField
+                                control={form.control}
+                                name='simulated_model_cache_enabled'
+                                render={({ field }) => (
+                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                    <div className='space-y-0.5'>
+                                      <FormLabel className='text-sm'>
+                                        {t('Enable simulated model cache')}
+                                      </FormLabel>
+                                      <FormDescription>
+                                        {t(
+                                          'Replay exact matching text requests from Redis and rewrite partial prompt matches as cached input'
+                                        )}
+                                      </FormDescription>
+                                    </div>
+                                    <FormControl>
+                                      <Switch
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                      />
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+
+                            <div className='grid gap-4 sm:grid-cols-3'>
+                              <FormField
+                                control={form.control}
+                                name='simulated_model_cache_reuse_limit'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('Reuse limit')}</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={1}
+                                        step={1}
+                                        disabled={
+                                          !currentSimulatedModelCacheEnabled
+                                        }
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Maximum exact replays before calling upstream again'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='simulated_model_cache_ttl_seconds'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('TTL seconds')}</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={1}
+                                        step={1}
+                                        disabled={
+                                          !currentSimulatedModelCacheEnabled
+                                        }
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'How long cached responses stay in Redis'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='simulated_model_cache_min_match_ratio'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Minimum match ratio')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0.01}
+                                        max={1}
+                                        step={0.01}
+                                        disabled={
+                                          !currentSimulatedModelCacheEnabled
+                                        }
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Longest common prompt substring ratio required for partial cache usage'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
                           </fieldset>
                         </div>
 

@@ -101,6 +101,27 @@ export interface ChannelOtherSettings {
   allow_speed?: boolean
   claude_beta_query?: boolean
   disable_task_polling_sleep?: boolean
+  simulated_model_cache?: {
+    enabled?: boolean
+    ttl_seconds?: number
+    reuse_limit?: number
+    min_match_ratio?: number
+  }
+  status_code_retry?: {
+    enabled?: boolean
+    retry_times?: number
+    retry_interval_ms?: number
+    status_codes?: string
+  }
+  input_token_routing?: {
+    enabled?: boolean
+    min_tokens?: number
+    max_tokens?: number
+    ranges?: Array<{
+      min_tokens?: number
+      max_tokens?: number
+    }>
+  }
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean
   upstream_model_update_ignored_models?: string[]

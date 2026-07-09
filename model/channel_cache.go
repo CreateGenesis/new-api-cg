@@ -105,22 +105,22 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannel(group, model, retry, requestPath, estimatedInputTokens)
 	}
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
 	// First, try to find channels with the exact model name.
-	channels := filterChannelsByRequestPath(group2model2channels[group][model], requestPath)
+	channels := filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][model], requestPath), estimatedInputTokens)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
-		channels = filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath)
+		channels = filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath), estimatedInputTokens)
 	}
 
 	if len(channels) == 0 {
@@ -224,6 +224,24 @@ func filterChannelsByRequestPath(channels []int, requestPath string) []int {
 			continue
 		}
 		if config := channel2advancedCustomConfig[channelId]; config != nil && config.SupportsPath(requestPath) {
+			filtered = append(filtered, channelId)
+		}
+	}
+	return filtered
+}
+
+func filterChannelsByInputTokens(channels []int, estimatedInputTokens *int) []int {
+	if estimatedInputTokens == nil || len(channels) == 0 {
+		return channels
+	}
+	filtered := make([]int, 0, len(channels))
+	for _, channelId := range channels {
+		channel, ok := channelsIDM[channelId]
+		if !ok {
+			filtered = append(filtered, channelId)
+			continue
+		}
+		if channel.MatchesInputTokenRouting(estimatedInputTokens) {
 			filtered = append(filtered, channelId)
 		}
 	}

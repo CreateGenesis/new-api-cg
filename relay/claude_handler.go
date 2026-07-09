@@ -140,7 +140,10 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			return types.NewError(convErr, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
 
-		usage, newApiErr := chatCompletionsViaResponses(c, info, adaptor, openAIRequest)
+		usage, newApiErr, cacheServed := chatCompletionsViaResponses(c, info, adaptor, openAIRequest)
+		if cacheServed {
+			return nil
+		}
 		if newApiErr != nil {
 			return newApiErr
 		}
@@ -150,12 +153,20 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	}
 
 	var requestBody io.Reader
+	var cacheAttempt *simulatedModelCacheAttempt
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 		info.UpstreamRequestBodySize = storage.Size()
+		if requestBytes, bErr := storage.Bytes(); bErr == nil {
+			var cacheHit bool
+			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
+			if cacheHit {
+				return nil
+			}
+		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
 		convertedRequest, err := adaptor.ConvertClaudeRequest(c, info, request)
@@ -183,6 +194,11 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)
+		var cacheHit bool
+		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
+		if cacheHit {
+			return nil
+		}
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -211,13 +227,18 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		restoreSimulatedModelCacheRecorder(c, recorder)
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
 
+	if recorder != nil {
+		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+	}
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil
 }

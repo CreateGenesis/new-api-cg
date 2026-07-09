@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
@@ -962,6 +963,12 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if channelOtherSettings.StatusCodeRetry != nil && channelOtherSettings.StatusCodeRetry.Enabled {
+		normalized := channelOtherSettings.StatusCodeRetry.Normalize()
+		if _, err := operation_setting.ParseHTTPStatusCodeRanges(normalized.StatusCodes); err != nil {
+			return fmt.Errorf("status_code_retry.status_codes: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -1007,6 +1014,43 @@ func (channel *Channel) SetOtherSettings(setting dto.ChannelOtherSettings) {
 		return
 	}
 	channel.OtherSettings = string(settingBytes)
+}
+
+func (channel *Channel) MatchesInputTokenRouting(estimatedTokens *int) bool {
+	if channel == nil || estimatedTokens == nil {
+		return true
+	}
+	settings := channel.GetOtherSettings()
+	if settings.InputTokenRouting == nil {
+		return true
+	}
+	routing := settings.InputTokenRouting.Normalize()
+	if !routing.Enabled {
+		return true
+	}
+	tokens := *estimatedTokens
+	if tokens < 0 {
+		tokens = 0
+	}
+	if len(routing.Ranges) > 0 {
+		for _, item := range routing.Ranges {
+			if item.MinTokens > 0 && tokens < item.MinTokens {
+				continue
+			}
+			if item.MaxTokens > 0 && tokens > item.MaxTokens {
+				continue
+			}
+			return true
+		}
+		return false
+	}
+	if routing.MinTokens > 0 && tokens < routing.MinTokens {
+		return false
+	}
+	if routing.MaxTokens > 0 && tokens > routing.MaxTokens {
+		return false
+	}
+	return true
 }
 
 func (channel *Channel) GetParamOverride() map[string]interface{} {

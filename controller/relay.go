@@ -125,9 +125,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
+	needInputTokenRoutingEstimate := supportsInputTokenRouting(relayFormat, relayInfo.RelayMode)
 	// Avoid building huge CombineText (strings.Join) when token counting and sensitive check are both disabled.
 	var meta *types.TokenCountMeta
-	if needSensitiveCheck || needCountToken {
+	if needSensitiveCheck || needCountToken || needInputTokenRoutingEstimate {
 		meta = request.GetTokenCountMeta()
 	} else {
 		meta = fastTokenCountMetaForPricing(request)
@@ -179,16 +180,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}()
 
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:                  c,
+		TokenGroup:           relayInfo.TokenGroup,
+		ModelName:            relayInfo.OriginModelName,
+		RequestPath:          c.Request.URL.Path,
+		EstimatedInputTokens: estimatedInputTokensForRouting(relayFormat, relayInfo.RelayMode, tokens, meta, relayInfo.OriginModelName),
+		Retry:                common.GetPointer(0),
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	globalRetryPolicy := relayGlobalRetryPolicy()
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; ; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
@@ -196,42 +199,52 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		channelRetryPolicy := relayRetryPolicyFromContext(c)
+		sameChannelRetry := 0
 
-		addUsedChannel(c, channel.Id)
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
-		if bodyErr != nil {
-			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
-			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-			} else {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		for {
+			addUsedChannel(c, channel.Id)
+			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
+				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+				} else {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				}
+				break
 			}
-			break
+			c.Request.Body = io.NopCloser(bodyStorage)
+
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime:
+				newAPIError = relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				newAPIError = relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				newAPIError = geminiRelayHandler(c, relayInfo)
+			default:
+				newAPIError = relayHandler(c, relayInfo)
+			}
+
+			if newAPIError == nil {
+				relayInfo.LastError = nil
+				return
+			}
+
+			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			relayInfo.LastError = newAPIError
+
+			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+			if !shouldRetrySameChannelWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetry) {
+				break
+			}
+			sameChannelRetry++
+			waitBeforeRelayRetry(c, channelRetryPolicy.retryDelay)
 		}
-		c.Request.Body = io.NopCloser(bodyStorage)
 
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
-		}
-
-		if newAPIError == nil {
-			relayInfo.LastError = nil
-			return
-		}
-
-		newAPIError = service.NormalizeViolationFeeError(newAPIError)
-		relayInfo.LastError = newAPIError
-
-		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetryWithPolicy(c, newAPIError, globalRetryPolicy, retryParam.GetRetry()) {
 			break
 		}
 	}
@@ -259,6 +272,42 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+type relayRetryPolicy struct {
+	retryTimes       int
+	statusCodeRanges []operation_setting.StatusCodeRange
+	channelOverride  bool
+	retryDelay       time.Duration
+}
+
+func relayGlobalRetryPolicy() relayRetryPolicy {
+	return relayRetryPolicy{
+		retryTimes:       common.RetryTimes,
+		statusCodeRanges: operation_setting.AutomaticRetryStatusCodeRanges,
+	}
+}
+
+func relayRetryPolicyFromContext(c *gin.Context) relayRetryPolicy {
+	policy := relayGlobalRetryPolicy()
+
+	settings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	if !ok || settings.StatusCodeRetry == nil || !settings.StatusCodeRetry.Enabled {
+		return policy
+	}
+
+	normalized := settings.StatusCodeRetry.Normalize()
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges(normalized.StatusCodes)
+	if err != nil {
+		logger.LogWarn(c, fmt.Sprintf("invalid channel status code retry settings, using global retry policy: %s", err.Error()))
+		return policy
+	}
+
+	policy.retryTimes = normalized.RetryTimes
+	policy.statusCodeRanges = ranges
+	policy.channelOverride = true
+	policy.retryDelay = time.Duration(normalized.RetryIntervalMS) * time.Millisecond
+	return policy
 }
 
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
@@ -297,13 +346,29 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		if !autoBan {
 			autoBanInt = 0
 		}
+		channelID := c.GetInt("channel_id")
+		if retryParam != nil && retryParam.EstimatedInputTokens != nil {
+			if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); !specificChannel {
+				if currentChannel, err := model.CacheGetChannel(channelID); err == nil && currentChannel != nil && !currentChannel.MatchesInputTokenRouting(retryParam.EstimatedInputTokens) {
+					channel, channelErr := selectChannelByInputTokenRouting(c, info, retryParam)
+					if channelErr != nil {
+						return nil, channelErr
+					}
+					return channel, nil
+				}
+			}
+		}
 		return &model.Channel{
-			Id:      c.GetInt("channel_id"),
+			Id:      channelID,
 			Type:    c.GetInt("channel_type"),
 			Name:    c.GetString("channel_name"),
 			AutoBan: &autoBanInt,
 		}, nil
 	}
+	return selectChannelByInputTokenRouting(c, info, retryParam)
+}
+
+func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
@@ -322,24 +387,104 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+func estimatedInputTokensForRouting(relayFormat types.RelayFormat, relayMode int, tokens int, meta *types.TokenCountMeta, modelName string) *int {
+	if !supportsInputTokenRouting(relayFormat, relayMode) {
+		return nil
+	}
+	if tokens < 0 {
+		tokens = 0
+	}
+	if routingTokens := conservativeInputTokensForRouting(relayFormat, meta, modelName); routingTokens > tokens {
+		tokens = routingTokens
+	}
+	return &tokens
+}
+
+func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta, modelName string) int {
+	if meta == nil {
+		return 0
+	}
+
+	tokens := 0
+	if meta.CombineText != "" {
+		textTokens := service.CountTextToken(meta.CombineText, modelName)
+		byteTokens := (len(meta.CombineText) + 3) / 4
+		if byteTokens > textTokens {
+			textTokens = byteTokens
+		}
+		tokens += textTokens
+	}
+	if relayFormat == types.RelayFormatOpenAI {
+		tokens += meta.ToolsCount * 8
+		tokens += meta.MessagesCount * 3
+		tokens += meta.NameCount * 3
+		tokens += 3
+	}
+	for _, file := range meta.Files {
+		if file == nil {
+			continue
+		}
+		switch file.FileType {
+		case types.FileTypeImage:
+			tokens += 520
+		case types.FileTypeAudio:
+			tokens += 256
+		case types.FileTypeVideo:
+			tokens += 8192
+		case types.FileTypeFile:
+			tokens += 4096
+		}
+	}
+	return tokens
+}
+
+func supportsInputTokenRouting(relayFormat types.RelayFormat, relayMode int) bool {
+	if relayFormat == types.RelayFormatClaude {
+		return true
+	}
+	switch relayMode {
+	case relayconstant.RelayModeChatCompletions,
+		relayconstant.RelayModeCompletions,
+		relayconstant.RelayModeResponses,
+		relayconstant.RelayModeResponsesCompact,
+		relayconstant.RelayModeGemini:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRetryWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) bool {
+	return shouldRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry, false)
+}
+
+func shouldRetrySameChannelWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) bool {
+	if !policy.channelOverride {
+		return false
+	}
+	return shouldRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry, true)
+}
+
+func shouldRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int, allowSpecificChannelRetry bool) bool {
 	if openaiErr == nil {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if types.IsChannelError(openaiErr) {
-		return true
-	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
-	if retryTimes <= 0 {
+	if policy.retryTimes-currentRetry <= 0 {
 		return false
 	}
-	if _, ok := c.Get("specific_channel_id"); ok {
-		return false
+	if !allowSpecificChannelRetry {
+		if _, ok := c.Get("specific_channel_id"); ok {
+			return false
+		}
+	}
+	if types.IsChannelError(openaiErr) {
+		return true
 	}
 	code := openaiErr.StatusCode
 	if code >= 200 && code < 300 {
@@ -351,7 +496,24 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
-	return operation_setting.ShouldRetryByStatusCode(code)
+	return operation_setting.ShouldRetryByStatusCodeRanges(policy.statusCodeRanges, code)
+}
+
+func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) {
+	if delay <= 0 || c.Request == nil {
+		return
+	}
+	timer := time.NewTimer(delay)
+	select {
+	case <-timer.C:
+	case <-c.Request.Context().Done():
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

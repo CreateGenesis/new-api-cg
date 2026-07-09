@@ -136,10 +136,18 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	}
 
 	var requestBody io.Reader
+	var cacheAttempt *simulatedModelCacheAttempt
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		if requestBytes, bErr := storage.Bytes(); bErr == nil {
+			var cacheHit bool
+			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
+			if cacheHit {
+				return nil
+			}
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
@@ -163,6 +171,11 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 
 		logger.LogDebug(c, "Gemini request body: %s", jsonData)
+		var cacheHit bool
+		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
+		if cacheHit {
+			return nil
+		}
 
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
@@ -194,12 +207,17 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
+		restoreSimulatedModelCacheRecorder(c, recorder)
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
 
+	if recorder != nil {
+		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+	}
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil
 }

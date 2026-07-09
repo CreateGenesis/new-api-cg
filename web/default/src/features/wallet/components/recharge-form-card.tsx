@@ -20,6 +20,7 @@ import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { RichContent } from '@/components/rich-content'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -120,7 +121,7 @@ export function RechargeFormCard({
 
   const handleAmountChange = (value: string) => {
     setLocalAmount(value)
-    const numValue = parseInt(value) || 0
+    const numValue = Number.parseInt(value) || 0
     if (numValue >= 0) {
       onTopupAmountChange(numValue)
     }
@@ -131,13 +132,21 @@ export function RechargeFormCard({
     topupInfo?.enable_stripe_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
-  const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
+  const renderableCreemProducts =
+    enableCreemTopup &&
+    Array.isArray(creemProducts) &&
+    creemProducts.length > 0 &&
+    onCreemProductSelect
+      ? creemProducts
+      : null
+  const hasAnyTopup = hasConfigurableTopup || Boolean(renderableCreemProducts)
   const hasStandardPaymentMethods =
     Array.isArray(topupInfo?.pay_methods) && topupInfo.pay_methods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
+  const replacementHTML = topupInfo?.topup_html?.trim()
 
   if (loading) {
     return (
@@ -152,8 +161,11 @@ export function RechargeFormCard({
             <div className='space-y-3'>
               <Skeleton className='h-3 w-16' />
               <div className='grid grid-cols-2 gap-3 sm:grid-cols-4'>
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <Skeleton key={i} className='h-[72px] rounded-lg' />
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((slot) => (
+                  <Skeleton
+                    key={`preset-amount-skeleton-${slot}`}
+                    className='h-[72px] rounded-lg'
+                  />
                 ))}
               </div>
             </div>
@@ -168,8 +180,11 @@ export function RechargeFormCard({
             <div className='space-y-3'>
               <Skeleton className='h-3 w-32' />
               <div className='flex flex-wrap gap-3'>
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className='h-10 w-24 rounded-lg' />
+                {[1, 2, 3].map((slot) => (
+                  <Skeleton
+                    key={`payment-method-skeleton-${slot}`}
+                    className='h-10 w-24 rounded-lg'
+                  />
                 ))}
               </div>
             </div>
@@ -187,6 +202,20 @@ export function RechargeFormCard({
       </Card>
     )
   }
+
+  const topupUnavailableContent = replacementHTML ? (
+    <div className='prose prose-sm dark:prose-invert max-w-none rounded-md border p-4'>
+      <RichContent content={replacementHTML} mode='html' />
+    </div>
+  ) : (
+    <Alert>
+      <AlertDescription>
+        {t(
+          'Online topup is not enabled. Please use redemption code or contact administrator.'
+        )}
+      </AlertDescription>
+    </Alert>
+  )
 
   return (
     <TitledCard
@@ -220,7 +249,7 @@ export function RechargeFormCard({
                     {t('Amount')}
                   </Label>
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 md:grid-cols-4'>
-                    {presetAmounts.map((preset, index) => {
+                    {presetAmounts.map((preset) => {
                       const discount =
                         preset.discount ||
                         topupInfo?.discount?.[preset.value] ||
@@ -238,7 +267,7 @@ export function RechargeFormCard({
                       )
                       return (
                         <Button
-                          key={index}
+                          key={`preset-${preset.value}-${discount}`}
                           variant='outline'
                           className={cn(
                             'flex min-h-16 flex-col items-start rounded-lg px-3 py-2.5 text-left whitespace-normal sm:min-h-[72px] sm:p-4',
@@ -310,7 +339,7 @@ export function RechargeFormCard({
                 <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
                   {t('Payment Method')}
                 </Label>
-                {hasStandardPaymentMethods ? (
+                {hasStandardPaymentMethods && (
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
                     {topupInfo?.pay_methods?.map((method) => {
                       const minTopup = method.min_topup || 0
@@ -364,7 +393,7 @@ export function RechargeFormCard({
                       return disabled ? (
                         <TooltipProvider key={method.type}>
                           <Tooltip>
-                            <TooltipTrigger render={button}></TooltipTrigger>
+                            <TooltipTrigger render={button} />
                             <TooltipContent>{disabledReason}</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -373,7 +402,8 @@ export function RechargeFormCard({
                       )
                     })}
                   </div>
-                ) : hasWaffoPaymentMethods ? null : (
+                )}
+                {!hasStandardPaymentMethods && !hasWaffoPaymentMethods && (
                   <Alert>
                     <AlertDescription>
                       {t(
@@ -404,10 +434,30 @@ export function RechargeFormCard({
                         const disabledLabel = belowMin
                           ? `${t('Minimum:')} ${waffoMin}`
                           : undefined
+                        let methodIcon = getPaymentIcon('waffo')
+                        if (method.icon) {
+                          methodIcon = (
+                            <img
+                              src={method.icon}
+                              alt={method.name}
+                              className='h-4 w-4 object-contain'
+                            />
+                          )
+                        }
+                        if (paymentLoading === loadingKey) {
+                          methodIcon = (
+                            <Loader2 className='h-4 w-4 animate-spin' />
+                          )
+                        }
+                        const methodKey = [
+                          method.payMethodType || 'type',
+                          method.payMethodName || method.name,
+                          method.icon || 'icon',
+                        ].join('-')
 
                         const button = (
                           <Button
-                            key={`${method.name}-${index}`}
+                            key={methodKey}
                             variant='outline'
                             onClick={() => onWaffoMethodSelect(method, index)}
                             disabled={belowMin || !!paymentLoading}
@@ -419,17 +469,7 @@ export function RechargeFormCard({
                             }
                             className='min-h-14 min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left'
                           >
-                            {paymentLoading === loadingKey ? (
-                              <Loader2 className='h-4 w-4 animate-spin' />
-                            ) : method.icon ? (
-                              <img
-                                src={method.icon}
-                                alt={method.name}
-                                className='h-4 w-4 object-contain'
-                              />
-                            ) : (
-                              getPaymentIcon('waffo')
-                            )}
+                            {methodIcon}
                             <span className='flex min-w-0 flex-col items-start gap-0.5'>
                               <span className='max-w-full truncate'>
                                 {method.name}
@@ -444,9 +484,9 @@ export function RechargeFormCard({
                         )
 
                         return belowMin ? (
-                          <TooltipProvider key={`${method.name}-${index}`}>
+                          <TooltipProvider key={methodKey}>
                             <Tooltip>
-                              <TooltipTrigger render={button}></TooltipTrigger>
+                              <TooltipTrigger render={button} />
                               <TooltipContent>{disabledReason}</TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
@@ -461,30 +501,21 @@ export function RechargeFormCard({
           )}
         </div>
       ) : (
-        <Alert>
-          <AlertDescription>
-            {t(
-              'Online topup is not enabled. Please use redemption code or contact administrator.'
-            )}
-          </AlertDescription>
-        </Alert>
+        topupUnavailableContent
       )}
 
       {/* Creem Products Section */}
-      {enableCreemTopup &&
-        Array.isArray(creemProducts) &&
-        creemProducts.length > 0 &&
-        onCreemProductSelect && (
-          <div className='space-y-2.5 border-t pt-4 sm:space-y-3 sm:pt-6'>
-            <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
-              {t('Creem Payment')}
-            </Label>
-            <CreemProductsSection
-              products={creemProducts}
-              onProductSelect={onCreemProductSelect}
-            />
-          </div>
-        )}
+      {renderableCreemProducts && onCreemProductSelect && (
+        <div className='space-y-2.5 border-t pt-4 sm:space-y-3 sm:pt-6'>
+          <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+            {t('Creem Payment')}
+          </Label>
+          <CreemProductsSection
+            products={renderableCreemProducts}
+            onProductSelect={onCreemProductSelect}
+          />
+        </div>
+      )}
 
       {/* Redemption Code Section */}
       {redemptionEnabled ? (

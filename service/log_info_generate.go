@@ -106,6 +106,17 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, adminInfo)
+	if relayInfo.SimulatedModelCacheInfo != nil {
+		info := relayInfo.SimulatedModelCacheInfo
+		adminInfo["simulated_model_cache"] = map[string]interface{}{
+			"mode":                    info.Mode,
+			"match_ratio":             info.MatchRatio,
+			"original_prompt_tokens":  info.OriginalPromptTokens,
+			"simulated_prompt_tokens": info.SimulatedPromptTokens,
+			"simulated_cached_tokens": info.SimulatedCachedTokens,
+			"replay_count":            info.ReplayCount,
+		}
+	}
 
 	other["admin_info"] = adminInfo
 	appendRequestPath(ctx, relayInfo, other)

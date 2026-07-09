@@ -136,6 +136,8 @@ export interface TopupInfo {
   discount: Record<number, number>
   /** Optional topup link for purchasing codes */
   topup_link?: string
+  /** Optional HTML replacement when online topup is unavailable */
+  topup_html?: string
   /** Whether Creem topup is enabled */
   enable_creem_topup?: boolean
   /** Available Creem products */

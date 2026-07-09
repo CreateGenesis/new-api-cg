@@ -161,6 +161,8 @@ type RelayInfo struct {
 	// *bytes.Reader/Buffer/strings.Reader). 0 means "let net/http decide".
 	UpstreamRequestBodySize int64
 
+	SimulatedModelCacheInfo *SimulatedModelCacheInfo
+
 	PriceData types.PriceData
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
@@ -191,6 +193,15 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+type SimulatedModelCacheInfo struct {
+	Mode                  string  `json:"mode"`
+	MatchRatio            float64 `json:"match_ratio"`
+	OriginalPromptTokens  int     `json:"original_prompt_tokens"`
+	SimulatedPromptTokens int     `json:"simulated_prompt_tokens"`
+	SimulatedCachedTokens int     `json:"simulated_cached_tokens"`
+	ReplayCount           int     `json:"replay_count"`
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {

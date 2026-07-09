@@ -78,10 +78,14 @@ func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
 }
 
 func ShouldRetryByStatusCode(code int) bool {
+	return ShouldRetryByStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)
+}
+
+func ShouldRetryByStatusCodeRanges(ranges []StatusCodeRange, code int) bool {
 	if IsAlwaysSkipRetryStatusCode(code) {
 		return false
 	}
-	return shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)
+	return shouldMatchStatusCodeRanges(ranges, code)
 }
 
 func statusCodeRangesToString(ranges []StatusCodeRange) string {

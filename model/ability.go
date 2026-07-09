@@ -105,7 +105,7 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 	return channelQuery, nil
 }
 
-func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
@@ -122,6 +122,7 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPath(abilities, requestPath)
+	abilities = filterAbilitiesByInputTokens(abilities, estimatedInputTokens)
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -186,6 +187,39 @@ func filterAbilitiesByRequestPath(abilities []Ability, requestPath string) []Abi
 			continue
 		}
 		if config != nil && config.SupportsPath(requestPath) {
+			filtered = append(filtered, ability)
+		}
+	}
+	return filtered
+}
+
+func filterAbilitiesByInputTokens(abilities []Ability, estimatedInputTokens *int) []Ability {
+	if estimatedInputTokens == nil || len(abilities) == 0 {
+		return abilities
+	}
+
+	channelIds := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := seen[ability.ChannelId]; ok {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIds = append(channelIds, ability.ChannelId)
+	}
+
+	var channels []*Channel
+	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+		return abilities
+	}
+	channelMatches := make(map[int]bool, len(channels))
+	for _, channel := range channels {
+		channelMatches[channel.Id] = channel.MatchesInputTokenRouting(estimatedInputTokens)
+	}
+
+	filtered := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if channelMatches[ability.ChannelId] {
 			filtered = append(filtered, ability)
 		}
 	}

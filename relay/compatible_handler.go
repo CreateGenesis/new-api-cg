@@ -76,7 +76,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
 		applySystemPromptIfNeeded(c, info, request)
-		usage, newApiErr := chatCompletionsViaResponses(c, info, adaptor, request)
+		usage, newApiErr, cacheServed := chatCompletionsViaResponses(c, info, adaptor, request)
+		if cacheServed {
+			return nil
+		}
 		if newApiErr != nil {
 			return newApiErr
 		}
@@ -93,6 +96,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 
 	var requestBody io.Reader
+	var cacheAttempt *simulatedModelCacheAttempt
 
 	if passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
@@ -102,6 +106,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if common.DebugEnabled {
 			if debugBytes, bErr := storage.Bytes(); bErr == nil {
 				logger.LogDebug(c, "requestBody: %s", debugBytes)
+			}
+		}
+		if requestBytes, bErr := storage.Bytes(); bErr == nil {
+			var cacheHit bool
+			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
+			if cacheHit {
+				return nil
 			}
 		}
 		requestBody = common.ReaderOnly(storage)
@@ -175,6 +186,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
+		var cacheHit bool
+		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
+		if cacheHit {
+			return nil
+		}
+
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -204,8 +221,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 	}
 
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
+		restoreSimulatedModelCacheRecorder(c, recorder)
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
@@ -213,6 +232,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
+	if recorder != nil {
+		if containAudioTokens {
+			restoreSimulatedModelCacheRecorder(c, recorder)
+			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
+		} else {
+			finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+		}
+	}
 
 	if containAudioTokens && containsAudioRatios {
 		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
