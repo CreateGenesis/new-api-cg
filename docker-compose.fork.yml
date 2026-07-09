@@ -1,0 +1,72 @@
+# Local production-image test compose.
+#
+# Build the image first:
+#   docker build -t new-api-cg:prod-local .
+#
+# Start:
+#   docker compose -f docker-compose.fork.yml up -d
+#
+# Access:
+#   http://localhost:3002
+#
+# This stack intentionally uses separate container names, port, logs, data, and
+# database volume so it can run beside the dev compose stack.
+
+name: new-api-fork
+
+services:
+  new-api:
+    image: new-api-cg:prod-local
+    container_name: new-api-fork
+    restart: always
+    command: --log-dir /app/logs
+    ports:
+      - "3002:3000"
+    volumes:
+      - ./fork-data:/data
+      - ./fork-logs:/app/logs
+    environment:
+      - SQL_DSN=postgresql://root:123456@postgres:5432/new-api
+      - REDIS_CONN_STRING=redis://:123456@redis:6379
+      - TZ=Asia/Shanghai
+      - ERROR_LOG_ENABLED=true
+      - BATCH_UPDATE_ENABLED=true
+      - NODE_NAME=new-api-fork-node-1
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - new-api-fork-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:latest
+    container_name: redis-fork
+    restart: always
+    command: ["redis-server", "--requirepass", "123456"]
+    networks:
+      - new-api-fork-network
+
+  postgres:
+    image: postgres:15
+    container_name: postgres-fork
+    restart: always
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: new-api
+    volumes:
+      - fork_pg_data:/var/lib/postgresql/data
+    networks:
+      - new-api-fork-network
+
+volumes:
+  fork_pg_data:
+
+networks:
+  new-api-fork-network:
+    driver: bridge
