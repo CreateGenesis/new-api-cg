@@ -104,6 +104,62 @@ describe('channel form status code retry settings', () => {
   })
 })
 
+describe('channel form simulated model cache settings', () => {
+  test('loads legacy enabled cache as exact replay and simulated cache enabled', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel('{"simulated_model_cache":{"enabled":true}}')
+    )
+
+    assert.equal(form.simulated_model_cache_enabled, true)
+    assert.equal(form.simulated_model_cache_exact_replay_enabled, true)
+  })
+
+  test('saves exact replay without partial simulated cache', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      simulated_model_cache_enabled: false,
+      simulated_model_cache_exact_replay_enabled: true,
+      simulated_model_cache_ttl_seconds: 120,
+      simulated_model_cache_reuse_limit: 8,
+    })
+
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.simulated_model_cache.enabled, false)
+    assert.equal(settings.simulated_model_cache.exact_replay_enabled, true)
+    assert.equal(settings.simulated_model_cache.ttl_seconds, 120)
+    assert.equal(settings.simulated_model_cache.reuse_limit, 8)
+    assert.equal(settings.simulated_model_cache.min_match_ratio, undefined)
+  })
+
+  test('saves partial simulated cache with exact replay disabled', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      simulated_model_cache_enabled: true,
+      simulated_model_cache_exact_replay_enabled: false,
+      simulated_model_cache_min_match_ratio: 0.25,
+    })
+
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.simulated_model_cache.enabled, true)
+    assert.equal(settings.simulated_model_cache.exact_replay_enabled, false)
+    assert.equal(settings.simulated_model_cache.min_match_ratio, 0.25)
+  })
+})
+
 describe('channel form multi-key affinity settings', () => {
   test('saves affinity strategy and ttl for multi-key create payload', () => {
     const payload = transformFormDataToCreatePayload({

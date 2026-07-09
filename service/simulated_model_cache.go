@@ -1,13 +1,18 @@
 package service
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -24,7 +29,12 @@ const (
 	simulatedModelCacheMaxEntriesPerScope     = 100
 	simulatedModelCacheMaxPartialMatchEntries = 256
 	simulatedModelCacheMaxPartialMatchRunes   = 250000
+	simulatedModelCacheDiskBodyDirName        = "simulated-model-cache"
+	simulatedModelCacheBodyCompressionGzip    = "gzip"
 )
+
+var simulatedModelCacheDiskCleanupMu sync.Mutex
+var simulatedModelCacheLastDiskCleanup time.Time
 
 type SimulatedModelCacheUsageRewrite struct {
 	Mode        string
@@ -43,9 +53,10 @@ type SimulatedModelCacheLookupRequest struct {
 }
 
 type SimulatedModelCacheReplay struct {
-	Found       bool
-	Response    SimulatedModelCacheResponse
-	ReplayCount int
+	Found               bool
+	Response            SimulatedModelCacheResponse
+	ReplayCount         int
+	LoadDurationSeconds float64
 }
 
 type SimulatedModelCacheStoreRequest struct {
@@ -85,26 +96,39 @@ type simulatedModelCacheExactEntry struct {
 }
 
 type SimulatedModelCacheResponse struct {
-	StatusCode      int               `json:"status_code,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	ContentType     string            `json:"content_type,omitempty"`
-	Body            []byte            `json:"body,omitempty"`
-	Usage           dto.Usage         `json:"usage,omitempty"`
-	DurationSeconds float64           `json:"duration_seconds,omitempty"`
+	StatusCode               int                             `json:"status_code,omitempty"`
+	Headers                  map[string]string               `json:"headers,omitempty"`
+	ContentType              string                          `json:"content_type,omitempty"`
+	Body                     []byte                          `json:"body,omitempty"`
+	BodyStorage              *SimulatedModelCacheBodyStorage `json:"body_storage,omitempty"`
+	Usage                    dto.Usage                       `json:"usage,omitempty"`
+	DurationSeconds          float64                         `json:"duration_seconds,omitempty"`
+	StreamDelaysMS           []int64                         `json:"stream_delays_ms,omitempty"`
+	ReplayPreparationSeconds float64                         `json:"-"`
 }
 
 type simulatedModelCacheResponse = SimulatedModelCacheResponse
 
-func (e *simulatedModelCacheExactEntry) appendResponse(response SimulatedModelCacheResponse) {
-	e.Responses = append(e.Responses, response)
-	if len(e.Responses) > simulatedModelCacheMaxStored {
-		e.Responses = e.Responses[len(e.Responses)-simulatedModelCacheMaxStored:]
-	}
+type SimulatedModelCacheBodyStorage struct {
+	Path           string `json:"path,omitempty"`
+	Compression    string `json:"compression,omitempty"`
+	Size           int    `json:"size,omitempty"`
+	CompressedSize int64  `json:"compressed_size,omitempty"`
 }
 
-func (e *simulatedModelCacheExactEntry) storeFreshResponse(response SimulatedModelCacheResponse) {
+func (e *simulatedModelCacheExactEntry) appendResponse(response SimulatedModelCacheResponse) []SimulatedModelCacheResponse {
+	e.Responses = append(e.Responses, response)
+	if len(e.Responses) > simulatedModelCacheMaxStored {
+		removed := append([]SimulatedModelCacheResponse(nil), e.Responses[:len(e.Responses)-simulatedModelCacheMaxStored]...)
+		e.Responses = e.Responses[len(e.Responses)-simulatedModelCacheMaxStored:]
+		return removed
+	}
+	return nil
+}
+
+func (e *simulatedModelCacheExactEntry) storeFreshResponse(response SimulatedModelCacheResponse) []SimulatedModelCacheResponse {
 	e.ReplayCount = 0
-	e.appendResponse(response)
+	return e.appendResponse(response)
 }
 
 func (e simulatedModelCacheExactEntry) pickResponse(rng *rand.Rand) (SimulatedModelCacheResponse, bool) {
@@ -118,6 +142,128 @@ func (e simulatedModelCacheExactEntry) pickResponse(rng *rand.Rand) (SimulatedMo
 		return e.Responses[rand.Intn(len(e.Responses))], true
 	}
 	return e.Responses[rng.Intn(len(e.Responses))], true
+}
+
+func storeSimulatedModelCacheResponseDiskBody(response *SimulatedModelCacheResponse) error {
+	if response == nil || len(response.Body) == 0 {
+		return nil
+	}
+	dir := simulatedModelCacheDiskBodyDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	filename := fmt.Sprintf("%d-%d-%s.gz", time.Now().UnixNano(), rand.Int63(), sha256Hex(response.Body)[:16])
+	path := filepath.Join(dir, filename)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	gzipWriter := gzip.NewWriter(file)
+	if _, err = gzipWriter.Write(response.Body); err != nil {
+		_ = gzipWriter.Close()
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err = gzipWriter.Close(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err = file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	response.BodyStorage = &SimulatedModelCacheBodyStorage{
+		Path:           path,
+		Compression:    simulatedModelCacheBodyCompressionGzip,
+		Size:           len(response.Body),
+		CompressedSize: info.Size(),
+	}
+	response.Body = nil
+	common.IncrementDiskFiles(info.Size())
+	return nil
+}
+
+func loadSimulatedModelCacheResponseBody(response *SimulatedModelCacheResponse) error {
+	if response == nil || len(response.Body) > 0 {
+		return nil
+	}
+	if response.BodyStorage == nil || response.BodyStorage.Path == "" {
+		return fmt.Errorf("simulated model cache response body is missing")
+	}
+	if response.BodyStorage.Compression != simulatedModelCacheBodyCompressionGzip {
+		return fmt.Errorf("unsupported simulated model cache body compression: %s", response.BodyStorage.Compression)
+	}
+	if !isSimulatedModelCacheDiskBodyPath(response.BodyStorage.Path) {
+		return fmt.Errorf("invalid simulated model cache body path")
+	}
+	file, err := os.Open(response.BodyStorage.Path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gzipReader.Close()
+	body, err := io.ReadAll(gzipReader)
+	if err != nil {
+		return err
+	}
+	if response.BodyStorage.Size > 0 && len(body) != response.BodyStorage.Size {
+		return fmt.Errorf("simulated model cache body size mismatch")
+	}
+	response.Body = body
+	return nil
+}
+
+func deleteSimulatedModelCacheResponseDiskBody(response SimulatedModelCacheResponse) {
+	if response.BodyStorage == nil || response.BodyStorage.Path == "" {
+		return
+	}
+	if !isSimulatedModelCacheDiskBodyPath(response.BodyStorage.Path) {
+		return
+	}
+	info, statErr := os.Stat(response.BodyStorage.Path)
+	if err := os.Remove(response.BodyStorage.Path); err == nil && statErr == nil {
+		common.DecrementDiskFiles(info.Size())
+	}
+}
+
+func deleteSimulatedModelCacheResponseDiskBodies(responses []SimulatedModelCacheResponse) {
+	for _, response := range responses {
+		deleteSimulatedModelCacheResponseDiskBody(response)
+	}
+}
+
+func simulatedModelCacheDiskBodyDir() string {
+	return filepath.Join(common.GetDiskCacheDir(), simulatedModelCacheDiskBodyDirName)
+}
+
+func isSimulatedModelCacheDiskBodyPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	absDir, err := filepath.Abs(simulatedModelCacheDiskBodyDir())
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage) []byte {
@@ -523,6 +669,12 @@ func GetSimulatedModelCacheReplay(ctx context.Context, req SimulatedModelCacheLo
 			if !ok {
 				return nil
 			}
+			loadStartedAt := time.Now()
+			if err := loadSimulatedModelCacheResponseBody(&response); err != nil {
+				return nil
+			}
+			loadDuration := time.Since(loadStartedAt)
+			response.ReplayPreparationSeconds = loadDuration.Seconds()
 			entry.ReplayCount++
 			entry.UpdatedAt = time.Now().Unix()
 			nextRaw, err := common.Marshal(entry)
@@ -537,9 +689,10 @@ func GetSimulatedModelCacheReplay(ctx context.Context, req SimulatedModelCacheLo
 				return err
 			}
 			replay = SimulatedModelCacheReplay{
-				Found:       true,
-				Response:    response,
-				ReplayCount: entry.ReplayCount,
+				Found:               true,
+				Response:            response,
+				ReplayCount:         entry.ReplayCount,
+				LoadDurationSeconds: loadDuration.Seconds(),
 			}
 			return nil
 		}, key)
@@ -558,6 +711,16 @@ func StoreSimulatedModelCacheResponse(ctx context.Context, req SimulatedModelCac
 	if !common.RedisEnabled || common.RDB == nil {
 		return nil
 	}
+	response := req.Response
+	if err := storeSimulatedModelCacheResponseDiskBody(&response); err != nil {
+		return nil
+	}
+	stored := false
+	defer func() {
+		if !stored {
+			deleteSimulatedModelCacheResponseDiskBody(response)
+		}
+	}()
 	key := simulatedModelCacheExactKey(SimulatedModelCacheLookupRequest{
 		UserID:             req.UserID,
 		ChannelID:          req.ChannelID,
@@ -575,21 +738,22 @@ func StoreSimulatedModelCacheResponse(ctx context.Context, req SimulatedModelCac
 			ChannelID:     req.ChannelID,
 			UpstreamModel: req.UpstreamModel,
 			PromptText:    req.PromptText,
-			RequestBody:   req.RequestBody,
 		}
 	}
 	entry.UserID = req.UserID
 	entry.ChannelID = req.ChannelID
 	entry.UpstreamModel = req.UpstreamModel
 	entry.PromptText = req.PromptText
-	entry.RequestBody = req.RequestBody
+	entry.RequestBody = nil
 	now := time.Now()
 	entry.UpdatedAt = now.Unix()
-	entry.storeFreshResponse(req.Response)
+	removedResponses := entry.storeFreshResponse(response)
 	ttl := ttlFromSeconds(req.TTLSeconds)
 	if err := setSimulatedModelCacheExactEntry(ctx, key, entry, ttl); err != nil {
 		return nil
 	}
+	stored = true
+	deleteSimulatedModelCacheResponseDiskBodies(removedResponses)
 	indexKey := simulatedModelCacheScopeIndexKey(req.UserID, req.ChannelID, req.UpstreamModel)
 	if err := common.RDB.ZAdd(ctx, indexKey, &redis.Z{
 		Score:  float64(now.UnixNano()),
@@ -599,6 +763,7 @@ func StoreSimulatedModelCacheResponse(ctx context.Context, req SimulatedModelCac
 	}
 	_ = common.RDB.Expire(ctx, indexKey, ttl).Err()
 	_ = evictSimulatedModelCacheOldestScopeEntries(ctx, indexKey, simulatedModelCacheMaxEntriesPerScope)
+	maybeCleanupExpiredSimulatedModelCacheDiskBodies(ttl)
 	return nil
 }
 
@@ -652,6 +817,13 @@ func evictSimulatedModelCacheOldestScopeEntries(ctx context.Context, indexKey st
 	if err != nil || len(keys) == 0 {
 		return err
 	}
+	responsesToDelete := make([]SimulatedModelCacheResponse, 0)
+	for _, key := range keys {
+		entry, found, err := getSimulatedModelCacheExactEntry(ctx, key)
+		if err == nil && found {
+			responsesToDelete = append(responsesToDelete, entry.Responses...)
+		}
+	}
 	members := make([]interface{}, 0, len(keys))
 	for _, key := range keys {
 		members = append(members, key)
@@ -661,7 +833,44 @@ func evictSimulatedModelCacheOldestScopeEntries(ctx context.Context, indexKey st
 		pipe.Del(ctx, keys...)
 		return nil
 	})
+	if err == nil {
+		deleteSimulatedModelCacheResponseDiskBodies(responsesToDelete)
+	}
 	return err
+}
+
+func maybeCleanupExpiredSimulatedModelCacheDiskBodies(ttl time.Duration) {
+	now := time.Now()
+	simulatedModelCacheDiskCleanupMu.Lock()
+	if now.Sub(simulatedModelCacheLastDiskCleanup) < 10*time.Minute {
+		simulatedModelCacheDiskCleanupMu.Unlock()
+		return
+	}
+	simulatedModelCacheLastDiskCleanup = now
+	simulatedModelCacheDiskCleanupMu.Unlock()
+
+	if ttl <= 0 {
+		ttl = ttlFromSeconds(0)
+	}
+	maxAge := ttl + time.Hour
+	dir := simulatedModelCacheDiskBodyDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) <= maxAge {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err == nil {
+			common.DecrementDiskFiles(info.Size())
+		}
+	}
 }
 
 func getSimulatedModelCacheExactEntry(ctx context.Context, key string) (simulatedModelCacheExactEntry, bool, error) {

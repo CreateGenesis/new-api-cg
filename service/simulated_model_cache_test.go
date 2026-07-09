@@ -235,6 +235,28 @@ func TestGetSimulatedModelCacheReplaySkipsWhenRedisDisabled(t *testing.T) {
 	assert.False(t, replay.Found)
 }
 
+func TestSimulatedModelCacheResponseBodyStoredCompressedOnDisk(t *testing.T) {
+	body := []byte(strings.Repeat("cached response body ", 20))
+	restore := useSimulatedModelCacheTestDiskPath(t)
+	defer restore()
+
+	response := SimulatedModelCacheResponse{Body: append([]byte(nil), body...)}
+
+	require.NoError(t, storeSimulatedModelCacheResponseDiskBody(&response))
+	assert.Empty(t, response.Body)
+	require.NotNil(t, response.BodyStorage)
+	assert.Equal(t, "gzip", response.BodyStorage.Compression)
+
+	raw, err := common.Marshal(response)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), string(body))
+
+	loaded := response
+	require.NoError(t, loadSimulatedModelCacheResponseBody(&loaded))
+	assert.Equal(t, body, loaded.Body)
+	deleteSimulatedModelCacheResponseDiskBody(response)
+}
+
 func TestSimulatedModelCacheStoreEvictsOldestAfterOneHundredEntriesPerUserChannelModel(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const userID = 4242
@@ -407,6 +429,20 @@ func withSimulatedModelCacheTestRedis(t *testing.T) context.Context {
 		common.RDB = oldRDB
 	})
 	return ctx
+}
+
+func useSimulatedModelCacheTestDiskPath(t *testing.T) func() {
+	t.Helper()
+	oldConfig := common.GetDiskCacheConfig()
+	common.SetDiskCacheConfig(common.DiskCacheConfig{
+		Enabled:     oldConfig.Enabled,
+		ThresholdMB: oldConfig.ThresholdMB,
+		MaxSizeMB:   oldConfig.MaxSizeMB,
+		Path:        t.TempDir(),
+	})
+	return func() {
+		common.SetDiskCacheConfig(oldConfig)
+	}
 }
 
 func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIUsage(t *testing.T) {

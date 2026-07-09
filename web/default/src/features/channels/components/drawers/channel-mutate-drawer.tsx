@@ -298,6 +298,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'simulated_model_cache_exact_replay_enabled',
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_reuse_limit',
@@ -353,6 +354,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
     values.claude_beta_query ||
+    values.simulated_model_cache_exact_replay_enabled ||
     values.simulated_model_cache_enabled ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
@@ -716,6 +718,22 @@ export function ChannelMutateDrawer({
   // Watch form values for conditional rendering
   const multiKeyMode = form.watch('multi_key_mode')
   const multiKeyType = form.watch('multi_key_type')
+  let multiKeyTypeDescription: ReactNode = t(
+    'Randomly select a key from the pool for each request'
+  )
+  if (multiKeyType === 'affinity') {
+    multiKeyTypeDescription = t(
+      'Use the current user token to keep requests on the same upstream key until the affinity cache expires'
+    )
+  } else if (multiKeyType === 'polling') {
+    multiKeyTypeDescription = (
+      <span className='text-warning'>
+        {t(
+          'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
+        )}
+      </span>
+    )
+  }
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
   const currentType = form.watch('type')
@@ -758,6 +776,9 @@ export function ChannelMutateDrawer({
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
+  const currentSimulatedModelCacheExactReplayEnabled = form.watch(
+    'simulated_model_cache_exact_replay_enabled'
+  )
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
@@ -1051,6 +1072,7 @@ export function ChannelMutateDrawer({
     currentUpstreamModelUpdateIgnoredModels?.trim()
   )
   const simulatedModelCacheConfigured = Boolean(
+    currentSimulatedModelCacheExactReplayEnabled ||
     currentSimulatedModelCacheEnabled
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
@@ -1109,7 +1131,7 @@ export function ChannelMutateDrawer({
   }
   advancedNavChildren.push({
     id: ADVANCED_SETTINGS_SECTION_IDS.simulatedModelCache,
-    title: t('Simulated Model Cache'),
+    title: t('Cache Replay and Simulation'),
     configured: simulatedModelCacheConfigured,
   })
   if (MODEL_FETCHABLE_TYPES.has(currentType)) {
@@ -3241,21 +3263,7 @@ export function ChannelMutateDrawer({
                                           </SelectContent>
                                         </Select>
                                         <FormDescription>
-                                          {multiKeyType === 'affinity' ? (
-                                            t(
-                                              'Use the current user token to keep requests on the same upstream key until the affinity cache expires'
-                                            )
-                                          ) : multiKeyType === 'polling' ? (
-                                            <span className='text-warning'>
-                                              {t(
-                                                'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
-                                              )}
-                                            </span>
-                                          ) : (
-                                            t(
-                                              'Randomly select a key from the pool for each request'
-                                            )
-                                          )}
+                                          {multiKeyTypeDescription}
                                         </FormDescription>
                                         <FormMessage />
                                       </FormItem>
@@ -4539,7 +4547,7 @@ export function ChannelMutateDrawer({
                           )}
                         >
                           <CardHeading
-                            title={t('Simulated Model Cache')}
+                            title={t('Cache Replay and Simulation')}
                             icon={<Sparkles className='h-4 w-4' />}
                           />
                           <fieldset
@@ -4547,6 +4555,30 @@ export function ChannelMutateDrawer({
                             className='space-y-4 disabled:opacity-60'
                           >
                             <div className='divide-border space-y-0 divide-y border-y'>
+                              <FormField
+                                control={form.control}
+                                name='simulated_model_cache_exact_replay_enabled'
+                                render={({ field }) => (
+                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                    <div className='space-y-0.5'>
+                                      <FormLabel className='text-sm'>
+                                        {t('Enable exact cache replay')}
+                                      </FormLabel>
+                                      <FormDescription>
+                                        {t(
+                                          'Replay fully matching text requests from stored responses without calling upstream'
+                                        )}
+                                      </FormDescription>
+                                    </div>
+                                    <FormControl>
+                                      <Switch
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                      />
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
                               <FormField
                                 control={form.control}
                                 name='simulated_model_cache_enabled'
@@ -4558,7 +4590,7 @@ export function ChannelMutateDrawer({
                                       </FormLabel>
                                       <FormDescription>
                                         {t(
-                                          'Replay exact matching text requests from Redis and rewrite partial prompt matches as cached input'
+                                          'Rewrite partial prompt matches as cached input after the upstream response succeeds'
                                         )}
                                       </FormDescription>
                                     </div>
@@ -4586,7 +4618,7 @@ export function ChannelMutateDrawer({
                                         min={1}
                                         step={1}
                                         disabled={
-                                          !currentSimulatedModelCacheEnabled
+                                          !currentSimulatedModelCacheExactReplayEnabled
                                         }
                                         {...field}
                                         onChange={(e) =>
@@ -4616,6 +4648,7 @@ export function ChannelMutateDrawer({
                                         min={1}
                                         step={1}
                                         disabled={
+                                          !currentSimulatedModelCacheExactReplayEnabled &&
                                           !currentSimulatedModelCacheEnabled
                                         }
                                         {...field}
@@ -4626,7 +4659,7 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(
-                                        'How long cached responses stay in Redis'
+                                        'How long cached response metadata and disk bodies are kept'
                                       )}
                                     </FormDescription>
                                     <FormMessage />

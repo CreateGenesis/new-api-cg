@@ -29,11 +29,15 @@ type simulatedModelCacheAttempt struct {
 
 type simulatedModelCacheRecorder struct {
 	gin.ResponseWriter
-	body        bytes.Buffer
-	status      int
-	size        int
-	written     bool
-	passThrough bool
+	body                bytes.Buffer
+	streamPending       bytes.Buffer
+	streamDelaysMS      []int64
+	lastStreamEventAt   time.Time
+	lastStreamPendingAt time.Time
+	status              int
+	size                int
+	written             bool
+	passThrough         bool
 }
 
 func (w *simulatedModelCacheRecorder) WriteHeader(code int) {
@@ -60,6 +64,9 @@ func (w *simulatedModelCacheRecorder) Write(data []byte) (int, error) {
 	}
 	n, err := w.body.Write(data)
 	w.size += n
+	if w.passThrough && n > 0 {
+		w.recordStreamWrite(data[:n])
+	}
 	if err != nil || !w.passThrough {
 		return n, err
 	}
@@ -95,6 +102,55 @@ func (w *simulatedModelCacheRecorder) Flush() {
 	}
 }
 
+func (w *simulatedModelCacheRecorder) recordStreamWrite(data []byte) {
+	now := time.Now()
+	if w.lastStreamEventAt.IsZero() {
+		w.lastStreamEventAt = now
+	}
+	_, _ = w.streamPending.Write(data)
+	eventInThisWrite := false
+	for {
+		boundaryIndex, boundaryLength := simulatedModelCacheSSEBoundary(w.streamPending.Bytes())
+		if boundaryIndex < 0 {
+			break
+		}
+		delayMS := int64(0)
+		if !eventInThisWrite {
+			delayMS = now.Sub(w.lastStreamEventAt).Milliseconds()
+			if delayMS < 0 {
+				delayMS = 0
+			}
+		}
+		w.streamDelaysMS = append(w.streamDelaysMS, delayMS)
+		remaining := append([]byte(nil), w.streamPending.Bytes()[boundaryIndex+boundaryLength:]...)
+		w.streamPending.Reset()
+		_, _ = w.streamPending.Write(remaining)
+		w.lastStreamEventAt = now
+		eventInThisWrite = true
+	}
+	if w.streamPending.Len() > 0 {
+		w.lastStreamPendingAt = now
+	} else {
+		w.lastStreamPendingAt = time.Time{}
+	}
+}
+
+func (w *simulatedModelCacheRecorder) finishStreamDelays() {
+	if !w.passThrough || w.streamPending.Len() == 0 || w.lastStreamPendingAt.IsZero() {
+		return
+	}
+	if w.lastStreamEventAt.IsZero() {
+		w.lastStreamEventAt = w.lastStreamPendingAt
+	}
+	delayMS := w.lastStreamPendingAt.Sub(w.lastStreamEventAt).Milliseconds()
+	if delayMS < 0 {
+		delayMS = 0
+	}
+	w.streamDelaysMS = append(w.streamDelaysMS, delayMS)
+	w.streamPending.Reset()
+	w.lastStreamPendingAt = time.Time{}
+}
+
 func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) (*simulatedModelCacheAttempt, bool) {
 	settings, ok := simulatedModelCacheSettings(info)
 	if !ok || len(requestBody) == 0 {
@@ -115,6 +171,9 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		finalRequestFormat: format,
 		upstreamModelName:  info.UpstreamModelName,
 		startedAt:          time.Now(),
+	}
+	if !settings.IsExactReplayEnabled() {
+		return attempt, false
 	}
 
 	replay, err := service.GetSimulatedModelCacheReplay(c.Request.Context(), service.SimulatedModelCacheLookupRequest{
@@ -139,10 +198,11 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		MatchRatio:  1,
 		ReplayCount: replay.ReplayCount,
 	})
-	sleepSimulatedModelCacheLatency(c, replay.Response.DurationSeconds)
-	info.SetFirstResponseTime()
 	body := service.PatchSimulatedModelCacheResponseBody(format, replay.Response.ContentType, replay.Response.Body, &usage)
-	writeSimulatedModelCacheResponse(c, replay.Response, body)
+	if !isSimulatedModelCacheStreamResponse(replay.Response) {
+		sleepSimulatedModelCacheLatency(c, replay.Response.DurationSeconds, replay.LoadDurationSeconds)
+	}
+	writeSimulatedModelCacheResponseWithFirstWrite(c, replay.Response, body, info.SetFirstResponseTime)
 	service.PostTextConsumeQuota(c, info, &usage, nil)
 	return attempt, true
 }
@@ -155,6 +215,12 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 		ResponseWriter: c.Writer,
 		passThrough:    info != nil && info.IsStream,
 	}
+	if recorder.passThrough {
+		recorder.lastStreamEventAt = attempt.startedAt
+		if recorder.lastStreamEventAt.IsZero() {
+			recorder.lastStreamEventAt = time.Now()
+		}
+	}
 	c.Writer = recorder
 	return recorder
 }
@@ -166,6 +232,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	originalWriter := recorder.ResponseWriter
 	c.Writer = originalWriter
 
+	recorder.finishStreamDelays()
 	originalBody := append([]byte(nil), recorder.body.Bytes()...)
 	if usage == nil {
 		if !recorder.passThrough {
@@ -175,7 +242,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	}
 	body := originalBody
 	originalUsage := *usage
-	if strings.TrimSpace(attempt.promptText) != "" {
+	if attempt.settings.Enabled && strings.TrimSpace(attempt.promptText) != "" {
 		match, _ := service.FindSimulatedModelCachePartialMatch(c.Request.Context(), service.SimulatedModelCachePartialMatchRequest{
 			UserID:        info.UserId,
 			ChannelID:     info.ChannelId,
@@ -197,6 +264,14 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	if !recorder.passThrough {
 		flushSimulatedModelCacheRecorder(recorder, body)
 	}
+	streamDelaysMS := []int64(nil)
+	if attempt.settings.IsExactReplayEnabled() && isSimulatedModelCacheStreamContentType(recorder.Header().Get("Content-Type")) && len(recorder.streamDelaysMS) > 0 {
+		streamDelaysMS = append([]int64(nil), recorder.streamDelaysMS...)
+	}
+	bodyForReplay := []byte(nil)
+	if attempt.settings.IsExactReplayEnabled() {
+		bodyForReplay = originalBody
+	}
 	_ = service.StoreSimulatedModelCacheResponse(c.Request.Context(), service.SimulatedModelCacheStoreRequest{
 		UserID:             info.UserId,
 		ChannelID:          info.ChannelId,
@@ -208,9 +283,10 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			StatusCode:      recorder.Status(),
 			Headers:         simulatedModelCacheHeaderSubset(recorder.Header()),
 			ContentType:     recorder.Header().Get("Content-Type"),
-			Body:            originalBody,
+			Body:            bodyForReplay,
 			Usage:           originalUsage,
 			DurationSeconds: time.Since(attempt.startedAt).Seconds(),
+			StreamDelaysMS:  streamDelaysMS,
 		},
 		TTLSeconds: attempt.settings.TTLSeconds,
 	})
@@ -227,7 +303,7 @@ func simulatedModelCacheSettings(info *relaycommon.RelayInfo) (dto.SimulatedMode
 		return dto.SimulatedModelCacheSettings{}, false
 	}
 	settings := info.ChannelOtherSettings.SimulatedModelCache.Normalize()
-	if !settings.Enabled {
+	if !settings.IsActive() {
 		return dto.SimulatedModelCacheSettings{}, false
 	}
 	return settings, true
@@ -242,11 +318,12 @@ func isSimulatedModelCacheTextFormat(format types.RelayFormat) bool {
 	}
 }
 
-func sleepSimulatedModelCacheLatency(c *gin.Context, originalDurationSeconds float64) {
+func sleepSimulatedModelCacheLatency(c *gin.Context, originalDurationSeconds float64, alreadyElapsedSeconds float64) {
 	if originalDurationSeconds <= 0 {
 		return
 	}
 	sleepSeconds := math.Max(0, originalDurationSeconds*0.6+(rand.Float64()*6-3))
+	sleepSeconds -= alreadyElapsedSeconds
 	if sleepSeconds <= 0 {
 		return
 	}
@@ -259,6 +336,10 @@ func sleepSimulatedModelCacheLatency(c *gin.Context, originalDurationSeconds flo
 }
 
 func writeSimulatedModelCacheResponse(c *gin.Context, response service.SimulatedModelCacheResponse, body []byte) {
+	writeSimulatedModelCacheResponseWithFirstWrite(c, response, body, nil)
+}
+
+func writeSimulatedModelCacheResponseWithFirstWrite(c *gin.Context, response service.SimulatedModelCacheResponse, body []byte, beforeFirstWrite func()) {
 	for key, value := range response.Headers {
 		if value != "" {
 			c.Writer.Header().Set(key, value)
@@ -267,10 +348,128 @@ func writeSimulatedModelCacheResponse(c *gin.Context, response service.Simulated
 	if response.ContentType != "" {
 		c.Writer.Header().Set("Content-Type", response.ContentType)
 	}
-	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	statusCode := normalizeSimulatedModelCacheStatusCode(response.StatusCode)
+	invokeBeforeFirstWrite := func() {
+		if beforeFirstWrite != nil {
+			beforeFirstWrite()
+			beforeFirstWrite = nil
+		}
+	}
+	if isSimulatedModelCacheStreamResponse(response) {
+		c.Writer.Header().Del("Content-Length")
+		chunks := splitSimulatedModelCacheSSEChunks(body)
+		if len(chunks) == 0 {
+			invokeBeforeFirstWrite()
+			c.Writer.WriteHeader(statusCode)
+			return
+		}
+		for i, chunk := range chunks {
+			if !sleepSimulatedModelCacheStreamDelay(c, response, i, len(chunks)) {
+				return
+			}
+			invokeBeforeFirstWrite()
+			if i == 0 {
+				c.Writer.WriteHeader(statusCode)
+			}
+			if _, err := c.Writer.Write(chunk); err != nil {
+				return
+			}
+			c.Writer.Flush()
+		}
+		return
+	}
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	invokeBeforeFirstWrite()
 	c.Writer.WriteHeader(statusCode)
 	_, _ = c.Writer.Write(body)
+}
+
+func isSimulatedModelCacheStreamResponse(response service.SimulatedModelCacheResponse) bool {
+	return isSimulatedModelCacheStreamContentType(response.ContentType)
+}
+
+func isSimulatedModelCacheStreamContentType(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+func splitSimulatedModelCacheSSEChunks(body []byte) [][]byte {
+	if len(body) == 0 {
+		return nil
+	}
+	chunks := make([][]byte, 0)
+	start := 0
+	for start < len(body) {
+		boundaryIndex, boundaryLength := simulatedModelCacheSSEBoundary(body[start:])
+		if boundaryIndex < 0 {
+			break
+		}
+		end := start + boundaryIndex + boundaryLength
+		chunks = append(chunks, body[start:end])
+		start = end
+	}
+	if start < len(body) {
+		chunks = append(chunks, body[start:])
+	}
+	return chunks
+}
+
+func simulatedModelCacheSSEBoundary(data []byte) (int, int) {
+	lfIndex := bytes.Index(data, []byte("\n\n"))
+	crlfIndex := bytes.Index(data, []byte("\r\n\r\n"))
+	if lfIndex < 0 {
+		if crlfIndex < 0 {
+			return -1, 0
+		}
+		return crlfIndex, len("\r\n\r\n")
+	}
+	if crlfIndex >= 0 && crlfIndex < lfIndex {
+		return crlfIndex, len("\r\n\r\n")
+	}
+	return lfIndex, len("\n\n")
+}
+
+func sleepSimulatedModelCacheStreamDelay(c *gin.Context, response service.SimulatedModelCacheResponse, index int, chunkCount int) bool {
+	delay := simulatedModelCacheStreamDelay(response, index, chunkCount)
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-c.Request.Context().Done():
+		return false
+	}
+}
+
+func simulatedModelCacheStreamDelay(response service.SimulatedModelCacheResponse, index int, chunkCount int) time.Duration {
+	delaysMS := response.StreamDelaysMS
+	alreadyElapsed := time.Duration(0)
+	if index == 0 && response.ReplayPreparationSeconds > 0 {
+		alreadyElapsed = time.Duration(response.ReplayPreparationSeconds * float64(time.Second))
+	}
+	if len(delaysMS) > 0 {
+		if index >= len(delaysMS) {
+			index = len(delaysMS) - 1
+		}
+		delayMS := delaysMS[index]
+		if delayMS > 0 {
+			delay := time.Duration(delayMS)*time.Millisecond - alreadyElapsed
+			if delay > 0 {
+				return delay
+			}
+		}
+		return 0
+	}
+	if response.DurationSeconds <= 0 || chunkCount <= 0 {
+		return 0
+	}
+	delay := time.Duration(response.DurationSeconds*float64(time.Second)/float64(chunkCount)) - alreadyElapsed
+	if delay > 0 {
+		return delay
+	}
+	return 0
 }
 
 func flushSimulatedModelCacheRecorder(recorder *simulatedModelCacheRecorder, body []byte) {

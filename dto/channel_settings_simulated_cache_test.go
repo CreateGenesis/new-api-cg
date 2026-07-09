@@ -18,9 +18,45 @@ func TestChannelOtherSettingsSimulatedModelCacheDefaults(t *testing.T) {
 	normalized := settings.SimulatedModelCache.Normalize()
 
 	assert.True(t, normalized.Enabled)
+	assert.True(t, normalized.IsExactReplayEnabled())
 	assert.Equal(t, 86400, normalized.TTLSeconds)
 	assert.Equal(t, 3, normalized.ReuseLimit)
 	assert.Equal(t, 0.01, normalized.MinMatchRatio)
+}
+
+func TestChannelOtherSettingsSimulatedModelCacheCanEnableExactReplayOnly(t *testing.T) {
+	var settings ChannelOtherSettings
+	err := common.UnmarshalJsonStr(`{
+		"simulated_model_cache":{
+			"enabled":false,
+			"exact_replay_enabled":true
+		}
+	}`, &settings)
+	require.NoError(t, err)
+	require.NotNil(t, settings.SimulatedModelCache)
+
+	normalized := settings.SimulatedModelCache.Normalize()
+
+	assert.False(t, normalized.Enabled)
+	assert.True(t, normalized.IsExactReplayEnabled())
+	assert.True(t, normalized.IsActive())
+}
+
+func TestChannelOtherSettingsSimulatedModelCacheCanDisableExactReplay(t *testing.T) {
+	explicitFalse := false
+	settings := SimulatedModelCacheSettings{
+		Enabled:            true,
+		ExactReplayEnabled: &explicitFalse,
+		TTLSeconds:         60,
+		ReuseLimit:         5,
+		MinMatchRatio:      0.42,
+	}
+
+	normalized := settings.Normalize()
+
+	assert.True(t, normalized.Enabled)
+	assert.False(t, normalized.IsExactReplayEnabled())
+	assert.True(t, normalized.IsActive())
 }
 
 func TestChannelOtherSettingsSimulatedModelCacheKeepsExplicitValues(t *testing.T) {
