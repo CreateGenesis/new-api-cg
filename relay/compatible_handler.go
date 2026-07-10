@@ -109,11 +109,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			}
 		}
 		if requestBytes, bErr := storage.Bytes(); bErr == nil {
-			var cacheHit bool
-			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
-			if cacheHit {
-				return nil
-			}
+			cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, requestBytes)
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
@@ -186,11 +182,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
-		var cacheHit bool
-		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
-		if cacheHit {
-			return nil
-		}
+		cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, jsonData)
 
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {

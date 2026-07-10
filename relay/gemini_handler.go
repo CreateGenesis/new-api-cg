@@ -143,11 +143,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 		if requestBytes, bErr := storage.Bytes(); bErr == nil {
-			var cacheHit bool
-			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
-			if cacheHit {
-				return nil
-			}
+			cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, requestBytes)
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
@@ -171,11 +167,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 
 		logger.LogDebug(c, "Gemini request body: %s", jsonData)
-		var cacheHit bool
-		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
-		if cacheHit {
-			return nil
-		}
+		cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, jsonData)
 
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {

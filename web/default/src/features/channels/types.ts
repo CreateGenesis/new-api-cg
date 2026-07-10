@@ -109,9 +109,7 @@ export interface ChannelOtherSettings {
   disable_task_polling_sleep?: boolean
   simulated_model_cache?: {
     enabled?: boolean
-    exact_replay_enabled?: boolean
     ttl_seconds?: number
-    reuse_limit?: number
     min_match_ratio?: number
   }
   status_code_retry?: {

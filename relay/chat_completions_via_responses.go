@@ -124,10 +124,7 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
 	}
 
-	cacheAttempt, cacheHit := tryServeSimulatedModelCacheReplay(c, info, jsonData)
-	if cacheHit {
-		return nil, nil, true
-	}
+	cacheAttempt := prepareSimulatedModelCacheAttempt(c, info, jsonData)
 
 	body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {

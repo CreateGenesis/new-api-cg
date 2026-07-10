@@ -3,15 +3,16 @@ package service
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/types"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,28 +82,116 @@ func TestExtractSimulatedModelCachePromptText(t *testing.T) {
 }
 
 func TestSimulatedModelCacheMatchRatioUsesCurrentPromptLength(t *testing.T) {
-	assert.Equal(t, 0.6, SimulatedModelCacheMatchRatio("abc123xyz", "00123"))
 	assert.Equal(t, 1.0, SimulatedModelCacheMatchRatio("same", "same"))
+	assert.Equal(t, 0.0, SimulatedModelCacheMatchRatio("anything", "different"))
 	assert.Equal(t, 0.0, SimulatedModelCacheMatchRatio("anything", ""))
 }
 
-func TestSimulatedModelCachePartialMatchRatioHandlesLargePrompts(t *testing.T) {
-	ratio, ok := simulatedModelCachePartialMatchRatio("abc123xyz", "00123")
-	require.True(t, ok)
-	assert.Equal(t, 0.6, ratio)
+func TestSimulatedModelCacheFingerprintMatcherUsesCurrentPromptRunes(t *testing.T) {
+	current := simulatedModelCachePromptFingerprint{
+		Version:    SimulatedModelCacheFingerprintVersion,
+		TotalRunes: 256,
+		Chunks: []simulatedModelCacheFingerprintChunk{
+			{HashHigh: 1, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 3, RuneLength: 64},
+			{HashHigh: 4, RuneLength: 64},
+		},
+	}
+	candidate := simulatedModelCachePromptFingerprint{
+		Version:    SimulatedModelCacheFingerprintVersion,
+		TotalRunes: 192,
+		Chunks: []simulatedModelCacheFingerprintChunk{
+			{HashHigh: 9, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 3, RuneLength: 64},
+		},
+	}
 
-	commonPrefix := strings.Repeat("中", 50000)
-	cachedPrompt := "old-" + commonPrefix + "-cached"
-	currentPrompt := commonPrefix + "-current"
+	ratio := newSimulatedModelCacheFingerprintMatcher(current).match(context.Background(), candidate)
 
-	ratio, ok = simulatedModelCachePartialMatchRatio(cachedPrompt, currentPrompt)
-	require.True(t, ok)
-	assert.Greater(t, ratio, 0.99)
+	assert.Equal(t, 0.5, ratio)
+}
 
-	oversizedPrompt := strings.Repeat("a", simulatedModelCacheMaxPartialMatchRunes+1)
-	ratio, ok = simulatedModelCachePartialMatchRatio(oversizedPrompt, "abc")
-	assert.False(t, ok)
-	assert.Equal(t, 0.0, ratio)
+func TestBuildSimulatedModelCachePromptFingerprintHandlesUnicodeAndBoundaries(t *testing.T) {
+	prompt := strings.Repeat("你好🌍", 400)
+	fingerprint, err := buildSimulatedModelCachePromptFingerprint(context.Background(), prompt)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1200, fingerprint.TotalRunes)
+	require.NotEmpty(t, fingerprint.Chunks)
+	for index, chunk := range fingerprint.Chunks {
+		if index < len(fingerprint.Chunks)-1 {
+			assert.GreaterOrEqual(t, int(chunk.RuneLength), simulatedModelCacheFingerprintMinRunes)
+		}
+		assert.LessOrEqual(t, int(chunk.RuneLength), simulatedModelCacheFingerprintMaxRunes)
+	}
+	assert.Equal(t, 1.0, SimulatedModelCacheMatchRatio(prompt, prompt))
+}
+
+func TestSimulatedModelCacheFingerprintKeepsMatchesAroundLocalizedChanges(t *testing.T) {
+	base := strings.Repeat("abcdefghij", 600)
+	changed := base[:2500] + strings.Repeat("Z", 80) + base[2580:]
+
+	ratio := SimulatedModelCacheMatchRatio(base, changed)
+
+	assert.Greater(t, ratio, 0.5)
+	assert.Less(t, ratio, 1.0)
+}
+
+func TestSimulatedModelCacheFingerprintResynchronizesAfterUnicodeInsertions(t *testing.T) {
+	current := strings.Repeat("你好世界🌍", 400)
+	cached := strings.Repeat("前", 100) + current + strings.Repeat("后", 100)
+
+	ratio := SimulatedModelCacheMatchRatio(cached, current)
+
+	assert.Greater(t, ratio, 0.7)
+}
+
+func TestSimulatedModelCacheFingerprintFindsLongestRepeatedBlockSequence(t *testing.T) {
+	current := simulatedModelCachePromptFingerprint{
+		Version:    SimulatedModelCacheFingerprintVersion,
+		TotalRunes: 384,
+		Chunks: []simulatedModelCacheFingerprintChunk{
+			{HashHigh: 1, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 1, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 3, RuneLength: 64},
+			{HashHigh: 4, RuneLength: 64},
+		},
+	}
+	candidate := simulatedModelCachePromptFingerprint{
+		Version:    SimulatedModelCacheFingerprintVersion,
+		TotalRunes: 384,
+		Chunks: []simulatedModelCacheFingerprintChunk{
+			{HashHigh: 9, RuneLength: 64},
+			{HashHigh: 1, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 1, RuneLength: 64},
+			{HashHigh: 2, RuneLength: 64},
+			{HashHigh: 8, RuneLength: 64},
+		},
+	}
+
+	ratio := newSimulatedModelCacheFingerprintMatcher(current).match(context.Background(), candidate)
+
+	assert.InDelta(t, 2.0/3.0, ratio, 0.000001)
+}
+
+func TestBuildSimulatedModelCachePromptFingerprintRejectsOversizedPrompt(t *testing.T) {
+	_, err := buildSimulatedModelCachePromptFingerprint(context.Background(), strings.Repeat("a", simulatedModelCacheMaxFingerprintRunes+1))
+
+	assert.ErrorIs(t, err, errSimulatedModelCachePromptTooLarge)
+}
+
+func TestBuildSimulatedModelCachePromptFingerprintStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := buildSimulatedModelCachePromptFingerprint(ctx, strings.Repeat("a", 1024))
+
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func TestApplySimulatedModelCacheUsageRewritePreservesPromptTotal(t *testing.T) {
@@ -115,9 +204,8 @@ func TestApplySimulatedModelCacheUsageRewritePreservesPromptTotal(t *testing.T) 
 	}
 
 	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:        "partial_rewrite",
-		MatchRatio:  0.25,
-		ReplayCount: 0,
+		Mode:       "partial_fingerprint",
+		MatchRatio: 0.25,
 	})
 
 	require.NotNil(t, marker)
@@ -129,26 +217,6 @@ func TestApplySimulatedModelCacheUsageRewritePreservesPromptTotal(t *testing.T) 
 	assert.Equal(t, 25, marker.SimulatedCachedTokens)
 }
 
-func TestApplySimulatedModelCacheUsageRewriteMarksExactReplayAsFullyCached(t *testing.T) {
-	usage := &dto.Usage{
-		PromptTokens:     40,
-		CompletionTokens: 9,
-		TotalTokens:      49,
-	}
-
-	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:        "exact_replay",
-		MatchRatio:  1,
-		ReplayCount: 2,
-	})
-
-	require.NotNil(t, marker)
-	assert.Equal(t, 40, usage.PromptTokensDetails.CachedTokens)
-	assert.Equal(t, 0, marker.SimulatedPromptTokens)
-	assert.Equal(t, 40, marker.SimulatedCachedTokens)
-	assert.Equal(t, 2, marker.ReplayCount)
-}
-
 func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     100,
@@ -158,7 +226,7 @@ func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *test
 	}
 
 	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:       "partial_rewrite",
+		Mode:       "partial_fingerprint",
 		MatchRatio: 0.25,
 	})
 
@@ -171,247 +239,192 @@ func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *test
 	assert.Equal(t, 25, marker.SimulatedCachedTokens)
 }
 
-func TestAppendSimulatedModelCacheResponseKeepsMostRecentTwo(t *testing.T) {
-	entry := simulatedModelCacheExactEntry{}
-
-	entry.appendResponse(simulatedModelCacheResponse{Body: []byte("first")})
-	entry.appendResponse(simulatedModelCacheResponse{Body: []byte("second")})
-	entry.appendResponse(simulatedModelCacheResponse{Body: []byte("third")})
-
-	require.Len(t, entry.Responses, 2)
-	assert.Equal(t, []byte("second"), entry.Responses[0].Body)
-	assert.Equal(t, []byte("third"), entry.Responses[1].Body)
-}
-
-func TestPickSimulatedModelCacheResponseUsesProvidedRand(t *testing.T) {
-	entry := simulatedModelCacheExactEntry{
-		Responses: []simulatedModelCacheResponse{
-			{Body: []byte("a")},
-			{Body: []byte("b")},
-		},
-	}
-	rng := rand.New(rand.NewSource(1))
-
-	first, ok := entry.pickResponse(rng)
-	require.True(t, ok)
-	second, ok := entry.pickResponse(rng)
-	require.True(t, ok)
-
-	assert.Equal(t, []byte("b"), first.Body)
-	assert.Equal(t, []byte("b"), second.Body)
-}
-
-func TestSimulatedModelCacheStoreResetsReplayCount(t *testing.T) {
-	entry := simulatedModelCacheExactEntry{
-		ReplayCount: 3,
-	}
-
-	entry.storeFreshResponse(simulatedModelCacheResponse{Body: []byte("fresh")})
-
-	assert.Equal(t, 0, entry.ReplayCount)
-	require.Len(t, entry.Responses, 1)
-	assert.Equal(t, []byte("fresh"), entry.Responses[0].Body)
-}
-
-func TestGetSimulatedModelCacheReplaySkipsWhenRedisDisabled(t *testing.T) {
-	oldRedisEnabled := common.RedisEnabled
-	oldRDB := common.RDB
-	common.RedisEnabled = false
-	common.RDB = nil
-	t.Cleanup(func() {
-		common.RedisEnabled = oldRedisEnabled
-		common.RDB = oldRDB
-	})
-
-	replay, err := GetSimulatedModelCacheReplay(context.Background(), SimulatedModelCacheLookupRequest{
-		ChannelID:          1,
-		UpstreamModel:      "gpt-test",
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        []byte(`{"model":"gpt-test","messages":[]}`),
-		ReuseLimit:         3,
-	})
-
-	require.NoError(t, err)
-	assert.False(t, replay.Found)
-}
-
-func TestSimulatedModelCacheResponseBodyStoredCompressedOnDisk(t *testing.T) {
-	body := []byte(strings.Repeat("cached response body ", 20))
-	restore := useSimulatedModelCacheTestDiskPath(t)
-	defer restore()
-
-	response := SimulatedModelCacheResponse{Body: append([]byte(nil), body...)}
-
-	require.NoError(t, storeSimulatedModelCacheResponseDiskBody(&response))
-	assert.Empty(t, response.Body)
-	require.NotNil(t, response.BodyStorage)
-	assert.Equal(t, "gzip", response.BodyStorage.Compression)
-
-	raw, err := common.Marshal(response)
-	require.NoError(t, err)
-	assert.NotContains(t, string(raw), string(body))
-
-	loaded := response
-	require.NoError(t, loadSimulatedModelCacheResponseBody(&loaded))
-	assert.Equal(t, body, loaded.Body)
-	deleteSimulatedModelCacheResponseDiskBody(response)
-}
-
-func TestSimulatedModelCacheStoreEvictsOldestAfterOneHundredEntriesPerUserChannelModel(t *testing.T) {
+func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndModel(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const userID = 4242
-	const channelID = 998877
-	const otherChannelID = 998878
-	const upstreamModel = "gpt-test"
+	const otherUserID = 4243
+	const model = "gpt-test"
 	const otherModel = "other-test"
 
-	var bodies [][]byte
-	for i := 0; i < 100; i++ {
-		body := []byte(fmt.Sprintf(`{"model":"gpt-test","messages":[{"role":"user","content":"prompt %02d"}]}`, i))
-		bodies = append(bodies, body)
-		err := StoreSimulatedModelCacheResponse(ctx, SimulatedModelCacheStoreRequest{
-			UserID:             userID,
-			ChannelID:          channelID,
-			UpstreamModel:      upstreamModel,
-			FinalRequestFormat: types.RelayFormatOpenAI,
-			RequestBody:        body,
-			PromptText:         fmt.Sprintf("prompt %02d", i),
-			Response: SimulatedModelCacheResponse{
-				StatusCode: 200,
-				Body:       []byte(fmt.Sprintf(`{"id":"response-%02d"}`, i)),
-				Usage: dto.Usage{
-					PromptTokens:     10,
-					CompletionTokens: 1,
-					TotalTokens:      11,
-				},
-			},
+	for i := 0; i < 101; i++ {
+		prompt := fmt.Sprintf("prompt %03d %s", i, strings.Repeat("content ", 20))
+		err := StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+			UserID:     userID,
+			Model:      model,
+			PromptText: prompt,
 			TTLSeconds: 86400,
 		})
 		require.NoError(t, err)
 	}
 
-	otherChannelBody := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"other channel"}]}`)
-	require.NoError(t, StoreSimulatedModelCacheResponse(ctx, SimulatedModelCacheStoreRequest{
-		UserID:             userID,
-		ChannelID:          otherChannelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        otherChannelBody,
-		PromptText:         "other channel",
-		Response:           SimulatedModelCacheResponse{StatusCode: 200, Body: []byte(`{"id":"other-channel"}`)},
-		TTLSeconds:         86400,
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     otherUserID,
+		Model:      model,
+		PromptText: strings.Repeat("other user ", 20),
+		TTLSeconds: 86400,
 	}))
-	otherModelBody := []byte(`{"model":"other-test","messages":[{"role":"user","content":"other model"}]}`)
-	require.NoError(t, StoreSimulatedModelCacheResponse(ctx, SimulatedModelCacheStoreRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      otherModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        otherModelBody,
-		PromptText:         "other model",
-		Response:           SimulatedModelCacheResponse{StatusCode: 200, Body: []byte(`{"id":"other-model"}`)},
-		TTLSeconds:         86400,
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     userID,
+		Model:      otherModel,
+		PromptText: strings.Repeat("other model ", 20),
+		TTLSeconds: 86400,
 	}))
 
-	firstBeforeOverflow, err := GetSimulatedModelCacheReplay(ctx, SimulatedModelCacheLookupRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        bodies[0],
-		ReuseLimit:         3,
-		TTLSeconds:         86400,
-	})
+	indexKey := simulatedModelCacheScopeIndexKey(userID, model)
+	promptIDs, err := common.RDB.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
-	require.True(t, firstBeforeOverflow.Found)
+	require.Len(t, promptIDs, simulatedModelCacheMaxEntriesPerScope)
+	assert.NotContains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 0, strings.Repeat("content ", 20)))))
+	assert.Contains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 100, strings.Repeat("content ", 20)))))
 
-	overflowBody := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"prompt 100"}]}`)
-	require.NoError(t, StoreSimulatedModelCacheResponse(ctx, SimulatedModelCacheStoreRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        overflowBody,
-		PromptText:         "prompt 100",
-		Response:           SimulatedModelCacheResponse{StatusCode: 200, Body: []byte(`{"id":"response-100"}`)},
-		TTLSeconds:         86400,
-	}))
-
-	firstAfterOverflow, err := GetSimulatedModelCacheReplay(ctx, SimulatedModelCacheLookupRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        bodies[0],
-		ReuseLimit:         3,
-		TTLSeconds:         86400,
-	})
+	otherUserCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(otherUserID, model)).Result()
 	require.NoError(t, err)
-	assert.False(t, firstAfterOverflow.Found)
-
-	overflowReplay, err := GetSimulatedModelCacheReplay(ctx, SimulatedModelCacheLookupRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        overflowBody,
-		ReuseLimit:         3,
-		TTLSeconds:         86400,
-	})
+	assert.Equal(t, int64(1), otherUserCount)
+	otherModelCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(userID, otherModel)).Result()
 	require.NoError(t, err)
-	require.True(t, overflowReplay.Found)
-	assert.Equal(t, []byte(`{"id":"response-100"}`), overflowReplay.Response.Body)
-
-	otherChannelReplay, err := GetSimulatedModelCacheReplay(ctx, SimulatedModelCacheLookupRequest{
-		UserID:             userID,
-		ChannelID:          otherChannelID,
-		UpstreamModel:      upstreamModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        otherChannelBody,
-		ReuseLimit:         3,
-		TTLSeconds:         86400,
-	})
-	require.NoError(t, err)
-	require.True(t, otherChannelReplay.Found)
-	assert.Equal(t, []byte(`{"id":"other-channel"}`), otherChannelReplay.Response.Body)
-
-	otherModelReplay, err := GetSimulatedModelCacheReplay(ctx, SimulatedModelCacheLookupRequest{
-		UserID:             userID,
-		ChannelID:          channelID,
-		UpstreamModel:      otherModel,
-		FinalRequestFormat: types.RelayFormatOpenAI,
-		RequestBody:        otherModelBody,
-		ReuseLimit:         3,
-		TTLSeconds:         86400,
-	})
-	require.NoError(t, err)
-	require.True(t, otherModelReplay.Found)
-	assert.Equal(t, []byte(`{"id":"other-model"}`), otherModelReplay.Response.Body)
+	assert.Equal(t, int64(1), otherModelCount)
 }
 
-func TestSimulatedModelCacheExactKeyNormalizesJSONRequestBody(t *testing.T) {
-	base := SimulatedModelCacheLookupRequest{
-		ChannelID:          1,
-		UpstreamModel:      "gpt-test",
-		FinalRequestFormat: types.RelayFormatOpenAI,
-	}
-	first := base
-	first.RequestBody = []byte(`{"b":2,"a":1}`)
-	second := base
-	second.RequestBody = []byte("{\n  \"a\": 1,\n  \"b\": 2\n}")
+func TestSimulatedModelCacheV2StoresOneFingerprintPerPromptAndKeepsV1Untouched(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	const prompt = "shared prompt "
+	promptText := strings.Repeat(prompt, 20)
+	v1Key := "simulated_model_cache:v1:legacy"
+	require.NoError(t, common.RDB.Set(ctx, v1Key, "legacy", 0).Err())
 
-	assert.Equal(t, simulatedModelCacheExactKey(first), simulatedModelCacheExactKey(second))
+	for i := 0; i < 2; i++ {
+		require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+			UserID:     1,
+			Model:      "gpt-test",
+			PromptText: promptText,
+			TTLSeconds: 60,
+		}))
+	}
+
+	indexKey := simulatedModelCacheScopeIndexKey(1, "gpt-test")
+	indexCount, err := common.RDB.ZCard(ctx, indexKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), indexCount)
+	fingerprintKey := simulatedModelCacheFingerprintKey(sha256Hex([]byte(promptText)))
+	raw, err := common.RDB.Get(ctx, fingerprintKey).Result()
+	require.NoError(t, err)
+	assert.NotContains(t, raw, promptText)
+	legacy, err := common.RDB.Get(ctx, v1Key).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "legacy", legacy)
+}
+
+func TestSimulatedModelCachePartialFingerprintMatchIsScopedByUserAndModel(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	prompt := strings.Repeat("scope content ", 100)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "gpt-test",
+		PromptText: prompt,
+		TTLSeconds: 60,
+	}))
+
+	matched, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:        10,
+		Model:         "gpt-test",
+		PromptText:    prompt,
+		MinMatchRatio: 1,
+	})
+	require.NoError(t, err)
+	assert.True(t, matched.Found)
+	assert.Equal(t, 1.0, matched.MatchRatio)
+	assert.Equal(t, 1, matched.CandidateCount)
+
+	for _, req := range []SimulatedModelCachePartialMatchRequest{
+		{UserID: 11, Model: "gpt-test", PromptText: prompt},
+		{UserID: 10, Model: "other-model", PromptText: prompt},
+	} {
+		result, findErr := FindSimulatedModelCachePartialMatch(ctx, req)
+		require.NoError(t, findErr)
+		assert.False(t, result.Found)
+		assert.Zero(t, result.CandidateCount)
+	}
+}
+
+func TestSimulatedModelCacheSharedScopeTTLIsNotShortenedByAnotherChannelSetting(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	const userID = 10
+	const model = "gpt-test"
+
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     userID,
+		Model:      model,
+		PromptText: strings.Repeat("long ttl prompt ", 20),
+		TTLSeconds: 3600,
+	}))
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     userID,
+		Model:      model,
+		PromptText: strings.Repeat("short ttl prompt ", 20),
+		TTLSeconds: 60,
+	}))
+
+	ttl, err := common.RDB.TTL(ctx, simulatedModelCacheScopeIndexKey(userID, model)).Result()
+	require.NoError(t, err)
+	assert.Greater(t, ttl, 30*time.Minute)
+}
+
+func TestSimulatedModelCachePartialMatchPrunesMissingFingerprintMembers(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	prompt := strings.Repeat("expired fingerprint ", 20)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "gpt-test",
+		PromptText: prompt,
+		TTLSeconds: 60,
+	}))
+
+	promptID := sha256Hex([]byte(prompt))
+	require.NoError(t, common.RDB.Del(ctx, simulatedModelCacheFingerprintKey(promptID)).Err())
+	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "gpt-test",
+		PromptText: strings.Repeat("current prompt ", 20),
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Found)
+
+	count, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(10, "gpt-test")).Result()
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestSimulatedModelCacheWorkerStoresCurrentFingerprintBeforeReturning(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	prompt := strings.Repeat("worker stored prompt ", 20)
+	handle, bypassReason := SubmitSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "gpt-test",
+		PromptText: prompt,
+	})
+	require.Empty(t, bypassReason)
+	require.NotNil(t, handle)
+
+	result := <-handle.result
+	require.NoError(t, result.Err)
+	exists, err := common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(sha256Hex([]byte(prompt)))).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), exists)
 }
 
 func withSimulatedModelCacheTestRedis(t *testing.T) context.Context {
 	t.Helper()
 
 	redisURL := os.Getenv("NEW_API_TEST_REDIS_CONN_STRING")
-	if redisURL == "" {
-		t.Skip("NEW_API_TEST_REDIS_CONN_STRING is not set")
+	var opt *redis.Options
+	if redisURL != "" {
+		parsed, err := redis.ParseURL(redisURL)
+		require.NoError(t, err)
+		opt = parsed
+	} else {
+		server := miniredis.RunT(t)
+		opt = &redis.Options{Addr: server.Addr()}
 	}
-	opt, err := redis.ParseURL(redisURL)
-	require.NoError(t, err)
 
 	oldRedisEnabled := common.RedisEnabled
 	oldRDB := common.RDB
@@ -431,20 +444,6 @@ func withSimulatedModelCacheTestRedis(t *testing.T) context.Context {
 	return ctx
 }
 
-func useSimulatedModelCacheTestDiskPath(t *testing.T) func() {
-	t.Helper()
-	oldConfig := common.GetDiskCacheConfig()
-	common.SetDiskCacheConfig(common.DiskCacheConfig{
-		Enabled:     oldConfig.Enabled,
-		ThresholdMB: oldConfig.ThresholdMB,
-		MaxSizeMB:   oldConfig.MaxSizeMB,
-		Path:        t.TempDir(),
-	})
-	return func() {
-		common.SetDiskCacheConfig(oldConfig)
-	}
-}
-
 func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIUsage(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     100,
@@ -452,7 +451,7 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIUsage(t *testing.T) {
 		TotalTokens:      108,
 	}
 	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:       "partial_rewrite",
+		Mode:       "partial_fingerprint",
 		MatchRatio: 0.25,
 	})
 
@@ -520,7 +519,7 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 		UsageSemantic:    "anthropic",
 	}
 	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:       "partial_rewrite",
+		Mode:       "partial_fingerprint",
 		MatchRatio: 0.25,
 	})
 

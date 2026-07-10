@@ -7,6 +7,9 @@ import (
 
 // PerformanceSetting 性能设置配置
 type PerformanceSetting struct {
+	// SimulatedModelCacheMemoryBudgetMB 模拟模型缓存的全局内存预算（MB）
+	SimulatedModelCacheMemoryBudgetMB int `json:"simulated_model_cache_memory_budget_mb"`
+
 	// DiskCacheEnabled 是否启用磁盘缓存（磁盘换内存）
 	DiskCacheEnabled bool `json:"disk_cache_enabled"`
 	// DiskCacheThresholdMB 触发磁盘缓存的请求体大小阈值（MB）
@@ -28,6 +31,8 @@ type PerformanceSetting struct {
 
 // 默认配置
 var performanceSetting = PerformanceSetting{
+	SimulatedModelCacheMemoryBudgetMB: common.GetSimulatedModelCacheMemoryBudgetMB(),
+
 	DiskCacheEnabled:     false,
 	DiskCacheThresholdMB: 10,   // 超过 10MB 使用磁盘缓存
 	DiskCacheMaxSizeMB:   1024, // 最大 1GB 磁盘缓存
@@ -48,6 +53,10 @@ func init() {
 
 // syncToCommon 将配置同步到 common 包
 func syncToCommon() {
+	performanceSetting.SimulatedModelCacheMemoryBudgetMB = common.SetSimulatedModelCacheMemoryBudgetMB(
+		performanceSetting.SimulatedModelCacheMemoryBudgetMB,
+	)
+
 	common.SetDiskCacheConfig(common.DiskCacheConfig{
 		Enabled:     performanceSetting.DiskCacheEnabled,
 		ThresholdMB: performanceSetting.DiskCacheThresholdMB,

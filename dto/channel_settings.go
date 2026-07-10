@@ -55,19 +55,14 @@ type ChannelOtherSettings struct {
 }
 
 type SimulatedModelCacheSettings struct {
-	Enabled            bool    `json:"enabled,omitempty"`
-	ExactReplayEnabled *bool   `json:"exact_replay_enabled,omitempty"`
-	TTLSeconds         int     `json:"ttl_seconds,omitempty"`
-	ReuseLimit         int     `json:"reuse_limit,omitempty"`
-	MinMatchRatio      float64 `json:"min_match_ratio,omitempty"`
+	Enabled       bool    `json:"enabled,omitempty"`
+	TTLSeconds    int     `json:"ttl_seconds,omitempty"`
+	MinMatchRatio float64 `json:"min_match_ratio,omitempty"`
 }
 
 func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
 	if s.TTLSeconds <= 0 {
 		s.TTLSeconds = 86400
-	}
-	if s.ReuseLimit <= 0 {
-		s.ReuseLimit = 3
 	}
 	if s.MinMatchRatio <= 0 {
 		s.MinMatchRatio = 0.01
@@ -78,15 +73,8 @@ func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
 	return s
 }
 
-func (s SimulatedModelCacheSettings) IsExactReplayEnabled() bool {
-	if s.ExactReplayEnabled != nil {
-		return *s.ExactReplayEnabled
-	}
-	return s.Enabled
-}
-
 func (s SimulatedModelCacheSettings) IsActive() bool {
-	return s.Enabled || s.IsExactReplayEnabled()
+	return s.Enabled
 }
 
 type InputTokenRoutingSettings struct {

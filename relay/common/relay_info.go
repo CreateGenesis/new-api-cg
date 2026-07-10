@@ -102,6 +102,7 @@ type RelayInfo struct {
 	IsPlayground           bool
 	UsePrice               bool
 	RelayMode              int
+	RequestedModelName     string
 	OriginModelName        string
 	RequestURLPath         string
 	RequestHeaders         map[string]string
@@ -201,8 +202,11 @@ type SimulatedModelCacheInfo struct {
 	OriginalPromptTokens  int     `json:"original_prompt_tokens"`
 	SimulatedPromptTokens int     `json:"simulated_prompt_tokens"`
 	SimulatedCachedTokens int     `json:"simulated_cached_tokens"`
-	ReplayCount           int     `json:"replay_count"`
 	StreamUsageInjected   *bool   `json:"stream_usage_injected,omitempty"`
+	FingerprintVersion    string  `json:"fingerprint_version,omitempty"`
+	CandidateCount        int     `json:"candidate_count,omitempty"`
+	MatchDurationMS       int64   `json:"match_duration_ms,omitempty"`
+	BypassReason          string  `json:"bypass_reason,omitempty"`
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
@@ -495,7 +499,8 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
 		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
-		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
+		RequestedModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
+		OriginModelName:    common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 
 		TokenId:        common.GetContextKeyInt(c, constant.ContextKeyTokenId),
 		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),

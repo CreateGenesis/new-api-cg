@@ -299,10 +299,8 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
-  'simulated_model_cache_exact_replay_enabled',
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
-  'simulated_model_cache_reuse_limit',
   'simulated_model_cache_min_match_ratio',
   'status_code_retry_enabled',
   'status_code_retry_times',
@@ -355,7 +353,6 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
     values.claude_beta_query ||
-    values.simulated_model_cache_exact_replay_enabled ||
     values.simulated_model_cache_enabled ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
@@ -781,9 +778,6 @@ export function ChannelMutateDrawer({
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
-  const currentSimulatedModelCacheExactReplayEnabled = form.watch(
-    'simulated_model_cache_exact_replay_enabled'
-  )
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
@@ -1078,7 +1072,6 @@ export function ChannelMutateDrawer({
     currentUpstreamModelUpdateIgnoredModels?.trim()
   )
   const simulatedModelCacheConfigured = Boolean(
-    currentSimulatedModelCacheExactReplayEnabled ||
     currentSimulatedModelCacheEnabled
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
@@ -1137,7 +1130,7 @@ export function ChannelMutateDrawer({
   }
   advancedNavChildren.push({
     id: ADVANCED_SETTINGS_SECTION_IDS.simulatedModelCache,
-    title: t('Cache Replay and Simulation'),
+    title: t('Simulated Model Cache'),
     configured: simulatedModelCacheConfigured,
   })
   if (MODEL_FETCHABLE_TYPES.has(currentType)) {
@@ -4597,7 +4590,7 @@ export function ChannelMutateDrawer({
                           )}
                         >
                           <CardHeading
-                            title={t('Cache Replay and Simulation')}
+                            title={t('Simulated Model Cache')}
                             icon={<Sparkles className='h-4 w-4' />}
                           />
                           <fieldset
@@ -4605,30 +4598,6 @@ export function ChannelMutateDrawer({
                             className='space-y-4 disabled:opacity-60'
                           >
                             <div className='divide-border space-y-0 divide-y border-y'>
-                              <FormField
-                                control={form.control}
-                                name='simulated_model_cache_exact_replay_enabled'
-                                render={({ field }) => (
-                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                                    <div className='space-y-0.5'>
-                                      <FormLabel className='text-sm'>
-                                        {t('Enable exact cache replay')}
-                                      </FormLabel>
-                                      <FormDescription>
-                                        {t(
-                                          'Replay fully matching text requests from stored responses without calling upstream'
-                                        )}
-                                      </FormDescription>
-                                    </div>
-                                    <FormControl>
-                                      <Switch
-                                        checked={field.value}
-                                        onCheckedChange={field.onChange}
-                                      />
-                                    </FormControl>
-                                  </FormItem>
-                                )}
-                              />
                               <FormField
                                 control={form.control}
                                 name='simulated_model_cache_enabled'
@@ -4655,37 +4624,7 @@ export function ChannelMutateDrawer({
                               />
                             </div>
 
-                            <div className='grid gap-4 sm:grid-cols-3'>
-                              <FormField
-                                control={form.control}
-                                name='simulated_model_cache_reuse_limit'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>{t('Reuse limit')}</FormLabel>
-                                    <FormControl>
-                                      <Input
-                                        type='number'
-                                        min={1}
-                                        step={1}
-                                        disabled={
-                                          !currentSimulatedModelCacheExactReplayEnabled
-                                        }
-                                        {...field}
-                                        onChange={(e) =>
-                                          field.onChange(Number(e.target.value))
-                                        }
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'Maximum exact replays before calling upstream again'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
-
+                            <div className='grid gap-4 sm:grid-cols-2'>
                               <FormField
                                 control={form.control}
                                 name='simulated_model_cache_ttl_seconds'
@@ -4697,10 +4636,7 @@ export function ChannelMutateDrawer({
                                         type='number'
                                         min={1}
                                         step={1}
-                                        disabled={
-                                          !currentSimulatedModelCacheExactReplayEnabled &&
-                                          !currentSimulatedModelCacheEnabled
-                                        }
+                                        disabled={!currentSimulatedModelCacheEnabled}
                                         {...field}
                                         onChange={(e) =>
                                           field.onChange(Number(e.target.value))
@@ -4709,7 +4645,7 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(
-                                        'How long cached response metadata and disk bodies are kept'
+                                        'How long prompt fingerprints remain available for matching'
                                       )}
                                     </FormDescription>
                                     <FormMessage />
@@ -4742,7 +4678,7 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(
-                                        'Longest common prompt substring ratio required for partial cache usage'
+                                        'Approximate consecutive content fingerprint ratio required for partial cache usage'
                                       )}
                                     </FormDescription>
                                     <FormMessage />

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -28,6 +27,20 @@ type simulatedModelCacheFailingWriter struct {
 	status int
 }
 
+type simulatedModelCacheTestMatchTask struct {
+	result   service.SimulatedModelCachePartialMatchResult
+	ready    bool
+	canceled bool
+}
+
+func (t *simulatedModelCacheTestMatchTask) TryResult() (service.SimulatedModelCachePartialMatchResult, bool) {
+	return t.result, t.ready
+}
+
+func (t *simulatedModelCacheTestMatchTask) Cancel() {
+	t.canceled = true
+}
+
 func (w *simulatedModelCacheFailingWriter) Header() http.Header {
 	return w.header
 }
@@ -46,23 +59,21 @@ func (w *simulatedModelCacheFailingWriter) Write(data []byte) (int, error) {
 
 func (w *simulatedModelCacheFailingWriter) Flush() {}
 
-func newSimulatedModelCacheStreamTest(t *testing.T, responseFormat types.RelayFormat, finalRequestFormat types.RelayFormat, includeUsage bool, match service.SimulatedModelCachePartialMatch) (*gin.Context, *httptest.ResponseRecorder, *relaycommon.RelayInfo, *simulatedModelCacheAttempt, *simulatedModelCacheRecorder) {
+func newSimulatedModelCacheStreamTest(t *testing.T, responseFormat types.RelayFormat, _ types.RelayFormat, includeUsage bool, match service.SimulatedModelCachePartialMatch) (*gin.Context, *httptest.ResponseRecorder, *relaycommon.RelayInfo, *simulatedModelCacheAttempt, *simulatedModelCacheRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/stream", nil)
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	resultCh := make(chan simulatedModelCachePartialMatchResult, 1)
-	resultCh <- simulatedModelCachePartialMatchResult{match: match}
 	attempt := &simulatedModelCacheAttempt{
-		settings:           dto.SimulatedModelCacheSettings{Enabled: true},
-		requestBody:        []byte(`{"stream":true}`),
-		promptText:         "hello",
-		finalRequestFormat: finalRequestFormat,
-		upstreamModelName:  "upstream-model",
-		startedAt:          time.Now(),
-		partialMatchResult: resultCh,
+		settings:       dto.SimulatedModelCacheSettings{Enabled: true},
+		promptText:     "hello",
+		cacheModelName: "requested-model",
+		partialMatch: &simulatedModelCacheTestMatchTask{
+			result: service.SimulatedModelCachePartialMatchResult{Match: match},
+			ready:  true,
+		},
 	}
 	info := &relaycommon.RelayInfo{
 		RelayFormat:        responseFormat,
@@ -91,57 +102,70 @@ func findSimulatedModelCacheStreamEvent(t *testing.T, body []byte, format types.
 	return nil
 }
 
-func TestTryServeSimulatedModelCacheReplaySkipsWhenRedisDisabled(t *testing.T) {
-	oldRedisEnabled := common.RedisEnabled
-	oldRDB := common.RDB
-	common.RedisEnabled = false
-	common.RDB = nil
+func TestSimulatedModelCacheModelNameSharesRequestedModelAcrossChannels(t *testing.T) {
+	first := &relaycommon.RelayInfo{
+		OriginModelName: "shared-model",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         1,
+			UpstreamModelName: "provider-a-model",
+		},
+	}
+	second := &relaycommon.RelayInfo{
+		OriginModelName: "shared-model",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         2,
+			UpstreamModelName: "provider-b-model",
+		},
+	}
+
+	assert.Equal(t, "shared-model", simulatedModelCacheModelName(first))
+	assert.Equal(t, simulatedModelCacheModelName(first), simulatedModelCacheModelName(second))
+}
+
+func TestSimulatedModelCacheModelNameFallsBackToUpstreamModel(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: " upstream-model "},
+	}
+
+	assert.Equal(t, "upstream-model", simulatedModelCacheModelName(info))
+	assert.Empty(t, simulatedModelCacheModelName(nil))
+}
+
+func TestSimulatedModelCacheModelNameKeepsRequestedCompactionModel(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "provider-compact-model",
+		Request: &dto.OpenAIResponsesCompactionRequest{
+			Model: "requested-compact-model",
+		},
+	}
+
+	assert.Equal(t, "requested-compact-model", simulatedModelCacheModelName(info))
+}
+
+func TestSimulatedModelCacheLowBudgetDoesNotCancelMatchBeforeBuffering(t *testing.T) {
+	originalBudget := common.GetSimulatedModelCacheMemoryBudgetMB()
+	common.SetSimulatedModelCacheMemoryBudgetMB(1)
 	t.Cleanup(func() {
-		common.RedisEnabled = oldRedisEnabled
-		common.RDB = oldRDB
+		common.SetSimulatedModelCacheMemoryBudgetMB(originalBudget)
 	})
+	matchReservation := service.ReserveSimulatedModelCacheMemory(64 * 1024)
+	require.NotNil(t, matchReservation)
+	t.Cleanup(matchReservation.Release)
 
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	info := &relaycommon.RelayInfo{
-		RelayFormat: types.RelayFormatOpenAI,
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelId:         7,
-			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				SimulatedModelCache: &dto.SimulatedModelCacheSettings{
-					Enabled: true,
-				},
-			},
-		},
+	task := &simulatedModelCacheTestMatchTask{}
+	attempt := &simulatedModelCacheAttempt{
+		settings:     dto.SimulatedModelCacheSettings{Enabled: true},
+		partialMatch: task,
 	}
 
-	attempt, hit := tryServeSimulatedModelCacheReplay(c, info, []byte(`{"messages":[]}`))
-
-	require.False(t, hit)
-	assert.Nil(t, attempt)
-}
-
-func TestSimulatedModelCacheSettingsAllowsExactReplayOnly(t *testing.T) {
-	exactReplayEnabled := true
-	info := &relaycommon.RelayInfo{
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				SimulatedModelCache: &dto.SimulatedModelCacheSettings{
-					Enabled:            false,
-					ExactReplayEnabled: &exactReplayEnabled,
-				},
-			},
-		},
-	}
-
-	settings, ok := simulatedModelCacheSettings(info)
-
-	require.True(t, ok)
-	assert.False(t, settings.Enabled)
-	assert.True(t, settings.IsExactReplayEnabled())
+	recorder := beginSimulatedModelCacheRecorder(c, &relaycommon.RelayInfo{}, attempt)
+	require.NotNil(t, recorder)
+	assert.False(t, task.canceled)
+	assert.Equal(t, task, attempt.partialMatch)
 }
 
 func TestSimulatedModelCacheRecorderPassesThroughStreamWrites(t *testing.T) {
@@ -151,8 +175,7 @@ func TestSimulatedModelCacheRecorderPassesThroughStreamWrites(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	attempt := &simulatedModelCacheAttempt{
-		requestBody: []byte(`{"stream":true}`),
-		promptText:  "hello",
+		promptText: "hello",
 	}
 	info := &relaycommon.RelayInfo{IsStream: true}
 
@@ -164,26 +187,7 @@ func TestSimulatedModelCacheRecorderPassesThroughStreamWrites(t *testing.T) {
 	c.Writer.Flush()
 
 	assert.Equal(t, "data: one\n\n", w.Body.String())
-	assert.Equal(t, "data: one\n\n", recorder.body.String())
-}
-
-func TestSimulatedModelCacheRecorderRecordsSSEEventDelays(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	recorder := &simulatedModelCacheRecorder{
-		ResponseWriter:    c.Writer,
-		passThrough:       true,
-		lastStreamEventAt: time.Now().Add(-5 * time.Millisecond),
-	}
-
-	require.NoError(t, recorder.processStreamWrite([]byte("data: one\n\ndata: two\n\npartial")))
-	recorder.finishStreamDelays()
-
-	require.Len(t, recorder.streamDelaysMS, 3)
-	assert.GreaterOrEqual(t, recorder.streamDelaysMS[0], int64(4))
-	assert.Equal(t, int64(0), recorder.streamDelaysMS[1])
-	assert.Equal(t, int64(0), recorder.streamDelaysMS[2])
-	assert.Equal(t, "partial", recorder.streamPending.String())
+	assert.Empty(t, recorder.body.String(), "streaming responses must not accumulate the full body in memory")
 }
 
 func TestSimulatedModelCacheClaudeStreamRewritesFinalUsageForDownstreamParser(t *testing.T) {
@@ -267,7 +271,6 @@ func TestSimulatedModelCacheOpenAIStreamInjectsMissingUsageBeforeDone(t *testing
 	assert.Equal(t, 90, final.Usage.TotalTokens)
 	assert.Equal(t, 20, final.Usage.PromptTokensDetails.CachedTokens)
 	assert.Contains(t, w.Body.String(), "\r\n\r\ndata: [DONE]\r\n\r\n")
-	assert.Equal(t, types.RelayFormat(types.RelayFormatClaude), attempt.finalRequestFormat, "upstream format must not select the downstream response schema")
 }
 
 func TestSimulatedModelCacheStreamUsesDownstreamClaudeFormatAfterOpenAIConversion(t *testing.T) {
@@ -323,6 +326,95 @@ func TestSimulatedModelCacheStreamNoMatchPreservesRealUpstreamUsage(t *testing.T
 	assert.Equal(t, 9, usage.PromptTokensDetails.CachedTokens)
 }
 
+func TestSimulatedModelCacheMatchNotReadyPreservesRealUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	attempt := &simulatedModelCacheAttempt{
+		settings:     dto.SimulatedModelCacheSettings{Enabled: true},
+		promptText:   "hello",
+		partialMatch: &simulatedModelCacheTestMatchTask{},
+	}
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{}}
+	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, recorder)
+	_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`))
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+	assert.Equal(t, 0, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, info.SimulatedModelCacheInfo)
+	assert.Equal(t, service.SimulatedModelCacheBypassMatchNotReady, info.SimulatedModelCacheInfo.BypassReason)
+	assert.JSONEq(t, `{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`, w.Body.String())
+}
+
+func TestSimulatedModelCacheOverloadBypassPreservesRealUsage(t *testing.T) {
+	for _, bypassReason := range []string{
+		service.SimulatedModelCacheBypassWorkerQueueFull,
+		service.SimulatedModelCacheBypassMemoryBudget,
+	} {
+		t.Run(bypassReason, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			attempt := &simulatedModelCacheAttempt{
+				settings:     dto.SimulatedModelCacheSettings{Enabled: true},
+				promptText:   "hello",
+				bypassReason: bypassReason,
+			}
+			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{}}
+			recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+			require.NotNil(t, recorder)
+			_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`))
+			require.NoError(t, err)
+			usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+
+			finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+			assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+			require.NotNil(t, info.SimulatedModelCacheInfo)
+			assert.Equal(t, bypassReason, info.SimulatedModelCacheInfo.BypassReason)
+			assert.JSONEq(t, `{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`, w.Body.String())
+		})
+	}
+}
+
+func TestSimulatedModelCacheNonStreamResponseOverLimitSwitchesToPassThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	attempt := &simulatedModelCacheAttempt{
+		settings:   dto.SimulatedModelCacheSettings{Enabled: true},
+		promptText: "hello",
+		partialMatch: &simulatedModelCacheTestMatchTask{
+			result: service.SimulatedModelCachePartialMatchResult{Match: service.SimulatedModelCachePartialMatch{Found: true, MatchRatio: 1}},
+			ready:  true,
+		},
+	}
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{}}
+	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, recorder)
+	recorder.responseBufferLimit = 8
+	body := []byte("0123456789abcdef")
+
+	_, err := c.Writer.Write(body)
+	require.NoError(t, err)
+	assert.Equal(t, body, w.Body.Bytes())
+	assert.True(t, recorder.passThrough)
+	assert.Empty(t, recorder.body.Bytes())
+
+	usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+	require.NotNil(t, info.SimulatedModelCacheInfo)
+	assert.Equal(t, service.SimulatedModelCacheBypassResponseTooLarge, info.SimulatedModelCacheInfo.BypassReason)
+	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+}
+
 func TestSimulatedModelCacheStreamCancellationPreservesTail(t *testing.T) {
 	c, w, info, attempt, recorder := newSimulatedModelCacheStreamTest(t, types.RelayFormatClaude, types.RelayFormatClaude, true, service.SimulatedModelCachePartialMatch{
 		Found:      true,
@@ -339,7 +431,8 @@ func TestSimulatedModelCacheStreamCancellationPreservesTail(t *testing.T) {
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	assert.Equal(t, original, w.Body.String())
-	assert.Nil(t, info.SimulatedModelCacheInfo)
+	require.NotNil(t, info.SimulatedModelCacheInfo)
+	assert.Equal(t, service.SimulatedModelCacheBypassRequestCanceled, info.SimulatedModelCacheInfo.BypassReason)
 	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
 }
 
@@ -382,15 +475,15 @@ func TestSimulatedModelCacheStreamMarksFailedTailWrite(t *testing.T) {
 	underlying := &simulatedModelCacheFailingWriter{header: make(http.Header), failAt: 2}
 	c, _ := gin.CreateTestContext(underlying)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	resultCh := make(chan simulatedModelCachePartialMatchResult, 1)
-	resultCh <- simulatedModelCachePartialMatchResult{match: service.SimulatedModelCachePartialMatch{Found: true, MatchRatio: 0.5}}
 	attempt := &simulatedModelCacheAttempt{
-		settings:           dto.SimulatedModelCacheSettings{Enabled: true},
-		requestBody:        []byte(`{"stream":true}`),
-		promptText:         "hello",
-		finalRequestFormat: types.RelayFormatOpenAI,
-		startedAt:          time.Now(),
-		partialMatchResult: resultCh,
+		settings:   dto.SimulatedModelCacheSettings{Enabled: true},
+		promptText: "hello",
+		partialMatch: &simulatedModelCacheTestMatchTask{
+			result: service.SimulatedModelCachePartialMatchResult{
+				Match: service.SimulatedModelCachePartialMatch{Found: true, MatchRatio: 0.5},
+			},
+			ready: true,
+		},
 	}
 	info := &relaycommon.RelayInfo{
 		RelayFormat:        types.RelayFormatOpenAI,
@@ -424,8 +517,7 @@ func TestSimulatedModelCacheRecorderNormalizesInvalidStatus(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	attempt := &simulatedModelCacheAttempt{
-		requestBody: []byte(`{"stream":true}`),
-		promptText:  "hello",
+		promptText: "hello",
 	}
 
 	recorder := beginSimulatedModelCacheRecorder(c, &relaycommon.RelayInfo{IsStream: true}, attempt)
@@ -451,60 +543,4 @@ func TestFlushSimulatedModelCacheRecorderRewritesContentLength(t *testing.T) {
 
 	assert.Equal(t, "5", w.Header().Get("Content-Length"))
 	assert.Equal(t, "short", w.Body.String())
-}
-
-func TestWriteSimulatedModelCacheResponseReplaysStreamWithRecordedDelays(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	body := []byte("data: one\n\ndata: two\n\n")
-
-	startedAt := time.Now()
-	writeSimulatedModelCacheResponse(c, service.SimulatedModelCacheResponse{
-		StatusCode:     http.StatusOK,
-		ContentType:    "text/event-stream",
-		StreamDelaysMS: []int64{5, 5},
-	}, body)
-
-	assert.GreaterOrEqual(t, time.Since(startedAt), 8*time.Millisecond)
-	assert.Empty(t, w.Header().Get("Content-Length"))
-	assert.Equal(t, body, w.Body.Bytes())
-}
-
-func TestWriteSimulatedModelCacheResponseReplaysLegacyStreamWithDurationFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	body := []byte("data: one\n\ndata: two\n\n")
-
-	startedAt := time.Now()
-	writeSimulatedModelCacheResponse(c, service.SimulatedModelCacheResponse{
-		StatusCode:      http.StatusOK,
-		ContentType:     "text/event-stream",
-		DurationSeconds: 0.01,
-	}, body)
-
-	assert.GreaterOrEqual(t, time.Since(startedAt), 8*time.Millisecond)
-	assert.Empty(t, w.Header().Get("Content-Length"))
-	assert.Equal(t, body, w.Body.Bytes())
-}
-
-func TestSimulatedModelCacheStreamDelayKeepsRecordedZeroDelay(t *testing.T) {
-	delay := simulatedModelCacheStreamDelay(service.SimulatedModelCacheResponse{
-		StreamDelaysMS:  []int64{0},
-		DurationSeconds: 10,
-	}, 0, 1)
-
-	assert.Equal(t, time.Duration(0), delay)
-}
-
-func TestSimulatedModelCacheStreamDelayCountsReplayPreparation(t *testing.T) {
-	delay := simulatedModelCacheStreamDelay(service.SimulatedModelCacheResponse{
-		StreamDelaysMS:           []int64{20},
-		ReplayPreparationSeconds: 0.011,
-	}, 0, 1)
-
-	assert.Equal(t, 9*time.Millisecond, delay)
 }

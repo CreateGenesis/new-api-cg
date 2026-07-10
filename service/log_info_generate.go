@@ -109,15 +109,21 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.SimulatedModelCacheInfo != nil {
 		info := relayInfo.SimulatedModelCacheInfo
 		cacheInfo := map[string]interface{}{
-			"mode":                    info.Mode,
-			"match_ratio":             info.MatchRatio,
-			"original_prompt_tokens":  info.OriginalPromptTokens,
-			"simulated_prompt_tokens": info.SimulatedPromptTokens,
-			"simulated_cached_tokens": info.SimulatedCachedTokens,
-			"replay_count":            info.ReplayCount,
+			"fingerprint_version": info.FingerprintVersion,
+			"candidate_count":     info.CandidateCount,
+			"match_duration_ms":   info.MatchDurationMS,
 		}
-		if info.StreamUsageInjected != nil {
-			cacheInfo["stream_usage_injected"] = *info.StreamUsageInjected
+		if info.BypassReason != "" {
+			cacheInfo["bypass_reason"] = info.BypassReason
+		} else {
+			cacheInfo["mode"] = info.Mode
+			cacheInfo["match_ratio"] = info.MatchRatio
+			cacheInfo["original_prompt_tokens"] = info.OriginalPromptTokens
+			cacheInfo["simulated_prompt_tokens"] = info.SimulatedPromptTokens
+			cacheInfo["simulated_cached_tokens"] = info.SimulatedCachedTokens
+			if info.StreamUsageInjected != nil {
+				cacheInfo["stream_usage_injected"] = *info.StreamUsageInjected
+			}
 		}
 		adminInfo["simulated_model_cache"] = cacheInfo
 	}

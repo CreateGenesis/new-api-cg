@@ -161,11 +161,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 		info.UpstreamRequestBodySize = storage.Size()
 		if requestBytes, bErr := storage.Bytes(); bErr == nil {
-			var cacheHit bool
-			cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, requestBytes)
-			if cacheHit {
-				return nil
-			}
+			cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, requestBytes)
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
@@ -194,11 +190,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)
-		var cacheHit bool
-		cacheAttempt, cacheHit = tryServeSimulatedModelCacheReplay(c, info, jsonData)
-		if cacheHit {
-			return nil
-		}
+		cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, jsonData)
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())

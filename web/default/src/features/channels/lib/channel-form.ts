@@ -220,10 +220,8 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     disable_task_polling_sleep: z.boolean().optional(),
-    simulated_model_cache_exact_replay_enabled: z.boolean().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
     simulated_model_cache_ttl_seconds: z.number().optional(),
-    simulated_model_cache_reuse_limit: z.number().optional(),
     simulated_model_cache_min_match_ratio: z.number().optional(),
     status_code_retry_enabled: z.boolean().optional(),
     status_code_retry_times: z.number().optional(),
@@ -346,10 +344,7 @@ export const channelFormSchema = z
       }
     }
 
-    const simulatedModelCacheActive =
-      data.simulated_model_cache_enabled ||
-      data.simulated_model_cache_exact_replay_enabled
-    if (simulatedModelCacheActive) {
+    if (data.simulated_model_cache_enabled) {
       if (
         !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
         Number(data.simulated_model_cache_ttl_seconds) < 1
@@ -358,18 +353,6 @@ export const channelFormSchema = z
           ctx,
           'simulated_model_cache_ttl_seconds',
           'TTL seconds must be at least 1.'
-        )
-      }
-    }
-    if (data.simulated_model_cache_exact_replay_enabled) {
-      if (
-        !Number.isInteger(data.simulated_model_cache_reuse_limit) ||
-        Number(data.simulated_model_cache_reuse_limit) < 1
-      ) {
-        addRequiredIssue(
-          ctx,
-          'simulated_model_cache_reuse_limit',
-          'Reuse limit must be at least 1.'
         )
       }
     }
@@ -488,10 +471,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   disable_task_polling_sleep: false,
-  simulated_model_cache_exact_replay_enabled: false,
   simulated_model_cache_enabled: false,
   simulated_model_cache_ttl_seconds: 86400,
-  simulated_model_cache_reuse_limit: 3,
   simulated_model_cache_min_match_ratio: 0.01,
   status_code_retry_enabled: false,
   status_code_retry_times: 10,
@@ -555,10 +536,8 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
-  let simulatedModelCacheExactReplayEnabled = false
   let simulatedModelCacheEnabled = false
   let simulatedModelCacheTTLSeconds = 86400
-  let simulatedModelCacheReuseLimit = 3
   let simulatedModelCacheMinMatchRatio = 0.01
   let statusCodeRetryEnabled = false
   let statusCodeRetryTimes = 10
@@ -595,17 +574,9 @@ export function transformChannelToFormDefaults(
           unknown
         >
         simulatedModelCacheEnabled = simulatedCache.enabled === true
-        simulatedModelCacheExactReplayEnabled =
-          typeof simulatedCache.exact_replay_enabled === 'boolean'
-            ? simulatedCache.exact_replay_enabled === true
-            : simulatedModelCacheEnabled
         const ttlSeconds = Number(simulatedCache.ttl_seconds)
         if (Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
           simulatedModelCacheTTLSeconds = ttlSeconds
-        }
-        const reuseLimit = Number(simulatedCache.reuse_limit)
-        if (Number.isFinite(reuseLimit) && reuseLimit > 0) {
-          simulatedModelCacheReuseLimit = reuseLimit
         }
         const minMatchRatio = Number(simulatedCache.min_match_ratio)
         if (
@@ -749,11 +720,8 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
-    simulated_model_cache_exact_replay_enabled:
-      simulatedModelCacheExactReplayEnabled,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
     simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
-    simulated_model_cache_reuse_limit: simulatedModelCacheReuseLimit,
     simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
     status_code_retry_enabled: statusCodeRetryEnabled,
     status_code_retry_times: statusCodeRetryTimes,
@@ -876,32 +844,21 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
 
-  const simulatedModelCacheExactReplayEnabled =
-    formData.simulated_model_cache_exact_replay_enabled === true
   const simulatedModelCacheEnabled =
     formData.simulated_model_cache_enabled === true
-  if (simulatedModelCacheEnabled || simulatedModelCacheExactReplayEnabled) {
+  if (simulatedModelCacheEnabled) {
     const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
     const simulatedModelCache: Record<string, unknown> = {
       enabled: simulatedModelCacheEnabled,
-      exact_replay_enabled: simulatedModelCacheExactReplayEnabled,
       ttl_seconds: Math.max(
         1,
         Math.trunc(Number(formData.simulated_model_cache_ttl_seconds) || 86400)
       ),
     }
-    if (simulatedModelCacheExactReplayEnabled) {
-      simulatedModelCache.reuse_limit = Math.max(
-        1,
-        Math.trunc(Number(formData.simulated_model_cache_reuse_limit) || 3)
-      )
-    }
-    if (simulatedModelCacheEnabled) {
-      simulatedModelCache.min_match_ratio = Math.min(
-        1,
-        Math.max(0.01, Number.isFinite(minMatchRatio) ? minMatchRatio : 0.01)
-      )
-    }
+    simulatedModelCache.min_match_ratio = Math.min(
+      1,
+      Math.max(0.01, Number.isFinite(minMatchRatio) ? minMatchRatio : 0.01)
+    )
     settingsObj.simulated_model_cache = simulatedModelCache
   } else if ('simulated_model_cache' in settingsObj) {
     delete settingsObj.simulated_model_cache
