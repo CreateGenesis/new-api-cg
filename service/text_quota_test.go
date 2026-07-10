@@ -150,6 +150,52 @@ func TestCalculateTextQuotaSummaryUsesAnthropicUsageSemanticFromUpstreamUsage(t 
 	require.Equal(t, 1488, summary.Quota)
 }
 
+func TestSimulatedAnthropicCacheResponseDoesNotIncreaseBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		TotalTokens:      110,
+		UsageSemantic:    "anthropic",
+	}
+	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
+		Mode:       "partial_fingerprint",
+		MatchRatio: 0.25,
+	})
+	require.NotNil(t, marker)
+
+	responseUsage := *usage
+	responseUsage.PromptTokens = marker.OriginalPromptTokens
+	responseUsage.InputTokens = marker.OriginalPromptTokens
+	responseUsage.TotalTokens = marker.OriginalPromptTokens + usage.CompletionTokens
+	require.Equal(t, 100, responseUsage.PromptTokens)
+	require.Equal(t, 75, usage.PromptTokens)
+	require.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "glm-5.2",
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			CacheRatio:      0.1,
+			GroupRatioInfo: types.GroupRatioInfo{
+				GroupRatio: 1,
+			},
+		},
+		StartTime: time.Now(),
+	}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	require.Equal(t, 88, summary.Quota, "billing remains round(75 uncached + 25*0.1 cached + 10 output)")
+
+	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true})
+	require.Equal(t, float64(75), tiered.P)
+	require.Equal(t, float64(25), tiered.CR)
+	require.Equal(t, float64(100), tiered.Len)
+}
+
 func TestCacheWriteTokensTotal(t *testing.T) {
 	t.Run("split cache creation", func(t *testing.T) {
 		summary := textQuotaSummary{

@@ -439,6 +439,15 @@ func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []
 		usageMap["input_tokens"] = inputTokens
 		usageMap["cache_read_input_tokens"] = cachedTokens
 		usageMap["output_tokens"] = usage.CompletionTokens
+		if _, ok := usageMap["cache_creation_input_tokens"]; !ok {
+			usageMap["cache_creation_input_tokens"] = usage.PromptTokensDetails.CachedCreationTokens
+		}
+		if _, ok := usageMap["claude_cache_creation_5_m_tokens"]; !ok {
+			usageMap["claude_cache_creation_5_m_tokens"] = usage.ClaudeCacheCreation5mTokens
+		}
+		if _, ok := usageMap["claude_cache_creation_1_h_tokens"]; !ok {
+			usageMap["claude_cache_creation_1_h_tokens"] = usage.ClaudeCacheCreation1hTokens
+		}
 	case types.RelayFormatOpenAI:
 		if usageMap == nil {
 			return event, false
@@ -666,9 +675,18 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			})
 		}
 	}
+	responseUsage := usage
+	if matchFound && info.RelayFormat == types.RelayFormatClaude && info.SimulatedModelCacheInfo != nil {
+		responseUsageClone := *usage
+		responseUsageClone.PromptTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens
+		responseUsageClone.InputTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens
+		responseUsageClone.TotalTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens + usage.CompletionTokens
+		responseUsageClone.UsageSemantic = "anthropic"
+		responseUsage = &responseUsageClone
+	}
 	if matchFound {
 		if recorder.stream {
-			injected, targetFound, writeErr := recorder.writePatchedStreamTail(usage)
+			injected, targetFound, writeErr := recorder.writePatchedStreamTail(responseUsage)
 			info.SimulatedModelCacheInfo.StreamUsageInjected = &injected
 			if usage.PromptTokensDetails.CachedTokens > 0 && recorder.includeStreamUsage && !targetFound {
 				logger.LogWarn(c, fmt.Sprintf("simulated model cache stream usage event not found: request_id=%s format=%s cached_tokens=%d",
@@ -679,7 +697,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 					info.RequestId, info.RelayFormat, writeErr.Error()))
 			}
 		} else if !recorder.passThrough {
-			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
+			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, responseUsage, simulatedModelCacheResponseModel(info))
 		}
 	}
 

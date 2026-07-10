@@ -207,18 +207,95 @@ func TestSimulatedModelCacheClaudeStreamRewritesFinalUsageForDownstreamParser(t 
 	usage := &dto.Usage{PromptTokens: 70, CompletionTokens: 20, TotalTokens: 90, UsageSemantic: "anthropic"}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
+	deltaData := findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatClaude, simulatedModelCacheStreamEventClaudeDelta)
 	var delta dto.ClaudeResponse
-	require.NoError(t, common.Unmarshal(findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatClaude, simulatedModelCacheStreamEventClaudeDelta), &delta))
+	require.NoError(t, common.Unmarshal(deltaData, &delta))
 	require.NotNil(t, delta.Usage)
-	assert.Equal(t, 35, delta.Usage.InputTokens)
+	assert.Equal(t, 70, delta.Usage.InputTokens)
 	assert.Equal(t, 35, delta.Usage.CacheReadInputTokens)
 	assert.Equal(t, 20, delta.Usage.OutputTokens)
+	var deltaPayload map[string]any
+	require.NoError(t, common.Unmarshal(deltaData, &deltaPayload))
+	deltaUsage, ok := deltaPayload["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(0), deltaUsage["cache_creation_input_tokens"])
+	assert.Equal(t, float64(0), deltaUsage["claude_cache_creation_5_m_tokens"])
+	assert.Equal(t, float64(0), deltaUsage["claude_cache_creation_1_h_tokens"])
 	assert.Contains(t, w.Body.String(), `"vendor":"kept"`)
 	assert.True(t, bytes.HasSuffix(w.Body.Bytes(), []byte("data: {\"type\":\"message_stop\"}\n\n")))
 	require.NotNil(t, info.SimulatedModelCacheInfo)
+	assert.Equal(t, 70, info.SimulatedModelCacheInfo.OriginalPromptTokens)
 	assert.Equal(t, 35, info.SimulatedModelCacheInfo.SimulatedCachedTokens)
 	require.NotNil(t, info.SimulatedModelCacheInfo.StreamUsageInjected)
 	assert.True(t, *info.SimulatedModelCacheInfo.StreamUsageInjected)
+	assert.Equal(t, 35, usage.PromptTokens, "billing usage keeps only the uncached Anthropic input")
+	assert.Equal(t, 35, usage.InputTokens)
+	assert.Equal(t, 35, usage.PromptTokensDetails.CachedTokens)
+}
+
+func TestPatchSimulatedModelCacheClaudeStreamPreservesCacheCreationFields(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 8,
+		UsageSemantic:    "anthropic",
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 25,
+		},
+	}
+	event := []byte("data: {\"type\":\"message_delta\",\"usage\":{\"cache_creation_input_tokens\":11,\"claude_cache_creation_5_m_tokens\":4,\"claude_cache_creation_1_h_tokens\":7}}\n\n")
+
+	patched, ok := patchSimulatedModelCacheStreamUsageEvent(types.RelayFormatClaude, event, usage)
+	require.True(t, ok)
+	data, ok := simulatedModelCacheSSEData(patched)
+	require.True(t, ok)
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(data, &payload))
+	usageMap, ok := payload["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(11), usageMap["cache_creation_input_tokens"])
+	assert.Equal(t, float64(4), usageMap["claude_cache_creation_5_m_tokens"])
+	assert.Equal(t, float64(7), usageMap["claude_cache_creation_1_h_tokens"])
+}
+
+func TestSimulatedModelCacheClaudeNonStreamKeepsFullInputOnlyInResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Writer.Header().Set("Content-Type", "application/json")
+	attempt := &simulatedModelCacheAttempt{
+		settings:   dto.SimulatedModelCacheSettings{Enabled: true},
+		promptText: "hello",
+		partialMatch: &simulatedModelCacheTestMatchTask{
+			result: service.SimulatedModelCachePartialMatchResult{Match: service.SimulatedModelCachePartialMatch{
+				Found:      true,
+				MatchRatio: 0.5,
+			}},
+			ready: true,
+		},
+	}
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatClaude,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, recorder)
+	_, err := c.Writer.Write([]byte(`{"usage":{"input_tokens":70,"output_tokens":20}}`))
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 70, CompletionTokens: 20, TotalTokens: 90, UsageSemantic: "anthropic"}
+
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(w.Body.Bytes(), &payload))
+	usageMap, ok := payload["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(70), usageMap["input_tokens"])
+	assert.Equal(t, float64(35), usageMap["cache_read_input_tokens"])
+	assert.Equal(t, float64(0), usageMap["cache_creation_input_tokens"])
+	assert.Equal(t, float64(0), usageMap["claude_cache_creation_5_m_tokens"])
+	assert.Equal(t, float64(0), usageMap["claude_cache_creation_1_h_tokens"])
+	assert.Equal(t, 35, usage.PromptTokens)
 	assert.Equal(t, 35, usage.PromptTokensDetails.CachedTokens)
 }
 
@@ -288,8 +365,10 @@ func TestSimulatedModelCacheStreamUsesDownstreamClaudeFormatAfterOpenAIConversio
 	var delta dto.ClaudeResponse
 	require.NoError(t, common.Unmarshal(findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatClaude, simulatedModelCacheStreamEventClaudeDelta), &delta))
 	require.NotNil(t, delta.Usage)
-	assert.Equal(t, 30, delta.Usage.InputTokens, "Claude input tokens exclude cached input after OpenAI conversion")
+	assert.Equal(t, 60, delta.Usage.InputTokens, "Claude response keeps the full input while billing tracks cache separately")
 	assert.Equal(t, 30, delta.Usage.CacheReadInputTokens)
+	assert.Equal(t, 60, usage.PromptTokens)
+	assert.Equal(t, 30, usage.PromptTokensDetails.CachedTokens)
 	assert.NotContains(t, w.Body.String(), "data: [DONE]")
 }
 

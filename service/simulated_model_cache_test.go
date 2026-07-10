@@ -518,19 +518,51 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 		TotalTokens:      108,
 		UsageSemantic:    "anthropic",
 	}
-	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
+	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
 		Mode:       "partial_fingerprint",
 		MatchRatio: 0.25,
 	})
+	require.NotNil(t, marker)
+	responseUsage := *usage
+	responseUsage.PromptTokens = marker.OriginalPromptTokens
+	responseUsage.InputTokens = marker.OriginalPromptTokens
+	responseUsage.TotalTokens = marker.OriginalPromptTokens + usage.CompletionTokens
 
 	body := []byte(`{"usage":{"input_tokens":100,"output_tokens":8}}`)
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatClaude, "application/json", body, &responseUsage)
+
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(patched, &payload))
+	usageMap, ok := payload["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(100), usageMap["input_tokens"])
+	assert.Equal(t, float64(25), usageMap["cache_read_input_tokens"])
+	assert.Equal(t, float64(8), usageMap["output_tokens"])
+	assert.Equal(t, float64(0), usageMap["cache_creation_input_tokens"])
+	assert.Equal(t, float64(0), usageMap["claude_cache_creation_5_m_tokens"])
+	assert.Equal(t, float64(0), usageMap["claude_cache_creation_1_h_tokens"])
+	assert.Equal(t, 75, usage.PromptTokens, "response formatting must not restore billing prompt tokens")
+	assert.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
+}
+
+func TestPatchSimulatedModelCacheResponseBodyPreservesClaudeCacheCreationFields(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 8,
+		UsageSemantic:    "anthropic",
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 25,
+		},
+	}
+	body := []byte(`{"usage":{"input_tokens":100,"output_tokens":8,"cache_creation_input_tokens":11,"claude_cache_creation_5_m_tokens":4,"claude_cache_creation_1_h_tokens":7}}`)
+
 	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatClaude, "application/json", body, usage)
 
 	var payload map[string]any
 	require.NoError(t, common.Unmarshal(patched, &payload))
 	usageMap, ok := payload["usage"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, float64(75), usageMap["input_tokens"])
-	assert.Equal(t, float64(25), usageMap["cache_read_input_tokens"])
-	assert.Equal(t, float64(8), usageMap["output_tokens"])
+	assert.Equal(t, float64(11), usageMap["cache_creation_input_tokens"])
+	assert.Equal(t, float64(4), usageMap["claude_cache_creation_5_m_tokens"])
+	assert.Equal(t, float64(7), usageMap["claude_cache_creation_1_h_tokens"])
 }

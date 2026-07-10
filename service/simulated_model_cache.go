@@ -184,6 +184,15 @@ func patchClaudeStyleUsageMap(usageMap map[string]any, usage *dto.Usage) {
 	usageMap["input_tokens"] = usage.PromptTokens
 	usageMap["cache_read_input_tokens"] = usage.PromptTokensDetails.CachedTokens
 	usageMap["output_tokens"] = usage.CompletionTokens
+	if _, ok := usageMap["cache_creation_input_tokens"]; !ok {
+		usageMap["cache_creation_input_tokens"] = usage.PromptTokensDetails.CachedCreationTokens
+	}
+	if _, ok := usageMap["claude_cache_creation_5_m_tokens"]; !ok {
+		usageMap["claude_cache_creation_5_m_tokens"] = usage.ClaudeCacheCreation5mTokens
+	}
+	if _, ok := usageMap["claude_cache_creation_1_h_tokens"]; !ok {
+		usageMap["claude_cache_creation_1_h_tokens"] = usage.ClaudeCacheCreation1hTokens
+	}
 }
 
 func patchGeminiUsageMetadataMap(metadata map[string]any, usage *dto.Usage) {
