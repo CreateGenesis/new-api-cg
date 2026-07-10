@@ -26,6 +26,8 @@ plans
 .claude
 .cursor
 *.log
+artifacts
+service.test
 
 electron/node_modules
 electron/dist
