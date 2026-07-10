@@ -202,6 +202,7 @@ type SimulatedModelCacheInfo struct {
 	SimulatedPromptTokens int     `json:"simulated_prompt_tokens"`
 	SimulatedCachedTokens int     `json:"simulated_cached_tokens"`
 	ReplayCount           int     `json:"replay_count"`
+	StreamUsageInjected   *bool   `json:"stream_usage_injected,omitempty"`
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {

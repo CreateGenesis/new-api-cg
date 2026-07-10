@@ -2,6 +2,9 @@ package relay
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
@@ -25,19 +29,31 @@ type simulatedModelCacheAttempt struct {
 	finalRequestFormat types.RelayFormat
 	upstreamModelName  string
 	startedAt          time.Time
+	partialMatchResult <-chan simulatedModelCachePartialMatchResult
+	partialMatchCancel context.CancelFunc
+}
+
+type simulatedModelCachePartialMatchResult struct {
+	match service.SimulatedModelCachePartialMatch
+	err   error
 }
 
 type simulatedModelCacheRecorder struct {
 	gin.ResponseWriter
 	body                bytes.Buffer
 	streamPending       bytes.Buffer
+	streamTail          bytes.Buffer
 	streamDelaysMS      []int64
 	lastStreamEventAt   time.Time
 	lastStreamPendingAt time.Time
+	responseFormat      types.RelayFormat
+	includeStreamUsage  bool
+	partialMatchCancel  context.CancelFunc
 	status              int
 	size                int
 	written             bool
 	passThrough         bool
+	holdingStreamTail   bool
 }
 
 func (w *simulatedModelCacheRecorder) WriteHeader(code int) {
@@ -64,17 +80,16 @@ func (w *simulatedModelCacheRecorder) Write(data []byte) (int, error) {
 	}
 	n, err := w.body.Write(data)
 	w.size += n
-	if w.passThrough && n > 0 {
-		w.recordStreamWrite(data[:n])
-	}
 	if err != nil || !w.passThrough {
 		return n, err
 	}
-	written, writeErr := w.ResponseWriter.Write(data)
-	if written < n {
-		n = written
+	if n == 0 {
+		return 0, nil
 	}
-	return n, writeErr
+	if writeErr := w.processStreamWrite(data[:n]); writeErr != nil {
+		return 0, writeErr
+	}
+	return n, nil
 }
 
 func (w *simulatedModelCacheRecorder) WriteString(s string) (int, error) {
@@ -102,7 +117,7 @@ func (w *simulatedModelCacheRecorder) Flush() {
 	}
 }
 
-func (w *simulatedModelCacheRecorder) recordStreamWrite(data []byte) {
+func (w *simulatedModelCacheRecorder) processStreamWrite(data []byte) error {
 	now := time.Now()
 	if w.lastStreamEventAt.IsZero() {
 		w.lastStreamEventAt = now
@@ -114,6 +129,8 @@ func (w *simulatedModelCacheRecorder) recordStreamWrite(data []byte) {
 		if boundaryIndex < 0 {
 			break
 		}
+		eventEnd := boundaryIndex + boundaryLength
+		event := append([]byte(nil), w.streamPending.Bytes()[:eventEnd]...)
 		delayMS := int64(0)
 		if !eventInThisWrite {
 			delayMS = now.Sub(w.lastStreamEventAt).Milliseconds()
@@ -122,17 +139,27 @@ func (w *simulatedModelCacheRecorder) recordStreamWrite(data []byte) {
 			}
 		}
 		w.streamDelaysMS = append(w.streamDelaysMS, delayMS)
-		remaining := append([]byte(nil), w.streamPending.Bytes()[boundaryIndex+boundaryLength:]...)
+		remaining := append([]byte(nil), w.streamPending.Bytes()[eventEnd:]...)
 		w.streamPending.Reset()
 		_, _ = w.streamPending.Write(remaining)
 		w.lastStreamEventAt = now
 		eventInThisWrite = true
+
+		if w.holdingStreamTail || isSimulatedModelCacheStreamTailEvent(w.responseFormat, event) {
+			w.holdingStreamTail = true
+			_, _ = w.streamTail.Write(event)
+			continue
+		}
+		if err := w.writeStreamBytes(event); err != nil {
+			return err
+		}
 	}
 	if w.streamPending.Len() > 0 {
 		w.lastStreamPendingAt = now
 	} else {
 		w.lastStreamPendingAt = time.Time{}
 	}
+	return nil
 }
 
 func (w *simulatedModelCacheRecorder) finishStreamDelays() {
@@ -147,8 +174,310 @@ func (w *simulatedModelCacheRecorder) finishStreamDelays() {
 		delayMS = 0
 	}
 	w.streamDelaysMS = append(w.streamDelaysMS, delayMS)
-	w.streamPending.Reset()
 	w.lastStreamPendingAt = time.Time{}
+}
+
+func (w *simulatedModelCacheRecorder) releaseStreamTail() error {
+	if !w.passThrough {
+		return nil
+	}
+	pending := append([]byte(nil), w.streamTail.Bytes()...)
+	pending = append(pending, w.streamPending.Bytes()...)
+	w.streamTail.Reset()
+	w.streamPending.Reset()
+	w.holdingStreamTail = false
+	if len(pending) == 0 {
+		return nil
+	}
+	err := w.writeStreamBytes(pending)
+	if err != nil {
+		return err
+	}
+	w.ResponseWriter.Flush()
+	return nil
+}
+
+func (w *simulatedModelCacheRecorder) writeStreamBytes(data []byte) error {
+	written, err := w.ResponseWriter.Write(data)
+	if err != nil {
+		return err
+	}
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+type simulatedModelCacheStreamEventKind int
+
+const (
+	simulatedModelCacheStreamEventOther simulatedModelCacheStreamEventKind = iota
+	simulatedModelCacheStreamEventClaudeDelta
+	simulatedModelCacheStreamEventClaudeStop
+	simulatedModelCacheStreamEventOpenAIUsage
+	simulatedModelCacheStreamEventOpenAIDone
+)
+
+func isSimulatedModelCacheStreamTailEvent(format types.RelayFormat, event []byte) bool {
+	switch simulatedModelCacheStreamEventType(format, event) {
+	case simulatedModelCacheStreamEventClaudeDelta,
+		simulatedModelCacheStreamEventClaudeStop,
+		simulatedModelCacheStreamEventOpenAIUsage,
+		simulatedModelCacheStreamEventOpenAIDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func simulatedModelCacheStreamEventType(format types.RelayFormat, event []byte) simulatedModelCacheStreamEventKind {
+	data, ok := simulatedModelCacheSSEData(event)
+	if !ok {
+		return simulatedModelCacheStreamEventOther
+	}
+	if format == types.RelayFormatOpenAI && string(data) == "[DONE]" {
+		return simulatedModelCacheStreamEventOpenAIDone
+	}
+
+	var payload struct {
+		Type    string         `json:"type"`
+		Choices []any          `json:"choices"`
+		Usage   map[string]any `json:"usage"`
+	}
+	if common.Unmarshal(data, &payload) != nil {
+		return simulatedModelCacheStreamEventOther
+	}
+	switch format {
+	case types.RelayFormatClaude:
+		switch payload.Type {
+		case "message_delta":
+			return simulatedModelCacheStreamEventClaudeDelta
+		case "message_stop":
+			return simulatedModelCacheStreamEventClaudeStop
+		}
+	case types.RelayFormatOpenAI:
+		if payload.Usage != nil && len(payload.Choices) == 0 {
+			return simulatedModelCacheStreamEventOpenAIUsage
+		}
+	}
+	return simulatedModelCacheStreamEventOther
+}
+
+func simulatedModelCacheSSEData(event []byte) ([]byte, bool) {
+	normalized := bytes.ReplaceAll(event, []byte("\r\n"), []byte("\n"))
+	lines := bytes.Split(normalized, []byte("\n"))
+	dataLines := make([][]byte, 0, 1)
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		dataLines = append(dataLines, bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))))
+	}
+	if len(dataLines) == 0 {
+		return nil, false
+	}
+	return bytes.Join(dataLines, []byte("\n")), true
+}
+
+func (w *simulatedModelCacheRecorder) writePatchedStreamTail(usage *dto.Usage) (bool, bool, error) {
+	pending := append([]byte(nil), w.streamTail.Bytes()...)
+	pending = append(pending, w.streamPending.Bytes()...)
+	w.streamTail.Reset()
+	w.streamPending.Reset()
+	w.holdingStreamTail = false
+	if len(pending) == 0 {
+		return false, false, nil
+	}
+	if w.responseFormat == types.RelayFormatOpenAI && !w.includeStreamUsage {
+		err := w.writeStreamBytes(pending)
+		if err == nil {
+			w.ResponseWriter.Flush()
+		}
+		return false, false, err
+	}
+
+	chunks := splitSimulatedModelCacheSSEChunks(pending)
+	targetIndex := -1
+	doneIndex := -1
+	for i, chunk := range chunks {
+		switch simulatedModelCacheStreamEventType(w.responseFormat, chunk) {
+		case simulatedModelCacheStreamEventClaudeDelta, simulatedModelCacheStreamEventOpenAIUsage:
+			targetIndex = i
+		case simulatedModelCacheStreamEventOpenAIDone:
+			if doneIndex == -1 {
+				doneIndex = i
+			}
+		}
+	}
+
+	targetFound := false
+	if w.responseFormat == types.RelayFormatOpenAI && targetIndex == -1 && doneIndex >= 0 {
+		usageEvent, err := simulatedModelCacheOpenAIUsageEvent(usage, chunks[doneIndex])
+		if err != nil {
+			writeErr := w.writeStreamBytes(pending)
+			if writeErr == nil {
+				w.ResponseWriter.Flush()
+			}
+			if writeErr != nil {
+				return false, false, writeErr
+			}
+			return false, false, err
+		}
+		chunks = append(chunks, nil)
+		copy(chunks[doneIndex+1:], chunks[doneIndex:])
+		chunks[doneIndex] = usageEvent
+		targetIndex = doneIndex
+		targetFound = true
+	}
+
+	if targetIndex >= 0 && !targetFound {
+		patchedEvent, patched := patchSimulatedModelCacheStreamUsageEvent(w.responseFormat, chunks[targetIndex], usage)
+		if patched {
+			chunks[targetIndex] = patchedEvent
+			targetFound = true
+		}
+	}
+	for _, chunk := range chunks {
+		if err := w.writeStreamBytes(chunk); err != nil {
+			return false, targetFound, err
+		}
+	}
+	w.ResponseWriter.Flush()
+	return targetFound, targetFound, nil
+}
+
+func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []byte, usage *dto.Usage) ([]byte, bool) {
+	if usage == nil {
+		return event, false
+	}
+	data, ok := simulatedModelCacheSSEData(event)
+	if !ok {
+		return event, false
+	}
+	var payload map[string]any
+	if common.Unmarshal(data, &payload) != nil {
+		return event, false
+	}
+	usageMap, _ := payload["usage"].(map[string]any)
+	cachedTokens := usage.PromptTokensDetails.CachedTokens
+	switch format {
+	case types.RelayFormatClaude:
+		if payload["type"] != "message_delta" {
+			return event, false
+		}
+		if usageMap == nil {
+			usageMap = map[string]any{}
+			payload["usage"] = usageMap
+		}
+		inputTokens := usage.PromptTokens
+		if usage.UsageSemantic != "anthropic" {
+			inputTokens -= cachedTokens + simulatedModelCacheCacheCreationTokens(usage)
+			if inputTokens < 0 {
+				inputTokens = 0
+			}
+		}
+		usageMap["input_tokens"] = inputTokens
+		usageMap["cache_read_input_tokens"] = cachedTokens
+		usageMap["output_tokens"] = usage.CompletionTokens
+	case types.RelayFormatOpenAI:
+		if usageMap == nil {
+			return event, false
+		}
+		promptTokens := simulatedModelCacheOpenAIPromptTokens(usage)
+		usageMap["prompt_tokens"] = promptTokens
+		usageMap["completion_tokens"] = usage.CompletionTokens
+		usageMap["total_tokens"] = promptTokens + usage.CompletionTokens
+		promptDetails, _ := usageMap["prompt_tokens_details"].(map[string]any)
+		if promptDetails == nil {
+			promptDetails = map[string]any{}
+			usageMap["prompt_tokens_details"] = promptDetails
+		}
+		promptDetails["cached_tokens"] = cachedTokens
+	default:
+		return event, false
+	}
+	patchedData, err := common.Marshal(payload)
+	if err != nil {
+		return event, false
+	}
+	return replaceSimulatedModelCacheSSEData(event, patchedData), true
+}
+
+func simulatedModelCacheCacheCreationTokens(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	cacheCreationTokens := usage.PromptTokensDetails.CachedCreationTokens
+	splitCacheCreationTokens := usage.ClaudeCacheCreation5mTokens + usage.ClaudeCacheCreation1hTokens
+	if splitCacheCreationTokens > cacheCreationTokens {
+		return splitCacheCreationTokens
+	}
+	return cacheCreationTokens
+}
+
+func simulatedModelCacheOpenAIPromptTokens(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	promptTokens := usage.PromptTokens
+	if usage.UsageSemantic == "anthropic" {
+		promptTokens += usage.PromptTokensDetails.CachedTokens + simulatedModelCacheCacheCreationTokens(usage)
+	}
+	return promptTokens
+}
+
+func replaceSimulatedModelCacheSSEData(event []byte, data []byte) []byte {
+	lines := strings.SplitAfter(string(event), "\n")
+	replaced := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		if replaced {
+			lines[i] = ""
+			continue
+		}
+		prefixLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		lineEnding := ""
+		if strings.HasSuffix(line, "\n") {
+			lineEnding = "\n"
+			if strings.HasSuffix(line, "\r\n") {
+				lineEnding = "\r\n"
+			}
+		}
+		lines[i] = line[:prefixLen] + "data: " + string(data) + lineEnding
+		replaced = true
+	}
+	return []byte(strings.Join(lines, ""))
+}
+
+func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]byte, error) {
+	if usage == nil {
+		return nil, fmt.Errorf("simulated model cache stream usage is nil")
+	}
+	promptTokens := simulatedModelCacheOpenAIPromptTokens(usage)
+	payload := map[string]any{
+		"choices": []any{},
+		"usage": map[string]any{
+			"prompt_tokens":     promptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      promptTokens + usage.CompletionTokens,
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens": usage.PromptTokensDetails.CachedTokens,
+			},
+		},
+	}
+	data, err := common.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	lineEnding := "\n"
+	if bytes.Contains(doneEvent, []byte("\r\n")) {
+		lineEnding = "\r\n"
+	}
+	return []byte("data: " + string(data) + lineEnding + lineEnding), nil
 }
 
 func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) (*simulatedModelCacheAttempt, bool) {
@@ -173,6 +502,7 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		startedAt:          time.Now(),
 	}
 	if !settings.IsExactReplayEnabled() {
+		startSimulatedModelCachePartialMatch(c.Request.Context(), info, attempt)
 		return attempt, false
 	}
 
@@ -189,6 +519,7 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		return nil, false
 	}
 	if !replay.Found {
+		startSimulatedModelCachePartialMatch(c.Request.Context(), info, attempt)
 		return attempt, false
 	}
 
@@ -198,7 +529,7 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 		MatchRatio:  1,
 		ReplayCount: replay.ReplayCount,
 	})
-	body := service.PatchSimulatedModelCacheResponseBody(format, replay.Response.ContentType, replay.Response.Body, &usage, simulatedModelCacheResponseModel(info))
+	body := service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, replay.Response.ContentType, replay.Response.Body, &usage, simulatedModelCacheResponseModel(info))
 	if !isSimulatedModelCacheStreamResponse(replay.Response) {
 		sleepSimulatedModelCacheLatency(c, replay.Response.DurationSeconds, replay.LoadDurationSeconds)
 	}
@@ -207,13 +538,70 @@ func tryServeSimulatedModelCacheReplay(c *gin.Context, info *relaycommon.RelayIn
 	return attempt, true
 }
 
+func startSimulatedModelCachePartialMatch(ctx context.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt) {
+	if attempt == nil || info == nil || !attempt.settings.Enabled || strings.TrimSpace(attempt.promptText) == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	matchCtx, cancel := context.WithCancel(ctx)
+	resultCh := make(chan simulatedModelCachePartialMatchResult, 1)
+	attempt.partialMatchResult = resultCh
+	attempt.partialMatchCancel = cancel
+	req := service.SimulatedModelCachePartialMatchRequest{
+		UserID:        info.UserId,
+		ChannelID:     info.ChannelId,
+		UpstreamModel: attempt.upstreamModelName,
+		PromptText:    attempt.promptText,
+		MinMatchRatio: attempt.settings.MinMatchRatio,
+	}
+	go func() {
+		match, err := service.FindSimulatedModelCachePartialMatch(matchCtx, req)
+		result := simulatedModelCachePartialMatchResult{match: match, err: err}
+		select {
+		case resultCh <- result:
+		case <-matchCtx.Done():
+		}
+	}()
+}
+
+func waitSimulatedModelCachePartialMatch(ctx context.Context, attempt *simulatedModelCacheAttempt) (service.SimulatedModelCachePartialMatch, bool) {
+	if attempt == nil || attempt.partialMatchResult == nil {
+		return service.SimulatedModelCachePartialMatch{}, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return service.SimulatedModelCachePartialMatch{}, false
+	}
+	select {
+	case result := <-attempt.partialMatchResult:
+		return result.match, result.err == nil && result.match.Found
+	case <-ctx.Done():
+		return service.SimulatedModelCachePartialMatch{}, false
+	}
+}
+
 func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt) *simulatedModelCacheRecorder {
 	if attempt == nil {
 		return nil
 	}
+	responseFormat := types.RelayFormat("")
+	includeStreamUsage := true
+	passThrough := false
+	if info != nil {
+		responseFormat = info.RelayFormat
+		includeStreamUsage = info.RelayFormat != types.RelayFormatOpenAI || info.ShouldIncludeUsage
+		passThrough = info.IsStream
+	}
 	recorder := &simulatedModelCacheRecorder{
-		ResponseWriter: c.Writer,
-		passThrough:    info != nil && info.IsStream,
+		ResponseWriter:     c.Writer,
+		passThrough:        passThrough,
+		responseFormat:     responseFormat,
+		includeStreamUsage: includeStreamUsage,
+		partialMatchCancel: attempt.partialMatchCancel,
 	}
 	if recorder.passThrough {
 		recorder.lastStreamEventAt = attempt.startedAt
@@ -231,11 +619,16 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	}
 	originalWriter := recorder.ResponseWriter
 	c.Writer = originalWriter
+	if attempt.partialMatchCancel != nil {
+		defer attempt.partialMatchCancel()
+	}
 
 	recorder.finishStreamDelays()
 	originalBody := append([]byte(nil), recorder.body.Bytes()...)
 	if usage == nil {
-		if !recorder.passThrough {
+		if recorder.passThrough {
+			_ = recorder.releaseStreamTail()
+		} else {
 			flushSimulatedModelCacheRecorder(recorder, originalBody)
 		}
 		return
@@ -243,25 +636,32 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	body := originalBody
 	originalUsage := *usage
 	if attempt.settings.Enabled && strings.TrimSpace(attempt.promptText) != "" {
-		match, _ := service.FindSimulatedModelCachePartialMatch(c.Request.Context(), service.SimulatedModelCachePartialMatchRequest{
-			UserID:        info.UserId,
-			ChannelID:     info.ChannelId,
-			UpstreamModel: attempt.upstreamModelName,
-			PromptText:    attempt.promptText,
-			MinMatchRatio: attempt.settings.MinMatchRatio,
-		})
-		if match.Found {
+		match, found := waitSimulatedModelCachePartialMatch(c.Request.Context(), attempt)
+		if found {
 			info.SimulatedModelCacheInfo = service.ApplySimulatedModelCacheUsageRewrite(usage, service.SimulatedModelCacheUsageRewrite{
 				Mode:       "partial_rewrite",
 				MatchRatio: match.MatchRatio,
 			})
-			if !recorder.passThrough {
-				body = service.PatchSimulatedModelCacheResponseBody(attempt.finalRequestFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
+			if recorder.passThrough {
+				injected, targetFound, writeErr := recorder.writePatchedStreamTail(usage)
+				info.SimulatedModelCacheInfo.StreamUsageInjected = &injected
+				if usage.PromptTokensDetails.CachedTokens > 0 && recorder.includeStreamUsage && !targetFound {
+					logger.LogWarn(c, fmt.Sprintf("simulated model cache stream usage event not found: request_id=%s format=%s cached_tokens=%d",
+						info.RequestId, info.RelayFormat, usage.PromptTokensDetails.CachedTokens))
+				}
+				if writeErr != nil {
+					logger.LogWarn(c, fmt.Sprintf("simulated model cache stream usage write failed: request_id=%s format=%s error=%s",
+						info.RequestId, info.RelayFormat, writeErr.Error()))
+				}
+			} else {
+				body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
 			}
 		}
 	}
 
-	if !recorder.passThrough {
+	if recorder.passThrough && (info.SimulatedModelCacheInfo == nil || info.SimulatedModelCacheInfo.StreamUsageInjected == nil) {
+		_ = recorder.releaseStreamTail()
+	} else if !recorder.passThrough {
 		flushSimulatedModelCacheRecorder(recorder, body)
 	}
 	streamDelaysMS := []int64(nil)
@@ -294,6 +694,13 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 
 func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModelCacheRecorder) {
 	if recorder != nil {
+		if recorder.partialMatchCancel != nil {
+			recorder.partialMatchCancel()
+		}
+		if recorder.passThrough {
+			recorder.finishStreamDelays()
+			_ = recorder.releaseStreamTail()
+		}
 		c.Writer = recorder.ResponseWriter
 	}
 }
@@ -480,6 +887,9 @@ func simulatedModelCacheStreamDelay(response service.SimulatedModelCacheResponse
 }
 
 func flushSimulatedModelCacheRecorder(recorder *simulatedModelCacheRecorder, body []byte) {
+	if recorder.passThrough {
+		return
+	}
 	statusCode := normalizeSimulatedModelCacheStatusCode(recorder.Status())
 	recorder.ResponseWriter.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	recorder.ResponseWriter.WriteHeader(statusCode)
