@@ -126,6 +126,13 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
                 data.multi_key_type === 'least_requests'
                   ? Number(data.multi_key_least_requests_window_seconds) || 60
                   : undefined,
+              channel_info: payload.channel_info
+                ? {
+                    ...payload.channel_info,
+                    is_multi_key: true,
+                    multi_key_mode: data.multi_key_type || 'random',
+                  }
+                : undefined,
             }
           : payloadWithKeyMode
 

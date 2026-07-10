@@ -139,6 +139,45 @@ export const DEFAULT_STATUS_CODE_RETRY_STATUS_CODES =
   '100-199,300-399,401-407,409-499,500-503,505-523,525-599'
 export const DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS = 50
 
+const CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO: Channel['channel_info'] = {
+  is_multi_key: false,
+  multi_key_size: 0,
+  multi_key_polling_index: 0,
+  multi_key_affinity_ttl_seconds: 3600,
+  multi_key_least_requests_window_seconds: 60,
+  multi_key_mode: 'random',
+  channel_overload_protection: {
+    enabled: false,
+    requests_per_second: 0,
+    requests_per_minute: 0,
+    concurrent_requests: 0,
+  },
+  multi_key_overload_protection: {
+    enabled: false,
+    requests_per_second: 0,
+    requests_per_minute: 0,
+    concurrent_requests: 0,
+  },
+}
+
+function overloadPayload(
+  formData: ChannelFormValues,
+  scope: 'channel' | 'multi_key'
+) {
+  return {
+    enabled: Boolean(formData[`${scope}_overload_enabled`]),
+    requests_per_second: Number(
+      formData[`${scope}_overload_requests_per_second`]
+    ),
+    requests_per_minute: Number(
+      formData[`${scope}_overload_requests_per_minute`]
+    ),
+    concurrent_requests: Number(
+      formData[`${scope}_overload_concurrent_requests`]
+    ),
+  }
+}
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -197,6 +236,14 @@ export const channelFormSchema = z
       .optional(),
     multi_key_affinity_ttl_seconds: z.number().optional(),
     multi_key_least_requests_window_seconds: z.number().optional(),
+    multi_key_overload_enabled: z.boolean().optional(),
+    multi_key_overload_requests_per_second: z.number().optional(),
+    multi_key_overload_requests_per_minute: z.number().optional(),
+    multi_key_overload_concurrent_requests: z.number().optional(),
+    channel_overload_enabled: z.boolean().optional(),
+    channel_overload_requests_per_second: z.number().optional(),
+    channel_overload_requests_per_minute: z.number().optional(),
+    channel_overload_concurrent_requests: z.number().optional(),
     batch_add_set_key_prefix_2_name: z.boolean().optional(),
     key_mode: z.enum(['append', 'replace']).optional(), // For editing multi-key channels
     // Channel extra settings (stored in setting JSON, not sent directly)
@@ -344,6 +391,43 @@ export const channelFormSchema = z
       }
     }
 
+    const overloadFields = [
+      ['channel_overload_enabled', 'channel_overload'] as const,
+      ['multi_key_overload_enabled', 'multi_key_overload'] as const,
+    ]
+    for (const [enabledField, prefix] of overloadFields) {
+      const values = [
+        data[`${prefix}_requests_per_second`],
+        data[`${prefix}_requests_per_minute`],
+        data[`${prefix}_concurrent_requests`],
+      ]
+      for (const [index, value] of values.entries()) {
+        if (
+          !Number.isInteger(value) ||
+          Number(value) < 0 ||
+          Number(value) > 2147483647
+        ) {
+          const suffix = [
+            'requests_per_second',
+            'requests_per_minute',
+            'concurrent_requests',
+          ][index]
+          addRequiredIssue(
+            ctx,
+            `${prefix}_${suffix}`,
+            'Overload thresholds must be integers from 0 to 2147483647.'
+          )
+        }
+      }
+      if (data[enabledField] && values.every((value) => Number(value) === 0)) {
+        addRequiredIssue(
+          ctx,
+          `${prefix}_requests_per_second`,
+          'Set at least one overload threshold above zero.'
+        )
+      }
+    }
+
     if (data.simulated_model_cache_enabled) {
       if (
         !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
@@ -448,6 +532,14 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   multi_key_type: 'random',
   multi_key_affinity_ttl_seconds: 3600,
   multi_key_least_requests_window_seconds: 60,
+  multi_key_overload_enabled: false,
+  multi_key_overload_requests_per_second: 0,
+  multi_key_overload_requests_per_minute: 0,
+  multi_key_overload_concurrent_requests: 0,
+  channel_overload_enabled: false,
+  channel_overload_requests_per_second: 0,
+  channel_overload_requests_per_minute: 0,
+  channel_overload_concurrent_requests: 0,
   batch_add_set_key_prefix_2_name: false,
   key_mode: 'append',
   // Channel extra settings
@@ -704,6 +796,28 @@ export function transformChannelToFormDefaults(
       channel.channel_info.multi_key_affinity_ttl_seconds || 3600,
     multi_key_least_requests_window_seconds:
       channel.channel_info.multi_key_least_requests_window_seconds || 60,
+    multi_key_overload_enabled:
+      channel.channel_info.multi_key_overload_protection?.enabled === true,
+    multi_key_overload_requests_per_second:
+      channel.channel_info.multi_key_overload_protection?.requests_per_second ||
+      0,
+    multi_key_overload_requests_per_minute:
+      channel.channel_info.multi_key_overload_protection?.requests_per_minute ||
+      0,
+    multi_key_overload_concurrent_requests:
+      channel.channel_info.multi_key_overload_protection?.concurrent_requests ||
+      0,
+    channel_overload_enabled:
+      channel.channel_info.channel_overload_protection?.enabled === true,
+    channel_overload_requests_per_second:
+      channel.channel_info.channel_overload_protection?.requests_per_second ||
+      0,
+    channel_overload_requests_per_minute:
+      channel.channel_info.channel_overload_protection?.requests_per_minute ||
+      0,
+    channel_overload_concurrent_requests:
+      channel.channel_info.channel_overload_protection?.concurrent_requests ||
+      0,
     batch_add_set_key_prefix_2_name: false,
     key_mode: 'append', // Default to append mode for editing multi-key channels
     // Channel extra settings
@@ -988,6 +1102,13 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      ...CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO,
+      is_multi_key: mode === 'multi_to_single',
+      multi_key_mode: formData.multi_key_type || 'random',
+      channel_overload_protection: overloadPayload(formData, 'channel'),
+      multi_key_overload_protection: overloadPayload(formData, 'multi_key'),
+    },
   }
 
   // Clean up empty strings to null for optional fields
@@ -1046,6 +1167,11 @@ export function transformFormDataToUpdatePayload(
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      ...CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO,
+      channel_overload_protection: overloadPayload(formData, 'channel'),
+      multi_key_overload_protection: overloadPayload(formData, 'multi_key'),
+    },
   }
 
   // Only include key if it was changed (not empty)

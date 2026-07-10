@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -211,6 +212,10 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		req.Header.Set("mj-api-secret", auth)
 	}
 	defer cancel()
+	if err := CommitChannelOverloadLease(c); err != nil {
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, string(types.ErrorCodeChannelOverloaded), http.StatusServiceUnavailable), nullBytes, err
+	}
+	defer ReleaseChannelOverloadLease(c)
 	resp, err := GetHttpClient().Do(req)
 	if err != nil {
 		common.SysLog("do request failed: " + err.Error())

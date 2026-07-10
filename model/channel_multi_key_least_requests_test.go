@@ -84,7 +84,7 @@ func TestMultiKeyLeastRequestsSkipsDisabledAndExcludedIndexes(t *testing.T) {
 		},
 	}
 
-	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection("", map[int]struct{}{1: {}})
+	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection("", map[int]struct{}{1: {}}, true)
 
 	require.Nil(t, newAPIError)
 	assert.Equal(t, "key-c", key)

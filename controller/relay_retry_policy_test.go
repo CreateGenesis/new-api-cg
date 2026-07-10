@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -37,6 +39,55 @@ func TestRelayRetryPolicyFromContextUsesGlobalDefaults(t *testing.T) {
 	assert.True(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 0))
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusBadRequest), policy, 0))
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 2))
+}
+
+func TestChannelOverloadedNeverRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("500-503")
+	require.NoError(t, err)
+	policy := relayRetryPolicy{retryTimes: 3, statusCodeRanges: ranges}
+	overloadErr := channelOverloadedError()
+
+	assert.False(t, shouldRetryWithPolicy(ctx, overloadErr, policy, 0))
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, overloadErr, relayRetryPolicy{
+		retryTimes: 3, statusCodeRanges: ranges, channelOverride: true,
+	}, 0))
+	assert.False(t, shouldRetryTaskRelay(ctx, 1, service.TaskErrorWrapperLocal(
+		overloadErr.Err, string(types.ErrorCodeChannelOverloaded), http.StatusServiceUnavailable,
+	), 3))
+}
+
+func TestLockedChannelOverloadDoesNotFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/task/remix", nil)
+	channel := &model.Channel{
+		Id: 940002, Type: constant.ChannelTypeOpenAI, Name: "locked", Key: "key-a",
+		ChannelInfo: model.ChannelInfo{ChannelOverloadProtection: model.OverloadProtection{
+			Enabled: true, ConcurrentRequests: 1,
+		}},
+	}
+	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, channel, "sora"))
+	info := &relaycommon.RelayInfo{OriginModelName: "sora"}
+	param := &service.RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: "sora", Retry: common.GetPointer(0)}
+	first, scope, err := service.AcquireChannelOverloadLease(ctx.Request.Context(), channel, 0)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Empty(t, scope)
+	t.Cleanup(func() { first.Release(context.Background()) })
+
+	selected, lease, overloadErr := acquireRelayOverloadLease(ctx, info, param, channel, true)
+
+	assert.Same(t, channel, selected)
+	assert.Nil(t, lease)
+	require.NotNil(t, overloadErr)
+	assert.Equal(t, types.ErrorCodeChannelOverloaded, overloadErr.GetErrorCode())
+	assert.Empty(t, param.ExcludedChannelIDs)
 }
 
 func TestPrepareMultiKeyChannelRetrySynchronizesContextAndRelayInfo(t *testing.T) {

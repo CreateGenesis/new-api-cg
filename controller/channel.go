@@ -628,7 +628,7 @@ func AddChannel(c *gin.Context) {
 		addChannelRequest.Channel.ChannelInfo.MultiKeyMode = addChannelRequest.MultiKeyMode
 		addChannelRequest.Channel.ChannelInfo.MultiKeyAffinityTTLSeconds = normalizeMultiKeyAffinityTTLSeconds(addChannelRequest.MultiKeyAffinityTTLSeconds)
 		addChannelRequest.Channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds = addChannelRequest.MultiKeyLeastRequestsWindowSeconds
-		if err := model.ValidateAndNormalizeMultiKeySettings(&addChannelRequest.Channel.ChannelInfo); err != nil {
+		if err := model.ValidateAndNormalizeChannelInfo(&addChannelRequest.Channel.ChannelInfo); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": err.Error(),
@@ -680,6 +680,10 @@ func AddChannel(c *gin.Context) {
 			"success": false,
 			"message": "不支持的添加模式",
 		})
+		return
+	}
+	if err := model.ValidateAndNormalizeChannelInfo(&addChannelRequest.Channel.ChannelInfo); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
 
@@ -972,8 +976,11 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 
-	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
+	incomingChannelInfo := channel.ChannelInfo
+	// Always copy runtime multi-key state from the original channel. Only the two
+	// administrator-editable overload configurations are accepted from channel_info.
 	channel.ChannelInfo = originChannel.ChannelInfo
+	mergeChannelOverloadSettings(&channel.ChannelInfo, incomingChannelInfo, requestData)
 
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
@@ -991,14 +998,12 @@ func UpdateChannel(c *gin.Context) {
 	if channel.MultiKeyLeastRequestsWindowSeconds != nil && channel.ChannelInfo.IsMultiKey {
 		channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds = *channel.MultiKeyLeastRequestsWindowSeconds
 	}
-	if channel.ChannelInfo.IsMultiKey {
-		if err := model.ValidateAndNormalizeMultiKeySettings(&channel.ChannelInfo); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
+	if err := model.ValidateAndNormalizeChannelInfo(&channel.ChannelInfo); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
 	}
 
 	// 处理多key模式下的密钥追加/覆盖逻辑
@@ -1118,6 +1123,22 @@ func UpdateChannel(c *gin.Context) {
 		"data":    channel,
 	})
 	return
+}
+
+func mergeChannelOverloadSettings(target *model.ChannelInfo, incoming model.ChannelInfo, requestData map[string]any) {
+	if target == nil {
+		return
+	}
+	rawChannelInfo, ok := requestData["channel_info"].(map[string]any)
+	if !ok {
+		return
+	}
+	if _, provided := rawChannelInfo["channel_overload_protection"]; provided {
+		target.ChannelOverloadProtection = incoming.ChannelOverloadProtection
+	}
+	if _, provided := rawChannelInfo["multi_key_overload_protection"]; provided {
+		target.MultiKeyOverloadProtection = incoming.MultiKeyOverloadProtection
+	}
 }
 
 func UpdateChannelStatus(c *gin.Context) {

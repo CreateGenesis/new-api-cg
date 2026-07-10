@@ -65,6 +65,18 @@ function testChannel(settings: string): Channel {
       multi_key_mode: 'random',
       multi_key_affinity_ttl_seconds: 3600,
       multi_key_least_requests_window_seconds: 60,
+      channel_overload_protection: {
+        enabled: false,
+        requests_per_second: 0,
+        requests_per_minute: 0,
+        concurrent_requests: 0,
+      },
+      multi_key_overload_protection: {
+        enabled: false,
+        requests_per_second: 0,
+        requests_per_minute: 0,
+        concurrent_requests: 0,
+      },
     },
     settings,
   }
@@ -245,5 +257,72 @@ describe('channel form least requests settings', () => {
         )
       }
     }
+  })
+})
+
+describe('channel form overload protection', () => {
+  test('saves channel and multi-key overload settings', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_mode: 'multi_to_single',
+      channel_overload_enabled: true,
+      channel_overload_requests_per_second: 5,
+      multi_key_overload_enabled: true,
+      multi_key_overload_concurrent_requests: 2,
+    })
+
+    assert.deepEqual(
+      payload.channel.channel_info?.channel_overload_protection,
+      {
+        enabled: true,
+        requests_per_second: 5,
+        requests_per_minute: 0,
+        concurrent_requests: 0,
+      }
+    )
+    assert.deepEqual(
+      payload.channel.channel_info?.multi_key_overload_protection,
+      {
+        enabled: true,
+        requests_per_second: 0,
+        requests_per_minute: 0,
+        concurrent_requests: 2,
+      }
+    )
+  })
+
+  test('loads existing overload settings', () => {
+    const channel = testChannel('{}')
+    channel.channel_info.is_multi_key = true
+    channel.channel_info.channel_overload_protection = {
+      enabled: true,
+      requests_per_second: 3,
+      requests_per_minute: 20,
+      concurrent_requests: 4,
+    }
+    channel.channel_info.multi_key_overload_protection = {
+      enabled: true,
+      requests_per_second: 1,
+      requests_per_minute: 10,
+      concurrent_requests: 2,
+    }
+
+    const form = transformChannelToFormDefaults(channel)
+    assert.equal(form.channel_overload_requests_per_minute, 20)
+    assert.equal(form.multi_key_overload_concurrent_requests, 2)
+  })
+
+  test('rejects enabled overload protection with all thresholds zero', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      channel_overload_enabled: true,
+    })
+    assert.equal(parsed.success, false)
   })
 })

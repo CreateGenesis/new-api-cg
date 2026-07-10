@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -22,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -225,6 +227,13 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 			Description: "quota_not_enough",
 		}
 	}
+	if admission, ok := c.Get("overload_admit_current"); ok {
+		if admit, valid := admission.(func() *types.NewAPIError); valid {
+			if overloadErr := admit(); overloadErr != nil {
+				return &dto.MidjourneyResponse{Code: 4, Description: string(types.ErrorCodeChannelOverloaded), Result: overloadErr.Error()}
+			}
+		}
+	}
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
@@ -392,6 +401,7 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *dto.MidjourneyResponse 
 
 func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dto.MidjourneyResponse {
 	consumeQuota := true
+	channelLocked := false
 	var midjRequest dto.MidjourneyRequest
 	err := common.UnmarshalBodyReusable(c, &midjRequest)
 	if err != nil {
@@ -480,9 +490,11 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			if channel.Status != common.ChannelStatusEnabled {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
 			}
-			c.Set("base_url", channel.GetBaseURL())
-			c.Set("channel_id", originTask.ChannelId)
-			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+			if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+				return service.MidjourneyErrorWrapper(constant.MjRequestError, "channel_no_available_key")
+			}
+			relayInfo.InitChannelMeta(c)
+			channelLocked = true
 			logger.LogDebug(c, "Midjourney action uses origin channel: id=%s, base_url=%s", strconv.Itoa(originTask.ChannelId), channel.GetBaseURL())
 		}
 		midjRequest.Prompt = originTask.Prompt
@@ -532,6 +544,21 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			Description: "quota_not_enough",
 		}
 	}
+
+	channel, err := model.CacheGetChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+	if err != nil {
+		return &dto.MidjourneyResponse{Code: 4, Description: "get_channel_info_failed"}
+	}
+	if admission, ok := c.Get("overload_admission"); ok {
+		if admit, valid := admission.(func(*model.Channel, bool) *types.NewAPIError); valid {
+			if overloadErr := admit(channel, channelLocked); overloadErr != nil {
+				return &dto.MidjourneyResponse{Code: 4, Description: string(types.ErrorCodeChannelOverloaded), Result: overloadErr.Error()}
+			}
+		}
+	}
+	relayInfo.InitChannelMeta(c)
+	baseURL = c.GetString("base_url")
+	fullRequestURL = fmt.Sprintf("%s%s", baseURL, requestURL)
 
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {

@@ -27,12 +27,17 @@ func WssHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 	resp, err := adaptor.DoRequest(c, info, nil)
 	if err != nil {
-		return types.NewError(err, types.ErrorCodeDoRequestFailed)
+		return types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
 	if resp != nil {
 		info.TargetWs = resp.(*websocket.Conn)
 		defer info.TargetWs.Close()
+	}
+	if value, exists := c.Get("websocket_overload_lease"); exists {
+		if lease, ok := value.(*service.OverloadLease); ok && lease != nil {
+			defer lease.Release(c.Request.Context())
+		}
 	}
 
 	usage, newAPIError := adaptor.DoResponse(c, nil, info)

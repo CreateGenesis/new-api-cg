@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"sync"
@@ -76,6 +77,44 @@ type ChannelInfo struct {
 	MultiKeyAffinityTTLSeconds         int                   `json:"multi_key_affinity_ttl_seconds,omitempty"`
 	MultiKeyLeastRequestsWindowSeconds int                   `json:"multi_key_least_requests_window_seconds"`
 	MultiKeyMode                       constant.MultiKeyMode `json:"multi_key_mode"`
+	ChannelOverloadProtection          OverloadProtection    `json:"channel_overload_protection"`
+	MultiKeyOverloadProtection         OverloadProtection    `json:"multi_key_overload_protection"`
+}
+
+type OverloadProtection struct {
+	Enabled            bool `json:"enabled"`
+	RequestsPerSecond  int  `json:"requests_per_second"`
+	RequestsPerMinute  int  `json:"requests_per_minute"`
+	ConcurrentRequests int  `json:"concurrent_requests"`
+}
+
+func (p OverloadProtection) Validate() error {
+	if p.RequestsPerSecond < 0 || p.RequestsPerMinute < 0 || p.ConcurrentRequests < 0 {
+		return errors.New("overload protection thresholds must be non-negative integers")
+	}
+	if p.RequestsPerSecond > math.MaxInt32 || p.RequestsPerMinute > math.MaxInt32 || p.ConcurrentRequests > math.MaxInt32 {
+		return errors.New("overload protection thresholds must not exceed 2147483647")
+	}
+	if p.Enabled && p.RequestsPerSecond == 0 && p.RequestsPerMinute == 0 && p.ConcurrentRequests == 0 {
+		return errors.New("enabled overload protection requires at least one positive threshold")
+	}
+	return nil
+}
+
+func ValidateAndNormalizeChannelInfo(info *ChannelInfo) error {
+	if info == nil {
+		return nil
+	}
+	if err := info.ChannelOverloadProtection.Validate(); err != nil {
+		return fmt.Errorf("channel overload protection: %w", err)
+	}
+	if err := info.MultiKeyOverloadProtection.Validate(); err != nil {
+		return fmt.Errorf("multi-key overload protection: %w", err)
+	}
+	if !info.IsMultiKey {
+		info.MultiKeyOverloadProtection.Enabled = false
+	}
+	return ValidateAndNormalizeMultiKeySettings(info)
 }
 
 type ChannelSortOptions struct {
@@ -172,7 +211,7 @@ func ApplyChannelGroupFilter(query *gorm.DB, group string) *gorm.DB {
 
 // Value implements driver.Valuer interface
 func (c ChannelInfo) Value() (driver.Value, error) {
-	if err := ValidateAndNormalizeMultiKeySettings(&c); err != nil {
+	if err := ValidateAndNormalizeChannelInfo(&c); err != nil {
 		return nil, err
 	}
 	return common.Marshal(&c)
@@ -252,10 +291,10 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 }
 
 func (channel *Channel) GetNextEnabledKeyWithAffinity(affinityValue string) (string, int, *types.NewAPIError) {
-	return channel.GetNextEnabledKeyWithSelection(affinityValue, nil)
+	return channel.GetNextEnabledKeyWithSelection(affinityValue, nil, true)
 }
 
-func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, excludedIndexes map[int]struct{}) (string, int, *types.NewAPIError) {
+func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, excludedIndexes map[int]struct{}, persistAffinity bool) (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
@@ -307,7 +346,7 @@ func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, exc
 		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModeAffinity:
-		selectedIdx := channel.selectMultiKeyAffinityIndex(enabledIdx, affinityValue)
+		selectedIdx := channel.selectMultiKeyAffinityIndex(enabledIdx, affinityValue, persistAffinity)
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModeLeastRequests:
 		selectedIdx := channel.selectMultiKeyLeastRequestsIndex(enabledIdx)
@@ -354,7 +393,7 @@ func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, exc
 	}
 }
 
-func (channel *Channel) selectMultiKeyAffinityIndex(enabledIdx []int, affinityValue string) int {
+func (channel *Channel) selectMultiKeyAffinityIndex(enabledIdx []int, affinityValue string, persistSelection bool) int {
 	if len(enabledIdx) == 0 {
 		return 0
 	}
@@ -379,8 +418,10 @@ func (channel *Channel) selectMultiKeyAffinityIndex(enabledIdx []int, affinityVa
 	if ttlSeconds <= 0 {
 		ttlSeconds = defaultMultiKeyAffinityTTLSeconds
 	}
-	if err := cache.SetWithTTL(cacheKey, selectedIdx, time.Duration(ttlSeconds)*time.Second); err != nil {
-		common.SysError(fmt.Sprintf("multi-key affinity cache set failed: channel_id=%d, err=%v", channel.Id, err))
+	if persistSelection {
+		if err := cache.SetWithTTL(cacheKey, selectedIdx, time.Duration(ttlSeconds)*time.Second); err != nil {
+			common.SysError(fmt.Sprintf("multi-key affinity cache set failed: channel_id=%d, err=%v", channel.Id, err))
+		}
 	}
 	return selectedIdx
 }

@@ -164,7 +164,7 @@ func Distribute() func(c *gin.Context) {
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
-			service.RecordChannelAffinity(c, channel.Id)
+			service.RecordChannelAffinity(c, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 		}
 	}
 }
@@ -469,10 +469,11 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel.ChannelInfo.IsMultiKey {
 		excludedIndexes = getTriedMultiKeyIndexes(c, channel.Id)
 	}
-	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes)
-	if newAPIError != nil && len(excludedIndexes) > 0 && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
+	persistAffinity := !common.GetContextKeyBool(c, constant.ContextKeyChannelMultiKeyOverload)
+	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes, persistAffinity)
+	if newAPIError != nil && len(excludedIndexes) > 0 && !c.GetBool("overload_key_selection") && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
 		clearTriedMultiKeyIndexes(c, channel.Id)
-		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil)
+		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil, true)
 	}
 	if newAPIError != nil {
 		return newAPIError

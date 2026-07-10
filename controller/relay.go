@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -75,16 +76,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
 	)
-
-	if relayFormat == types.RelayFormatOpenAIRealtime {
-		var err error
-		ws, err = upgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil {
-			helper.WssError(c, ws, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry()).ToOpenAIError())
-			return
-		}
-		defer ws.Close()
-	}
 
 	defer func() {
 		if newAPIError != nil {
@@ -203,9 +194,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		sameChannelRetry := 0
 
 		for {
+			var overloadLease *service.OverloadLease
+			channel, overloadLease, newAPIError = acquireRelayOverloadLease(c, relayInfo, retryParam, channel, false)
+			if newAPIError != nil {
+				relayInfo.LastError = newAPIError
+				break
+			}
+			service.SetChannelOverloadLease(c, overloadLease)
 			addUsedChannel(c, channel.Id)
 			bodyStorage, bodyErr := common.GetBodyStorage(c)
 			if bodyErr != nil {
+				releaseOverloadLease(overloadLease)
 				// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
 				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
 					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
@@ -215,6 +214,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				break
 			}
 			c.Request.Body = io.NopCloser(bodyStorage)
+			if relayFormat == types.RelayFormatOpenAIRealtime && ws == nil {
+				ws, err = upgrader.Upgrade(c.Writer, c.Request, nil)
+				if err != nil {
+					service.ClearChannelOverloadLease(c)
+					releaseOverloadLease(overloadLease)
+					return
+				}
+				defer ws.Close()
+				relayInfo.ClientWs = ws
+			}
 
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -226,6 +235,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
+			releaseOverloadLease(overloadLease)
+			service.ClearChannelOverloadLease(c)
 
 			if newAPIError == nil {
 				relayInfo.LastError = nil
@@ -264,6 +275,71 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam, channel *model.Channel, channelLocked bool) (*model.Channel, *service.OverloadLease, *types.NewAPIError) {
+	if _, specified := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specified {
+		return channel, nil, nil
+	}
+	for {
+		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		lease, scope, err := service.AcquireChannelOverloadLease(c.Request.Context(), channel, keyIndex)
+		if err != nil {
+			return channel, nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
+		}
+		if lease != nil || scope == "" {
+			return channel, lease, nil
+		}
+		if scope == service.OverloadScopeMultiKey {
+			c.Set("overload_key_selection", true)
+			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyOverload, true)
+			setupErr := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
+			c.Set("overload_key_selection", false)
+			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyOverload, false)
+			if setupErr == nil {
+				info.InitChannelMeta(c)
+				continue
+			}
+		}
+		if channelLocked {
+			return channel, nil, channelOverloadedError()
+		}
+
+		if retryParam.ExcludedChannelIDs == nil {
+			retryParam.ExcludedChannelIDs = make(map[int]struct{})
+		}
+		retryParam.ExcludedChannelIDs[channel.Id] = struct{}{}
+		next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(retryParam)
+		if selectErr != nil {
+			return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
+		}
+		if next == nil {
+			return channel, nil, channelOverloadedError()
+		}
+		if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.OriginModelName); setupErr != nil {
+			return channel, nil, setupErr
+		}
+		if retryParam.TokenGroup == "auto" {
+			common.SetContextKey(c, constant.ContextKeyAutoGroup, selectGroup)
+		}
+		newGroupRatio := helper.HandleGroupRatio(c, info)
+		info.PriceData.GroupRatioInfo = newGroupRatio
+		info.InitChannelMeta(c)
+		channel = next
+	}
+}
+
+func channelOverloadedError() *types.NewAPIError {
+	return types.NewError(errors.New("all available channels are overloaded"), types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
+}
+
+func releaseOverloadLease(lease *service.OverloadLease) {
+	if lease == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	lease.Release(ctx)
 }
 
 var upgrader = websocket.Upgrader{
@@ -604,6 +680,41 @@ func RelayMidjourney(c *gin.Context) {
 		return
 	}
 
+	protectedSubmission := relayInfo.RelayMode != relayconstant.RelayModeMidjourneyNotify &&
+		relayInfo.RelayMode != relayconstant.RelayModeMidjourneyTaskFetch &&
+		relayInfo.RelayMode != relayconstant.RelayModeMidjourneyTaskFetchByCondition &&
+		relayInfo.RelayMode != relayconstant.RelayModeMidjourneyTaskImageSeed
+	if protectedSubmission {
+		c.Set("overload_admission", func(channel *model.Channel, locked bool) *types.NewAPIError {
+			retryParam := &service.RetryParam{
+				Ctx: c, TokenGroup: relayInfo.TokenGroup, ModelName: relayInfo.OriginModelName,
+				RequestPath: c.Request.URL.Path, Retry: common.GetPointer(0),
+			}
+			selected, lease, newAPIError := acquireRelayOverloadLease(c, relayInfo, retryParam, channel, locked)
+			if newAPIError != nil {
+				return newAPIError
+			}
+			channel = selected
+			service.SetChannelOverloadLease(c, lease)
+			relayInfo.InitChannelMeta(c)
+			addUsedChannel(c, channel.Id)
+			return nil
+		})
+		c.Set("overload_admit_current", func() *types.NewAPIError {
+			channel, channelErr := model.CacheGetChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+			if channelErr != nil {
+				return types.NewError(channelErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+			}
+			admit := c.MustGet("overload_admission").(func(*model.Channel, bool) *types.NewAPIError)
+			return admit(channel, false)
+		})
+		defer func() {
+			lease := service.GetChannelOverloadLease(c)
+			releaseOverloadLease(lease)
+			service.ClearChannelOverloadLease(c)
+		}()
+	}
+
 	var mjErr *dto.MidjourneyResponse
 	switch relayInfo.RelayMode {
 	case relayconstant.RelayModeMidjourneyNotify:
@@ -620,6 +731,14 @@ func RelayMidjourney(c *gin.Context) {
 	//err = relayMidjourneySubmit(c, relayMode)
 	log.Println(mjErr)
 	if mjErr != nil {
+		if mjErr.Description == string(types.ErrorCodeChannelOverloaded) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"description": mjErr.Result,
+				"type":        "new_api_error",
+				"code":        types.ErrorCodeChannelOverloaded,
+			})
+			return
+		}
 		statusCode := http.StatusBadRequest
 		if mjErr.Code == 30 {
 			mjErr.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
@@ -708,6 +827,7 @@ func RelayTask(c *gin.Context) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		var channel *model.Channel
+		var channelErr *types.NewAPIError
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
@@ -718,7 +838,6 @@ func RelayTask(c *gin.Context) {
 				}
 			}
 		} else {
-			var channelErr *types.NewAPIError
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
 				logger.LogError(c, channelErr.Error())
@@ -727,7 +846,6 @@ func RelayTask(c *gin.Context) {
 			}
 		}
 
-		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
@@ -739,7 +857,18 @@ func RelayTask(c *gin.Context) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		var overloadLease *service.OverloadLease
+		locked := relayInfo.LockedChannel != nil
+		channel, overloadLease, channelErr = acquireRelayOverloadLease(c, relayInfo, retryParam, channel, locked)
+		if channelErr != nil {
+			taskErr = service.TaskErrorWrapperLocal(channelErr.Err, string(types.ErrorCodeChannelOverloaded), http.StatusServiceUnavailable)
+			break
+		}
+		service.SetChannelOverloadLease(c, overloadLease)
+		addUsedChannel(c, channel.Id)
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
+		releaseOverloadLease(overloadLease)
+		service.ClearChannelOverloadLease(c)
 		if taskErr == nil {
 			break
 		}
@@ -806,6 +935,9 @@ func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
 
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError, retryTimes int) bool {
 	if taskErr == nil {
+		return false
+	}
+	if taskErr.Code == string(types.ErrorCodeChannelOverloaded) {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {

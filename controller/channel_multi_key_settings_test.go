@@ -44,3 +44,21 @@ func TestAddChannelRejectsInvalidLeastRequestsWindow(t *testing.T) {
 	assert.False(t, response.Success)
 	assert.Contains(t, response.Message, "multiple of 10")
 }
+
+func TestMergeChannelOverloadSettingsPreservesOmittedConfig(t *testing.T) {
+	target := model.ChannelInfo{
+		ChannelOverloadProtection:  model.OverloadProtection{Enabled: true, RequestsPerSecond: 2},
+		MultiKeyOverloadProtection: model.OverloadProtection{Enabled: true, ConcurrentRequests: 3},
+	}
+	incoming := model.ChannelInfo{
+		ChannelOverloadProtection: model.OverloadProtection{Enabled: true, RequestsPerMinute: 20},
+	}
+
+	mergeChannelOverloadSettings(&target, incoming, map[string]any{
+		"channel_info": map[string]any{"channel_overload_protection": map[string]any{}},
+	})
+
+	assert.Equal(t, 20, target.ChannelOverloadProtection.RequestsPerMinute)
+	assert.True(t, target.MultiKeyOverloadProtection.Enabled)
+	assert.Equal(t, 3, target.MultiKeyOverloadProtection.ConcurrentRequests)
+}

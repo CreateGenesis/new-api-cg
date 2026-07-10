@@ -34,6 +34,32 @@ export const channelInfoSchema = z.object({
   multi_key_mode: z
     .enum(['random', 'polling', 'affinity', 'least_requests'])
     .default('random'),
+  channel_overload_protection: z
+    .object({
+      enabled: z.boolean().default(false),
+      requests_per_second: z.number().int().min(0).default(0),
+      requests_per_minute: z.number().int().min(0).default(0),
+      concurrent_requests: z.number().int().min(0).default(0),
+    })
+    .default({
+      enabled: false,
+      requests_per_second: 0,
+      requests_per_minute: 0,
+      concurrent_requests: 0,
+    }),
+  multi_key_overload_protection: z
+    .object({
+      enabled: z.boolean().default(false),
+      requests_per_second: z.number().int().min(0).default(0),
+      requests_per_minute: z.number().int().min(0).default(0),
+      concurrent_requests: z.number().int().min(0).default(0),
+    })
+    .default({
+      enabled: false,
+      requests_per_second: 0,
+      requests_per_minute: 0,
+      concurrent_requests: 0,
+    }),
 })
 
 export type ChannelInfo = z.infer<typeof channelInfoSchema>
@@ -75,6 +101,18 @@ export const channelSchema = z.object({
     multi_key_affinity_ttl_seconds: 3600,
     multi_key_least_requests_window_seconds: 60,
     multi_key_mode: 'random',
+    channel_overload_protection: {
+      enabled: false,
+      requests_per_second: 0,
+      requests_per_minute: 0,
+      concurrent_requests: 0,
+    },
+    multi_key_overload_protection: {
+      enabled: false,
+      requests_per_second: 0,
+      requests_per_minute: 0,
+      concurrent_requests: 0,
+    },
   }),
   settings: z.string().default('{}'), // other_settings JSON
 })

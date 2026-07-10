@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -106,12 +107,21 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 }
 
 func GetChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
+	return GetChannelExcluding(group, model, retry, requestPath, estimatedInputTokens, nil)
+}
+
+func GetChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
-	if err != nil {
-		return nil, err
+	var channelQuery *gorm.DB
+	if len(excluded) > 0 {
+		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	} else {
+		channelQuery, err = getChannelQuery(group, model, retry)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) || common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
 		err = channelQuery.Order("weight DESC").Find(&abilities).Error
@@ -123,6 +133,45 @@ func GetChannel(group string, model string, retry int, requestPath string, estim
 	}
 	abilities = filterAbilitiesByRequestPath(abilities, requestPath)
 	abilities = filterAbilitiesByInputTokens(abilities, estimatedInputTokens)
+	if len(excluded) > 0 {
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, found := excluded[ability.ChannelId]; !found {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+		priorities := make([]int64, 0)
+		seenPriorities := make(map[int64]struct{})
+		for _, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if _, found := seenPriorities[priority]; !found {
+				seenPriorities[priority] = struct{}{}
+				priorities = append(priorities, priority)
+			}
+		}
+		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+		if len(priorities) > 0 {
+			if retry >= len(priorities) {
+				retry = len(priorities) - 1
+			}
+			targetPriority := priorities[retry]
+			filtered = abilities[:0]
+			for _, ability := range abilities {
+				priority := int64(0)
+				if ability.Priority != nil {
+					priority = *ability.Priority
+				}
+				if priority == targetPriority {
+					filtered = append(filtered, ability)
+				}
+			}
+			abilities = filtered
+		}
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one

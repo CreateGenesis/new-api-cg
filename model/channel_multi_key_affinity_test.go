@@ -65,3 +65,61 @@ func TestMultiKeyAffinitySkipsDisabledCachedKey(t *testing.T) {
 	assert.NotEqual(t, fmt.Sprintf("upstream-%c", 'a'+rune(cachedIndex)), nextKey)
 	assert.NotEqual(t, common.ChannelStatusManuallyDisabled, channel.ChannelInfo.MultiKeyStatusList[nextIndex])
 }
+
+func TestMultiKeyAffinityOverloadFallbackKeepsCachedBinding(t *testing.T) {
+	originalRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
+
+	channel := &Channel{
+		Id:  900003,
+		Key: "upstream-a\nupstream-b\nupstream-c",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:                 true,
+			MultiKeyMode:               constant.MultiKeyModeAffinity,
+			MultiKeyAffinityTTLSeconds: 60,
+			MultiKeyStatusList:         map[int]int{},
+		},
+	}
+
+	_, cachedIndex, err := channel.GetNextEnabledKeyWithAffinity("sk-client-c")
+	require.Nil(t, err)
+	_, fallbackIndex, newAPIError := channel.GetNextEnabledKeyWithSelection(
+		"sk-client-c", map[int]struct{}{cachedIndex: {}}, false,
+	)
+	require.Nil(t, newAPIError)
+	assert.NotEqual(t, cachedIndex, fallbackIndex)
+
+	_, restoredIndex, err := channel.GetNextEnabledKeyWithAffinity("sk-client-c")
+	require.Nil(t, err)
+	assert.Equal(t, cachedIndex, restoredIndex)
+}
+
+func TestMultiKeyAffinityNormalRetryUpdatesCachedBinding(t *testing.T) {
+	originalRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
+
+	channel := &Channel{
+		Id:  900004,
+		Key: "upstream-a\nupstream-b\nupstream-c",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:                 true,
+			MultiKeyMode:               constant.MultiKeyModeAffinity,
+			MultiKeyAffinityTTLSeconds: 60,
+			MultiKeyStatusList:         map[int]int{},
+		},
+	}
+
+	_, cachedIndex, err := channel.GetNextEnabledKeyWithAffinity("sk-client-d")
+	require.Nil(t, err)
+	_, retryIndex, newAPIError := channel.GetNextEnabledKeyWithSelection(
+		"sk-client-d", map[int]struct{}{cachedIndex: {}}, true,
+	)
+	require.Nil(t, newAPIError)
+	assert.NotEqual(t, cachedIndex, retryIndex)
+
+	_, restoredIndex, err := channel.GetNextEnabledKeyWithAffinity("sk-client-d")
+	require.Nil(t, err)
+	assert.Equal(t, retryIndex, restoredIndex)
+}

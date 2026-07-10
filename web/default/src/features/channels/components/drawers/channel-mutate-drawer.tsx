@@ -716,6 +716,8 @@ export function ChannelMutateDrawer({
   // Watch form values for conditional rendering
   const multiKeyMode = form.watch('multi_key_mode')
   const multiKeyType = form.watch('multi_key_type')
+  const multiKeyOverloadEnabled = form.watch('multi_key_overload_enabled')
+  const channelOverloadEnabled = form.watch('channel_overload_enabled')
   let multiKeyTypeDescription: ReactNode = t(
     'Randomly select a key from the pool for each request'
   )
@@ -3349,6 +3351,91 @@ export function ChannelMutateDrawer({
                                     )}
                                   />
                                 )}
+
+                              {((isEditing && isMultiKeyChannel) ||
+                                (!isEditing &&
+                                  multiKeyMode === 'multi_to_single')) && (
+                                <div className='border-border/60 flex flex-col gap-4 border-t pt-4'>
+                                  <FormField
+                                    control={form.control}
+                                    name='multi_key_overload_enabled'
+                                    render={({ field }) => (
+                                      <FormItem className='flex items-center justify-between gap-3'>
+                                        <div className='space-y-0.5'>
+                                          <FormLabel>
+                                            {t('Key overload protection')}
+                                          </FormLabel>
+                                          <FormDescription>
+                                            {t(
+                                              'Apply the configured limits independently to each upstream key.'
+                                            )}
+                                          </FormDescription>
+                                        </div>
+                                        <FormControl>
+                                          <Switch
+                                            checked={field.value}
+                                            onCheckedChange={field.onChange}
+                                          />
+                                        </FormControl>
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <fieldset
+                                    disabled={
+                                      !multiKeyOverloadEnabled || isSubmitting
+                                    }
+                                    className='grid gap-4 disabled:opacity-60 sm:grid-cols-3'
+                                  >
+                                    {(
+                                      [
+                                        [
+                                          'multi_key_overload_requests_per_second',
+                                          'Requests per second',
+                                        ],
+                                        [
+                                          'multi_key_overload_requests_per_minute',
+                                          'Requests per minute',
+                                        ],
+                                        [
+                                          'multi_key_overload_concurrent_requests',
+                                          'Concurrent requests',
+                                        ],
+                                      ] as const
+                                    ).map(([name, label]) => (
+                                      <FormField
+                                        key={name}
+                                        control={form.control}
+                                        name={name}
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>{t(label)}</FormLabel>
+                                            <FormControl>
+                                              <Input
+                                                type='number'
+                                                min={0}
+                                                max={2147483647}
+                                                step={1}
+                                                {...field}
+                                                onChange={(event) =>
+                                                  field.onChange(
+                                                    Number(event.target.value)
+                                                  )
+                                                }
+                                              />
+                                            </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                    ))}
+                                  </fieldset>
+                                  <FormDescription>
+                                    {t(
+                                      'Zero means unlimited. Overloaded keys are skipped temporarily without changing their enabled status.'
+                                    )}
+                                  </FormDescription>
+                                </div>
+                              )}
                             </ChannelAuthSection>
                           </fieldset>
                         </div>
@@ -3842,6 +3929,91 @@ export function ChannelMutateDrawer({
                                 </FormItem>
                               )}
                             />
+                          </div>
+
+                          <div className='flex scroll-mt-4 flex-col gap-4 border-t pt-4'>
+                            <SubHeading
+                              title={t('Channel overload protection')}
+                              icon={
+                                <SlidersHorizontal className='h-3.5 w-3.5' />
+                              }
+                            />
+                            <FormField
+                              control={form.control}
+                              name='channel_overload_enabled'
+                              render={({ field }) => (
+                                <FormItem className='flex items-center justify-between gap-3'>
+                                  <div className='space-y-0.5'>
+                                    <FormLabel>
+                                      {t('Enable channel overload protection')}
+                                    </FormLabel>
+                                    <FormDescription>
+                                      {t(
+                                        'Temporarily route around this channel when any configured limit is reached.'
+                                      )}
+                                    </FormDescription>
+                                  </div>
+                                  <FormControl>
+                                    <Switch
+                                      checked={field.value}
+                                      onCheckedChange={field.onChange}
+                                    />
+                                  </FormControl>
+                                </FormItem>
+                              )}
+                            />
+                            <fieldset
+                              disabled={!channelOverloadEnabled || isSubmitting}
+                              className='grid gap-4 disabled:opacity-60 sm:grid-cols-3'
+                            >
+                              {(
+                                [
+                                  [
+                                    'channel_overload_requests_per_second',
+                                    'Requests per second',
+                                  ],
+                                  [
+                                    'channel_overload_requests_per_minute',
+                                    'Requests per minute',
+                                  ],
+                                  [
+                                    'channel_overload_concurrent_requests',
+                                    'Concurrent requests',
+                                  ],
+                                ] as const
+                              ).map(([name, label]) => (
+                                <FormField
+                                  key={name}
+                                  control={form.control}
+                                  name={name}
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>{t(label)}</FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          type='number'
+                                          min={0}
+                                          max={2147483647}
+                                          step={1}
+                                          {...field}
+                                          onChange={(event) =>
+                                            field.onChange(
+                                              Number(event.target.value)
+                                            )
+                                          }
+                                        />
+                                      </FormControl>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              ))}
+                            </fieldset>
+                            <FormDescription>
+                              {t(
+                                'Zero means unlimited. Protection recovers automatically as rolling traffic falls or connections close.'
+                              )}
+                            </FormDescription>
                           </div>
 
                           <div
@@ -4636,7 +4808,9 @@ export function ChannelMutateDrawer({
                                         type='number'
                                         min={1}
                                         step={1}
-                                        disabled={!currentSimulatedModelCacheEnabled}
+                                        disabled={
+                                          !currentSimulatedModelCacheEnabled
+                                        }
                                         {...field}
                                         onChange={(e) =>
                                           field.onChange(Number(e.target.value))
