@@ -19,6 +19,9 @@ const (
 	simulatedModelCacheFingerprintMinRunes        = 64
 	simulatedModelCacheFingerprintAverageRunes    = 128
 	simulatedModelCacheFingerprintMaxRunes        = 256
+	simulatedModelCacheFineFingerprintMaxRunes    = 1024
+	simulatedModelCacheFineFingerprintWindowRunes = 3
+	simulatedModelCacheFineFingerprintHashBytes   = 16
 	simulatedModelCacheMaxFingerprintRunes        = 250000
 	simulatedModelCacheMaxFingerprintEncodedBytes = 512 * 1024
 )
@@ -58,6 +61,7 @@ type simulatedModelCachePromptFingerprint struct {
 	Version    string                                `json:"v"`
 	TotalRunes int                                   `json:"t"`
 	Chunks     []simulatedModelCacheFingerprintChunk `json:"c"`
+	FineHashes []byte                                `json:"s,omitempty"`
 }
 
 func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt string) (simulatedModelCachePromptFingerprint, error) {
@@ -73,6 +77,8 @@ func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt strin
 	chunkRunes := 0
 	gearHash := uint64(0)
 	position := 0
+	fineRunes := make([]rune, 0, simulatedModelCacheFineFingerprintMaxRunes)
+	collectFineRunes := true
 	for position < len(prompt) {
 		if fingerprint.TotalRunes&1023 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -88,6 +94,14 @@ func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt strin
 		if fingerprint.TotalRunes > simulatedModelCacheMaxFingerprintRunes {
 			return simulatedModelCachePromptFingerprint{}, errSimulatedModelCachePromptTooLarge
 		}
+		if collectFineRunes {
+			if len(fineRunes) < simulatedModelCacheFineFingerprintMaxRunes {
+				fineRunes = append(fineRunes, r)
+			} else {
+				fineRunes = nil
+				collectFineRunes = false
+			}
+		}
 		chunkRunes++
 		gearHash = (gearHash << 1) + simulatedModelCacheGearValue(r)
 
@@ -100,6 +114,26 @@ func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt strin
 		chunkStart = position
 		chunkRunes = 0
 		gearHash = 0
+	}
+	if collectFineRunes && len(fineRunes) >= simulatedModelCacheFineFingerprintWindowRunes {
+		fingerprint.FineHashes = make(
+			[]byte,
+			(len(fineRunes)-simulatedModelCacheFineFingerprintWindowRunes+1)*simulatedModelCacheFineFingerprintHashBytes,
+		)
+		var window [simulatedModelCacheFineFingerprintWindowRunes * 4]byte
+		for index := 0; index <= len(fineRunes)-simulatedModelCacheFineFingerprintWindowRunes; index++ {
+			if index&255 == 0 {
+				if err := ctx.Err(); err != nil {
+					return simulatedModelCachePromptFingerprint{}, err
+				}
+			}
+			for offset := 0; offset < simulatedModelCacheFineFingerprintWindowRunes; offset++ {
+				binary.BigEndian.PutUint32(window[offset*4:], uint32(fineRunes[index+offset]))
+			}
+			digest := sha256.Sum256(window[:])
+			start := index * simulatedModelCacheFineFingerprintHashBytes
+			copy(fingerprint.FineHashes[start:start+simulatedModelCacheFineFingerprintHashBytes], digest[:simulatedModelCacheFineFingerprintHashBytes])
+		}
 	}
 	return fingerprint, nil
 }
@@ -131,6 +165,7 @@ type simulatedModelCacheFingerprintMatcher struct {
 	states      []simulatedModelCacheFingerprintSuffixState
 	runeOffsets []int
 	totalRunes  int
+	fine        *simulatedModelCacheFineFingerprintMatcher
 }
 
 func newSimulatedModelCacheFingerprintMatcher(current simulatedModelCachePromptFingerprint) *simulatedModelCacheFingerprintMatcher {
@@ -142,55 +177,10 @@ func newSimulatedModelCacheFingerprintMatcher(current simulatedModelCachePromptF
 	last := 0
 	for index, chunk := range current.Chunks {
 		matcher.runeOffsets[index+1] = matcher.runeOffsets[index] + int(chunk.RuneLength)
-		symbol := chunk.symbol()
-		currentState := len(matcher.states)
-		matcher.states = append(matcher.states, simulatedModelCacheFingerprintSuffixState{
-			Length:   matcher.states[last].Length + 1,
-			FirstPos: index,
-			Next:     map[simulatedModelCacheFingerprintSymbol]int{},
-		})
-		previous := last
-		for previous != -1 {
-			if matcher.states[previous].Next == nil {
-				matcher.states[previous].Next = map[simulatedModelCacheFingerprintSymbol]int{}
-			}
-			if _, exists := matcher.states[previous].Next[symbol]; exists {
-				break
-			}
-			matcher.states[previous].Next[symbol] = currentState
-			previous = matcher.states[previous].Link
-		}
-		if previous == -1 {
-			matcher.states[currentState].Link = 0
-		} else {
-			nextState := matcher.states[previous].Next[symbol]
-			if matcher.states[previous].Length+1 == matcher.states[nextState].Length {
-				matcher.states[currentState].Link = nextState
-			} else {
-				cloneTransitions := make(map[simulatedModelCacheFingerprintSymbol]int, len(matcher.states[nextState].Next))
-				for key, value := range matcher.states[nextState].Next {
-					cloneTransitions[key] = value
-				}
-				clone := len(matcher.states)
-				matcher.states = append(matcher.states, simulatedModelCacheFingerprintSuffixState{
-					Length:   matcher.states[previous].Length + 1,
-					Link:     matcher.states[nextState].Link,
-					FirstPos: matcher.states[nextState].FirstPos,
-					Next:     cloneTransitions,
-				})
-				for previous != -1 {
-					transition, exists := matcher.states[previous].Next[symbol]
-					if !exists || transition != nextState {
-						break
-					}
-					matcher.states[previous].Next[symbol] = clone
-					previous = matcher.states[previous].Link
-				}
-				matcher.states[nextState].Link = clone
-				matcher.states[currentState].Link = clone
-			}
-		}
-		last = currentState
+		matcher.states, last = appendSimulatedModelCacheFingerprintState(matcher.states, last, chunk.symbol(), index)
+	}
+	if current.hasUsableFineHashes() {
+		matcher.fine = newSimulatedModelCacheFineFingerprintMatcher(current)
 	}
 	return matcher
 }
@@ -198,6 +188,9 @@ func newSimulatedModelCacheFingerprintMatcher(current simulatedModelCachePromptF
 func (m *simulatedModelCacheFingerprintMatcher) match(ctx context.Context, candidate simulatedModelCachePromptFingerprint) float64 {
 	if m == nil || m.totalRunes == 0 || len(m.states) == 0 {
 		return 0
+	}
+	if m.fine != nil && candidate.hasUsableFineHashes() {
+		return m.fine.match(ctx, candidate.FineHashes)
 	}
 	state := 0
 	length := 0
@@ -207,26 +200,7 @@ func (m *simulatedModelCacheFingerprintMatcher) match(ctx context.Context, candi
 			return 0
 		}
 		symbol := chunk.symbol()
-		if next, exists := m.states[state].Next[symbol]; exists {
-			state = next
-			length++
-		} else {
-			for state != -1 {
-				state = m.states[state].Link
-				if state == -1 {
-					break
-				}
-				if next, exists := m.states[state].Next[symbol]; exists {
-					length = m.states[state].Length + 1
-					state = next
-					break
-				}
-			}
-			if state == -1 {
-				state = 0
-				length = 0
-			}
-		}
+		state, length = advanceSimulatedModelCacheFingerprintState(m.states, state, length, symbol)
 		if length == 0 {
 			continue
 		}
@@ -244,6 +218,155 @@ func (m *simulatedModelCacheFingerprintMatcher) match(ctx context.Context, candi
 		}
 	}
 	return float64(bestRunes) / float64(m.totalRunes)
+}
+
+func appendSimulatedModelCacheFingerprintState(states []simulatedModelCacheFingerprintSuffixState, last int, symbol simulatedModelCacheFingerprintSymbol, firstPos int) ([]simulatedModelCacheFingerprintSuffixState, int) {
+	currentState := len(states)
+	states = append(states, simulatedModelCacheFingerprintSuffixState{
+		Length:   states[last].Length + 1,
+		FirstPos: firstPos,
+		Next:     map[simulatedModelCacheFingerprintSymbol]int{},
+	})
+	previous := last
+	for previous != -1 {
+		if states[previous].Next == nil {
+			states[previous].Next = map[simulatedModelCacheFingerprintSymbol]int{}
+		}
+		if _, exists := states[previous].Next[symbol]; exists {
+			break
+		}
+		states[previous].Next[symbol] = currentState
+		previous = states[previous].Link
+	}
+	if previous == -1 {
+		states[currentState].Link = 0
+		return states, currentState
+	}
+
+	nextState := states[previous].Next[symbol]
+	if states[previous].Length+1 == states[nextState].Length {
+		states[currentState].Link = nextState
+		return states, currentState
+	}
+
+	cloneTransitions := make(map[simulatedModelCacheFingerprintSymbol]int, len(states[nextState].Next))
+	for key, value := range states[nextState].Next {
+		cloneTransitions[key] = value
+	}
+	clone := len(states)
+	states = append(states, simulatedModelCacheFingerprintSuffixState{
+		Length:   states[previous].Length + 1,
+		Link:     states[nextState].Link,
+		FirstPos: states[nextState].FirstPos,
+		Next:     cloneTransitions,
+	})
+	for previous != -1 {
+		transition, exists := states[previous].Next[symbol]
+		if !exists || transition != nextState {
+			break
+		}
+		states[previous].Next[symbol] = clone
+		previous = states[previous].Link
+	}
+	states[nextState].Link = clone
+	states[currentState].Link = clone
+	return states, currentState
+}
+
+func advanceSimulatedModelCacheFingerprintState(states []simulatedModelCacheFingerprintSuffixState, state int, length int, symbol simulatedModelCacheFingerprintSymbol) (int, int) {
+	if next, exists := states[state].Next[symbol]; exists {
+		return next, length + 1
+	}
+	for state != -1 {
+		state = states[state].Link
+		if state == -1 {
+			break
+		}
+		if next, exists := states[state].Next[symbol]; exists {
+			return next, states[state].Length + 1
+		}
+	}
+	return 0, 0
+}
+
+type simulatedModelCacheFineFingerprintMatcher struct {
+	states     []simulatedModelCacheFingerprintSuffixState
+	totalRunes int
+}
+
+func newSimulatedModelCacheFineFingerprintMatcher(current simulatedModelCachePromptFingerprint) *simulatedModelCacheFineFingerprintMatcher {
+	matcher := &simulatedModelCacheFineFingerprintMatcher{
+		states:     []simulatedModelCacheFingerprintSuffixState{{Link: -1, FirstPos: -1}},
+		totalRunes: current.TotalRunes,
+	}
+	last := 0
+	for index := 0; index < len(current.FineHashes)/simulatedModelCacheFineFingerprintHashBytes; index++ {
+		matcher.states, last = appendSimulatedModelCacheFingerprintState(
+			matcher.states,
+			last,
+			simulatedModelCacheFineFingerprintSymbolAt(current.FineHashes, index),
+			index,
+		)
+	}
+	return matcher
+}
+
+func (m *simulatedModelCacheFineFingerprintMatcher) match(ctx context.Context, candidateHashes []byte) float64 {
+	if m == nil || m.totalRunes == 0 || len(m.states) == 0 {
+		return 0
+	}
+	state := 0
+	length := 0
+	bestRunes := 0
+	symbolCount := len(candidateHashes) / simulatedModelCacheFineFingerprintHashBytes
+	for index := 0; index < symbolCount; index++ {
+		if index&255 == 0 && ctx.Err() != nil {
+			return 0
+		}
+		state, length = advanceSimulatedModelCacheFingerprintState(
+			m.states,
+			state,
+			length,
+			simulatedModelCacheFineFingerprintSymbolAt(candidateHashes, index),
+		)
+		if length == 0 {
+			continue
+		}
+		matchedRunes := length + simulatedModelCacheFineFingerprintWindowRunes - 1
+		if matchedRunes > bestRunes {
+			bestRunes = matchedRunes
+			if bestRunes >= m.totalRunes {
+				return 1
+			}
+		}
+	}
+	return float64(bestRunes) / float64(m.totalRunes)
+}
+
+func simulatedModelCacheFineFingerprintSymbolAt(hashes []byte, index int) simulatedModelCacheFingerprintSymbol {
+	start := index * simulatedModelCacheFineFingerprintHashBytes
+	return simulatedModelCacheFingerprintSymbol{
+		HashHigh: binary.BigEndian.Uint64(hashes[start : start+8]),
+		HashLow:  binary.BigEndian.Uint64(hashes[start+8 : start+simulatedModelCacheFineFingerprintHashBytes]),
+	}
+}
+
+func (f simulatedModelCachePromptFingerprint) hasUsableFineHashes() bool {
+	if f.TotalRunes < simulatedModelCacheFineFingerprintWindowRunes || f.TotalRunes > simulatedModelCacheFineFingerprintMaxRunes {
+		return false
+	}
+	expectedBytes := (f.TotalRunes - simulatedModelCacheFineFingerprintWindowRunes + 1) * simulatedModelCacheFineFingerprintHashBytes
+	return len(f.FineHashes) == expectedBytes
+}
+
+func (f simulatedModelCachePromptFingerprint) hasValidFineHashes() bool {
+	if f.TotalRunes < 0 || f.TotalRunes > simulatedModelCacheMaxFingerprintRunes {
+		return false
+	}
+	if f.TotalRunes < simulatedModelCacheFineFingerprintWindowRunes || f.TotalRunes > simulatedModelCacheFineFingerprintMaxRunes {
+		return len(f.FineHashes) == 0
+	}
+	return f.hasUsableFineHashes()
 }
 
 func SimulatedModelCacheMatchRatio(cachedPrompt string, currentPrompt string) float64 {
@@ -376,7 +499,7 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 			continue
 		}
 		var candidate simulatedModelCachePromptFingerprint
-		if common.UnmarshalJsonStr(rawString, &candidate) != nil || candidate.Version != SimulatedModelCacheFingerprintVersion {
+		if common.UnmarshalJsonStr(rawString, &candidate) != nil || candidate.Version != SimulatedModelCacheFingerprintVersion || !candidate.hasValidFineHashes() {
 			stalePromptIDs = append(stalePromptIDs, promptIDs[index])
 			continue
 		}
@@ -419,6 +542,9 @@ func StoreSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 
 func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req SimulatedModelCachePartialMatchRequest, fingerprint simulatedModelCachePromptFingerprint, ttl time.Duration) error {
 	cleanupLegacySimulatedModelCacheReplayFiles()
+	if fingerprint.Version != SimulatedModelCacheFingerprintVersion || !fingerprint.hasValidFineHashes() {
+		return fmt.Errorf("invalid simulated model cache %s fingerprint", SimulatedModelCacheFingerprintVersion)
+	}
 	raw, err := common.Marshal(fingerprint)
 	if err != nil {
 		return err

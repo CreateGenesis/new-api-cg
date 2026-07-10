@@ -87,6 +87,18 @@ func TestSimulatedModelCacheMatchRatioUsesCurrentPromptLength(t *testing.T) {
 	assert.Equal(t, 0.0, SimulatedModelCacheMatchRatio("anything", ""))
 }
 
+func TestSimulatedModelCacheMatchRatioMatchesShortPromptTrigrams(t *testing.T) {
+	assert.InDelta(t, 6.0/7.0, SimulatedModelCacheMatchRatio("hello AA", "hello B"), 0.000001)
+	assert.InDelta(t, 6.0/8.0, SimulatedModelCacheMatchRatio("hello B", "hello AA"), 0.000001)
+	assert.InDelta(t, 4.0/5.0, SimulatedModelCacheMatchRatio("你好世界甲", "你好世界乙"), 0.000001)
+	assert.InDelta(t, 6.0/9.0, SimulatedModelCacheMatchRatio("QabcabcR", "abcabcXYZ"), 0.000001)
+}
+
+func TestSimulatedModelCacheMatchRatioKeepsVeryShortPromptsExactOnly(t *testing.T) {
+	assert.Equal(t, 1.0, SimulatedModelCacheMatchRatio("你好", "你好"))
+	assert.Equal(t, 0.0, SimulatedModelCacheMatchRatio("你们", "你好"))
+}
+
 func TestSimulatedModelCacheFingerprintMatcherUsesCurrentPromptRunes(t *testing.T) {
 	current := simulatedModelCachePromptFingerprint{
 		Version:    SimulatedModelCacheFingerprintVersion,
@@ -127,6 +139,49 @@ func TestBuildSimulatedModelCachePromptFingerprintHandlesUnicodeAndBoundaries(t 
 		assert.LessOrEqual(t, int(chunk.RuneLength), simulatedModelCacheFingerprintMaxRunes)
 	}
 	assert.Equal(t, 1.0, SimulatedModelCacheMatchRatio(prompt, prompt))
+}
+
+func TestBuildSimulatedModelCachePromptFingerprintStoresFineHashesOnlyThroughLimit(t *testing.T) {
+	shortPrompt := strings.Repeat("你", simulatedModelCacheFineFingerprintMaxRunes)
+	shortFingerprint, err := buildSimulatedModelCachePromptFingerprint(context.Background(), shortPrompt)
+	require.NoError(t, err)
+	assert.Len(
+		t,
+		shortFingerprint.FineHashes,
+		(simulatedModelCacheFineFingerprintMaxRunes-simulatedModelCacheFineFingerprintWindowRunes+1)*simulatedModelCacheFineFingerprintHashBytes,
+	)
+	assert.True(t, shortFingerprint.hasValidFineHashes())
+	raw, err := common.Marshal(shortFingerprint)
+	require.NoError(t, err)
+	assert.Less(t, len(raw), simulatedModelCacheMaxFingerprintEncodedBytes)
+	assert.NotContains(t, string(raw), shortPrompt)
+
+	longPrompt := strings.Repeat("你", simulatedModelCacheFineFingerprintMaxRunes+1)
+	longFingerprint, err := buildSimulatedModelCachePromptFingerprint(context.Background(), longPrompt)
+	require.NoError(t, err)
+	assert.Empty(t, longFingerprint.FineHashes)
+	assert.True(t, longFingerprint.hasValidFineHashes())
+}
+
+func TestSimulatedModelCacheFingerprintFallsBackToCoarseAcrossFineLimit(t *testing.T) {
+	current, err := buildSimulatedModelCachePromptFingerprint(
+		context.Background(),
+		strings.Repeat("abcd", simulatedModelCacheFineFingerprintMaxRunes/4),
+	)
+	require.NoError(t, err)
+	candidate, err := buildSimulatedModelCachePromptFingerprint(
+		context.Background(),
+		"Z"+strings.Repeat("abcd", simulatedModelCacheFineFingerprintMaxRunes/4),
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, current.FineHashes)
+	require.Empty(t, candidate.FineHashes)
+
+	got := newSimulatedModelCacheFingerprintMatcher(current).match(context.Background(), candidate)
+	current.FineHashes = nil
+	want := newSimulatedModelCacheFingerprintMatcher(current).match(context.Background(), candidate)
+
+	assert.Equal(t, want, got)
 }
 
 func TestSimulatedModelCacheFingerprintKeepsMatchesAroundLocalizedChanges(t *testing.T) {
@@ -285,12 +340,14 @@ func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndMo
 	assert.Equal(t, int64(1), otherModelCount)
 }
 
-func TestSimulatedModelCacheV2StoresOneFingerprintPerPromptAndKeepsV1Untouched(t *testing.T) {
+func TestSimulatedModelCacheV3StoresOneFingerprintPerPromptAndKeepsOlderVersionsUntouched(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const prompt = "shared prompt "
 	promptText := strings.Repeat(prompt, 20)
 	v1Key := "simulated_model_cache:v1:legacy"
+	v2Key := "simulated_model_cache:v2:legacy"
 	require.NoError(t, common.RDB.Set(ctx, v1Key, "legacy", 0).Err())
+	require.NoError(t, common.RDB.Set(ctx, v2Key, "legacy", 0).Err())
 
 	for i := 0; i < 2; i++ {
 		require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
@@ -312,6 +369,46 @@ func TestSimulatedModelCacheV2StoresOneFingerprintPerPromptAndKeepsV1Untouched(t
 	legacy, err := common.RDB.Get(ctx, v1Key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "legacy", legacy)
+	legacy, err = common.RDB.Get(ctx, v2Key).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "legacy", legacy)
+}
+
+func TestSimulatedModelCachePartialFingerprintMatchesShortPrompts(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "short-forward",
+		PromptText: "hello AA",
+		TTLSeconds: 60,
+	}))
+
+	forward, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:        10,
+		Model:         "short-forward",
+		PromptText:    "hello B",
+		MinMatchRatio: 0.8,
+	})
+	require.NoError(t, err)
+	assert.True(t, forward.Found)
+	assert.InDelta(t, 6.0/7.0, forward.MatchRatio, 0.000001)
+	assert.Equal(t, SimulatedModelCacheFingerprintVersion, forward.FingerprintVersion)
+
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "short-reverse",
+		PromptText: "hello B",
+		TTLSeconds: 60,
+	}))
+	reverse, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:        10,
+		Model:         "short-reverse",
+		PromptText:    "hello AA",
+		MinMatchRatio: 0.7,
+	})
+	require.NoError(t, err)
+	assert.True(t, reverse.Found)
+	assert.InDelta(t, 6.0/8.0, reverse.MatchRatio, 0.000001)
 }
 
 func TestSimulatedModelCachePartialFingerprintMatchIsScopedByUserAndModel(t *testing.T) {
@@ -390,6 +487,33 @@ func TestSimulatedModelCachePartialMatchPrunesMissingFingerprintMembers(t *testi
 	assert.False(t, result.Found)
 
 	count, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(10, "gpt-test")).Result()
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestSimulatedModelCachePartialMatchPrunesInvalidFineFingerprint(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	const prompt = "hello AA"
+	fingerprint, err := buildSimulatedModelCachePromptFingerprint(ctx, prompt)
+	require.NoError(t, err)
+	require.NotEmpty(t, fingerprint.FineHashes)
+	fingerprint.FineHashes = fingerprint.FineHashes[:len(fingerprint.FineHashes)-1]
+	raw, err := common.Marshal(fingerprint)
+	require.NoError(t, err)
+	promptID := sha256Hex([]byte(prompt))
+	require.NoError(t, common.RDB.Set(ctx, simulatedModelCacheFingerprintKey(promptID), raw, time.Minute).Err())
+	indexKey := simulatedModelCacheScopeIndexKey(10, "gpt-test")
+	require.NoError(t, common.RDB.ZAdd(ctx, indexKey, &redis.Z{Score: 1, Member: promptID}).Err())
+
+	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID:     10,
+		Model:      "gpt-test",
+		PromptText: "hello B",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Found)
+
+	count, err := common.RDB.ZCard(ctx, indexKey).Result()
 	require.NoError(t, err)
 	assert.Zero(t, count)
 }

@@ -30,7 +30,7 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheStreamUsageInjection(t *testi
 			SimulatedPromptTokens: 50,
 			SimulatedCachedTokens: 50,
 			StreamUsageInjected:   &injected,
-			FingerprintVersion:    "v2",
+			FingerprintVersion:    SimulatedModelCacheFingerprintVersion,
 			CandidateCount:        12,
 			MatchDurationMS:       7,
 		},
@@ -44,7 +44,7 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheStreamUsageInjection(t *testi
 	require.True(t, ok)
 	assert.Equal(t, false, cacheInfo["stream_usage_injected"])
 	assert.Equal(t, 50, cacheInfo["simulated_cached_tokens"])
-	assert.Equal(t, "v2", cacheInfo["fingerprint_version"])
+	assert.Equal(t, SimulatedModelCacheFingerprintVersion, cacheInfo["fingerprint_version"])
 	assert.Equal(t, 12, cacheInfo["candidate_count"])
 	assert.Equal(t, int64(7), cacheInfo["match_duration_ms"])
 }
@@ -59,7 +59,7 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 		FirstResponseTime: now,
 		ChannelMeta:       &relaycommon.ChannelMeta{},
 		SimulatedModelCacheInfo: &relaycommon.SimulatedModelCacheInfo{
-			FingerprintVersion: "v2",
+			FingerprintVersion: SimulatedModelCacheFingerprintVersion,
 			CandidateCount:     100,
 			MatchDurationMS:    3,
 			BypassReason:       "memory_budget",

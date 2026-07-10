@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v2"
-	SimulatedModelCacheFingerprintVersion = "v2"
+	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v3"
+	SimulatedModelCacheFingerprintVersion = "v3"
 	simulatedModelCacheMaxEntriesPerScope = 100
 	legacySimulatedModelCacheReplayDir    = "simulated-model-cache"
 )

@@ -17,6 +17,7 @@ const (
 	simulatedModelCacheDefaultResponseBufferMB = 8
 	simulatedModelCacheMaxMatchWorkers         = 64
 	simulatedModelCacheMaxResponseBufferMB     = 1024
+	simulatedModelCacheFineMatchBytesPerWindow = 1536
 )
 
 const (
@@ -234,5 +235,10 @@ func SubmitSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedMod
 func estimateSimulatedModelCacheCurrentMatchBytes(prompt string) int64 {
 	runeCount := utf8.RuneCountInString(prompt)
 	chunkCount := runeCount/simulatedModelCacheFingerprintMinRunes + 1
-	return int64(len(prompt)) + int64(chunkCount)*768 + 64*1024
+	estimatedBytes := int64(len(prompt)) + int64(chunkCount)*768 + 64*1024
+	if runeCount >= simulatedModelCacheFineFingerprintWindowRunes && runeCount <= simulatedModelCacheFineFingerprintMaxRunes {
+		windowCount := runeCount - simulatedModelCacheFineFingerprintWindowRunes + 1
+		estimatedBytes += int64(windowCount) * (simulatedModelCacheFineFingerprintHashBytes + simulatedModelCacheFineMatchBytesPerWindow)
+	}
+	return estimatedBytes
 }
