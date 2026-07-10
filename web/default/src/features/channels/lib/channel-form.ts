@@ -192,8 +192,11 @@ export const channelFormSchema = z
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
-    multi_key_type: z.enum(['random', 'polling', 'affinity']).optional(),
+    multi_key_type: z
+      .enum(['random', 'polling', 'affinity', 'least_requests'])
+      .optional(),
     multi_key_affinity_ttl_seconds: z.number().optional(),
+    multi_key_least_requests_window_seconds: z.number().optional(),
     batch_add_set_key_prefix_2_name: z.boolean().optional(),
     key_mode: z.enum(['append', 'replace']).optional(), // For editing multi-key channels
     // Channel extra settings (stored in setting JSON, not sent directly)
@@ -327,6 +330,22 @@ export const channelFormSchema = z
       }
     }
 
+    if (data.multi_key_type === 'least_requests') {
+      const windowSeconds = Number(data.multi_key_least_requests_window_seconds)
+      if (
+        !Number.isInteger(windowSeconds) ||
+        windowSeconds < 10 ||
+        windowSeconds > 3600 ||
+        windowSeconds % 10 !== 0
+      ) {
+        addRequiredIssue(
+          ctx,
+          'multi_key_least_requests_window_seconds',
+          'Least requests window must be between 10 and 3600 seconds and a multiple of 10.'
+        )
+      }
+    }
+
     const simulatedModelCacheActive =
       data.simulated_model_cache_enabled ||
       data.simulated_model_cache_exact_replay_enabled
@@ -445,6 +464,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   multi_key_mode: 'single',
   multi_key_type: 'random',
   multi_key_affinity_ttl_seconds: 3600,
+  multi_key_least_requests_window_seconds: 60,
   batch_add_set_key_prefix_2_name: false,
   key_mode: 'append',
   // Channel extra settings
@@ -711,6 +731,8 @@ export function transformChannelToFormDefaults(
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
     multi_key_affinity_ttl_seconds:
       channel.channel_info.multi_key_affinity_ttl_seconds || 3600,
+    multi_key_least_requests_window_seconds:
+      channel.channel_info.multi_key_least_requests_window_seconds || 60,
     batch_add_set_key_prefix_2_name: false,
     key_mode: 'append', // Default to append mode for editing multi-key channels
     // Channel extra settings
@@ -979,8 +1001,9 @@ function normalizeBaseUrl(value: string | undefined): string {
  */
 export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   mode: 'single' | 'batch' | 'multi_to_single'
-  multi_key_mode?: 'random' | 'polling' | 'affinity'
+  multi_key_mode?: 'random' | 'polling' | 'affinity' | 'least_requests'
   multi_key_affinity_ttl_seconds?: number
+  multi_key_least_requests_window_seconds?: number
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
 } {
@@ -1027,6 +1050,10 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
             1,
             Math.trunc(Number(formData.multi_key_affinity_ttl_seconds) || 3600)
           )
+        : undefined,
+    multi_key_least_requests_window_seconds:
+      mode === 'multi_to_single' && formData.multi_key_type === 'least_requests'
+        ? Number(formData.multi_key_least_requests_window_seconds) || 60
         : undefined,
     batch_add_set_key_prefix_2_name:
       mode === 'batch' ? formData.batch_add_set_key_prefix_2_name : undefined,

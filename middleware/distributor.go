@@ -465,16 +465,26 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKeyWithAffinity(multiKeyAffinityValue(c))
+	var excludedIndexes map[int]struct{}
+	if channel.ChannelInfo.IsMultiKey {
+		excludedIndexes = getTriedMultiKeyIndexes(c, channel.Id)
+	}
+	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes)
+	if newAPIError != nil && len(excludedIndexes) > 0 && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
+		clearTriedMultiKeyIndexes(c, channel.Id)
+		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil)
+	}
 	if newAPIError != nil {
 		return newAPIError
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
+		rememberTriedMultiKeyIndex(c, channel.Id, index)
 	} else {
 		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)
+		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, 0)
 	}
 	// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
@@ -502,6 +512,47 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set("bot_id", channel.Other)
 	}
 	return nil
+}
+
+type triedMultiKeyIndexes map[int]map[int]struct{}
+
+func getTriedMultiKeyIndexes(c *gin.Context, channelID int) map[int]struct{} {
+	value, exists := common.GetContextKey(c, constant.ContextKeyChannelMultiKeyTried)
+	if !exists {
+		return nil
+	}
+	tried, ok := value.(triedMultiKeyIndexes)
+	if !ok {
+		return nil
+	}
+	return tried[channelID]
+}
+
+func rememberTriedMultiKeyIndex(c *gin.Context, channelID int, index int) {
+	value, exists := common.GetContextKey(c, constant.ContextKeyChannelMultiKeyTried)
+	tried, ok := value.(triedMultiKeyIndexes)
+	if !exists || !ok {
+		tried = make(triedMultiKeyIndexes)
+		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyTried, tried)
+	}
+	indexes := tried[channelID]
+	if indexes == nil {
+		indexes = make(map[int]struct{})
+		tried[channelID] = indexes
+	}
+	indexes[index] = struct{}{}
+}
+
+func clearTriedMultiKeyIndexes(c *gin.Context, channelID int) {
+	value, exists := common.GetContextKey(c, constant.ContextKeyChannelMultiKeyTried)
+	if !exists {
+		return
+	}
+	tried, ok := value.(triedMultiKeyIndexes)
+	if !ok {
+		return
+	}
+	delete(tried, channelID)
 }
 
 func multiKeyAffinityValue(c *gin.Context) string {

@@ -134,4 +134,5 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"channel_info":                   {},
 	"multi_key_mode":                 {},
 	"multi_key_affinity_ttl_seconds": {},
+	"multi_key_least_requests_window_seconds": {},
 }

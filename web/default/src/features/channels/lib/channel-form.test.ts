@@ -22,6 +22,7 @@ import { describe, test } from 'node:test'
 import type { Channel } from '../types'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
+  channelFormSchema,
   transformChannelToFormDefaults,
   transformFormDataToCreatePayload,
 } from './channel-form'
@@ -63,6 +64,7 @@ function testChannel(settings: string): Channel {
       multi_key_polling_index: 0,
       multi_key_mode: 'random',
       multi_key_affinity_ttl_seconds: 3600,
+      multi_key_least_requests_window_seconds: 60,
     },
     settings,
   }
@@ -189,5 +191,61 @@ describe('channel form multi-key affinity settings', () => {
 
     assert.equal(form.multi_key_type, 'affinity')
     assert.equal(form.multi_key_affinity_ttl_seconds, 1800)
+  })
+})
+
+describe('channel form least requests settings', () => {
+  test('saves least requests strategy and window for multi-key create payload', () => {
+    const form = {
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_mode: 'multi_to_single' as const,
+      multi_key_type: 'least_requests' as const,
+      multi_key_least_requests_window_seconds: 120,
+    }
+
+    const parsed = channelFormSchema.safeParse(form)
+    assert.equal(parsed.success, true)
+    const payload = transformFormDataToCreatePayload(form)
+    assert.equal(payload.multi_key_mode, 'least_requests')
+    assert.equal(payload.multi_key_least_requests_window_seconds, 120)
+  })
+
+  test('loads least requests window from existing multi-key channel', () => {
+    const channel = testChannel('{}')
+    channel.channel_info.is_multi_key = true
+    channel.channel_info.multi_key_mode = 'least_requests'
+    channel.channel_info.multi_key_least_requests_window_seconds = 180
+
+    const form = transformChannelToFormDefaults(channel)
+
+    assert.equal(form.multi_key_type, 'least_requests')
+    assert.equal(form.multi_key_least_requests_window_seconds, 180)
+  })
+
+  test('rejects invalid least requests windows', () => {
+    for (const windowSeconds of [9, 15, 3610]) {
+      const parsed = channelFormSchema.safeParse({
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        multi_key_type: 'least_requests',
+        multi_key_least_requests_window_seconds: windowSeconds,
+      })
+
+      assert.equal(parsed.success, false)
+      if (!parsed.success) {
+        assert.equal(
+          parsed.error.issues.some(
+            (issue) =>
+              issue.path[0] === 'multi_key_least_requests_window_seconds'
+          ),
+          true
+        )
+      }
+    }
   })
 })

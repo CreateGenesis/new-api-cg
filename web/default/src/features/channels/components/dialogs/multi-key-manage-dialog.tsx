@@ -52,7 +52,7 @@ import {
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
 } from '../../api'
-import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
+import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_MODES } from '../../constants'
 import {
   channelsQueryKeys,
   formatTimestamp,
@@ -149,7 +149,7 @@ export function MultiKeyManageDialog({
   }
 
   const handleStatusFilterChange = (value: string) => {
-    const newFilter = value === 'all' ? null : parseInt(value)
+    const newFilter = value === 'all' ? null : Number.parseInt(value)
     setStatusFilter(newFilter)
     setCurrentPage(1)
     loadKeyStatus(1, pageSize, newFilter)
@@ -235,6 +235,11 @@ export function MultiKeyManageDialog({
 
   if (!currentRow) return null
 
+  const multiKeyMode = currentRow.channel_info?.multi_key_mode
+  const multiKeyModeLabel = MULTI_KEY_MODES.find(
+    (mode) => mode.value === multiKeyMode
+  )?.label
+
   return (
     <>
       <Dialog
@@ -248,15 +253,9 @@ export function MultiKeyManageDialog({
               variant='neutral'
               copyable={false}
             />
-            {currentRow.channel_info?.multi_key_mode && (
+            {multiKeyMode && (
               <StatusBadge
-                label={
-                  currentRow.channel_info.multi_key_mode === 'random'
-                    ? t('Random')
-                    : currentRow.channel_info.multi_key_mode === 'affinity'
-                      ? t('Cache affinity')
-                      : t('Polling')
-                }
+                label={t(multiKeyModeLabel || 'Random')}
                 variant='neutral'
                 copyable={false}
               />
@@ -296,12 +295,10 @@ export function MultiKeyManageDialog({
           {/* Toolbar */}
           <div className='flex shrink-0 items-center justify-between'>
             <Select
-              items={[
-                ...MULTI_KEY_FILTER_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: t(option.label),
-                })),
-              ]}
+              items={MULTI_KEY_FILTER_OPTIONS.map((option) => ({
+                value: option.value,
+                label: t(option.label),
+              }))}
               value={statusFilter === null ? 'all' : statusFilter.toString()}
               onValueChange={(v) => v !== null && handleStatusFilterChange(v)}
             >
@@ -380,15 +377,17 @@ export function MultiKeyManageDialog({
 
           {/* Table */}
           <div className='min-h-0 flex-1 overflow-auto rounded-md border'>
-            {isLoading ? (
+            {isLoading && (
               <div className='flex items-center justify-center py-12'>
                 <Loader2 className='text-muted-foreground h-8 w-8 animate-spin' />
               </div>
-            ) : keys.length === 0 ? (
+            )}
+            {!isLoading && keys.length === 0 && (
               <div className='text-muted-foreground py-12 text-center'>
                 {t('No keys found')}
               </div>
-            ) : (
+            )}
+            {!isLoading && keys.length > 0 && (
               <StaticDataTable
                 className='rounded-none border-0'
                 tableClassName='min-w-[800px]'

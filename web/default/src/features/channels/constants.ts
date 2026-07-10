@@ -186,6 +186,7 @@ export const MULTI_KEY_MODES = [
   { value: 'random', label: 'Random' },
   { value: 'polling', label: 'Polling' },
   { value: 'affinity', label: 'Cache affinity' },
+  { value: 'least_requests', label: 'Least requests' },
 ] as const
 
 export const ADD_MODE_OPTIONS = [

@@ -556,11 +556,12 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 }
 
 type AddChannelRequest struct {
-	Mode                       string                `json:"mode"`
-	MultiKeyMode               constant.MultiKeyMode `json:"multi_key_mode"`
-	MultiKeyAffinityTTLSeconds int                   `json:"multi_key_affinity_ttl_seconds"`
-	BatchAddSetKeyPrefix2Name  bool                  `json:"batch_add_set_key_prefix_2_name"`
-	Channel                    *model.Channel        `json:"channel"`
+	Mode                               string                `json:"mode"`
+	MultiKeyMode                       constant.MultiKeyMode `json:"multi_key_mode"`
+	MultiKeyAffinityTTLSeconds         int                   `json:"multi_key_affinity_ttl_seconds"`
+	MultiKeyLeastRequestsWindowSeconds int                   `json:"multi_key_least_requests_window_seconds"`
+	BatchAddSetKeyPrefix2Name          bool                  `json:"batch_add_set_key_prefix_2_name"`
+	Channel                            *model.Channel        `json:"channel"`
 }
 
 func normalizeMultiKeyAffinityTTLSeconds(ttlSeconds int) int {
@@ -626,6 +627,14 @@ func AddChannel(c *gin.Context) {
 		addChannelRequest.Channel.ChannelInfo.IsMultiKey = true
 		addChannelRequest.Channel.ChannelInfo.MultiKeyMode = addChannelRequest.MultiKeyMode
 		addChannelRequest.Channel.ChannelInfo.MultiKeyAffinityTTLSeconds = normalizeMultiKeyAffinityTTLSeconds(addChannelRequest.MultiKeyAffinityTTLSeconds)
+		addChannelRequest.Channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds = addChannelRequest.MultiKeyLeastRequestsWindowSeconds
+		if err := model.ValidateAndNormalizeMultiKeySettings(&addChannelRequest.Channel.ChannelInfo); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 		if addChannelRequest.Channel.Type == constant.ChannelTypeVertexAi && addChannelRequest.Channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
 			array, err := getVertexArrayKeys(addChannelRequest.Channel.Key)
 			if err != nil {
@@ -908,9 +917,10 @@ func DeleteChannelBatch(c *gin.Context) {
 
 type PatchChannel struct {
 	model.Channel
-	MultiKeyMode               *string `json:"multi_key_mode"`
-	MultiKeyAffinityTTLSeconds *int    `json:"multi_key_affinity_ttl_seconds"`
-	KeyMode                    *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	MultiKeyMode                       *string `json:"multi_key_mode"`
+	MultiKeyAffinityTTLSeconds         *int    `json:"multi_key_affinity_ttl_seconds"`
+	MultiKeyLeastRequestsWindowSeconds *int    `json:"multi_key_least_requests_window_seconds"`
+	KeyMode                            *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
 }
 
 type ChannelStatusRequest struct {
@@ -977,6 +987,18 @@ func UpdateChannel(c *gin.Context) {
 	}
 	if channel.MultiKeyAffinityTTLSeconds != nil && channel.ChannelInfo.IsMultiKey {
 		channel.ChannelInfo.MultiKeyAffinityTTLSeconds = normalizeMultiKeyAffinityTTLSeconds(*channel.MultiKeyAffinityTTLSeconds)
+	}
+	if channel.MultiKeyLeastRequestsWindowSeconds != nil && channel.ChannelInfo.IsMultiKey {
+		channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds = *channel.MultiKeyLeastRequestsWindowSeconds
+	}
+	if channel.ChannelInfo.IsMultiKey {
+		if err := model.ValidateAndNormalizeMultiKeySettings(&channel.ChannelInfo); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 
 	// 处理多key模式下的密钥追加/覆盖逻辑

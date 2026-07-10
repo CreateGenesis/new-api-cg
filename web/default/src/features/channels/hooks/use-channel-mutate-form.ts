@@ -122,6 +122,10 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
                 1,
                 Math.trunc(Number(data.multi_key_affinity_ttl_seconds) || 3600)
               ),
+              multi_key_least_requests_window_seconds:
+                data.multi_key_type === 'least_requests'
+                  ? Number(data.multi_key_least_requests_window_seconds) || 60
+                  : undefined,
             }
           : payloadWithKeyMode
 

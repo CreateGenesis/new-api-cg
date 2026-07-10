@@ -11,7 +11,9 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -35,6 +37,43 @@ func TestRelayRetryPolicyFromContextUsesGlobalDefaults(t *testing.T) {
 	assert.True(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 0))
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusBadRequest), policy, 0))
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 2))
+}
+
+func TestPrepareMultiKeyChannelRetrySynchronizesContextAndRelayInfo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	channel := &model.Channel{
+		Id:      940001,
+		Type:    constant.ChannelTypeOpenAI,
+		Name:    "multi-key",
+		Key:     "key-a\nkey-b",
+		AutoBan: common.GetPointer(1),
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeyMode: constant.MultiKeyModeRandom,
+		},
+	}
+
+	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, channel, "gpt-4o"))
+	firstKey := common.GetContextKeyString(ctx, constant.ContextKeyChannelKey)
+	firstIndex := common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-4o"}
+	info.InitChannelMeta(ctx)
+
+	updatedChannel, newAPIError := prepareMultiKeyChannelRetry(ctx, channel, info)
+
+	require.Nil(t, newAPIError)
+	assert.Same(t, channel, updatedChannel)
+	assert.NotEqual(t, firstKey, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey))
+	assert.NotEqual(t, firstIndex, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
+	require.NotNil(t, info.ChannelMeta)
+	assert.Equal(t, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey), info.ApiKey)
+	assert.Equal(t, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex), info.ChannelMultiKeyIndex)
 }
 
 func TestRelayRetryPolicyFromContextUsesChannelOverride(t *testing.T) {

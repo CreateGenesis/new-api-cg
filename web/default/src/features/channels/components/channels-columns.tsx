@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Gauge,
   KeyRound,
   ListOrdered,
   Shuffle,
@@ -47,12 +48,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   formatCurrencyFromUSD,
   formatQuotaWithCurrency,
   getCurrencyLabel,
 } from '@/lib/currency'
-import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestampToDate } from '@/lib/format'
 import { truncateText } from '@/lib/utils'
 
@@ -716,18 +717,18 @@ export function useChannelsColumns(
           const channel = row.original as Channel
           const isMultiKey = isMultiKeyChannel(channel)
           const multiKeyMode = channel.channel_info?.multi_key_mode ?? 'random'
-          const MultiKeyModeIcon =
-            multiKeyMode === 'affinity'
-              ? KeyRound
-              : multiKeyMode === 'random'
-                ? Shuffle
-                : ListOrdered
-          const multiKeyTooltip =
-            multiKeyMode === 'affinity'
-              ? t('Multi-key: Cache affinity')
-              : multiKeyMode === 'random'
-                ? t('Multi-key: Random rotation')
-                : t('Multi-key: Polling rotation')
+          let MultiKeyModeIcon = ListOrdered
+          let multiKeyTooltip = t('Multi-key: Polling rotation')
+          if (multiKeyMode === 'affinity') {
+            MultiKeyModeIcon = KeyRound
+            multiKeyTooltip = t('Multi-key: Cache affinity')
+          } else if (multiKeyMode === 'random') {
+            MultiKeyModeIcon = Shuffle
+            multiKeyTooltip = t('Multi-key: Random rotation')
+          } else if (multiKeyMode === 'least_requests') {
+            MultiKeyModeIcon = Gauge
+            multiKeyTooltip = t('Multi-key: Least requests')
+          }
 
           const ionetMeta = parseIonetMeta(channel.other_info)
           const isIonet = ionetMeta?.source === 'ionet'

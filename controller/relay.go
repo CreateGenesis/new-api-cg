@@ -242,6 +242,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			sameChannelRetry++
 			waitBeforeRelayRetry(c, channelRetryPolicy.retryDelay)
+			channel, newAPIError = prepareMultiKeyChannelRetry(c, channel, relayInfo)
+			if newAPIError != nil {
+				relayInfo.LastError = newAPIError
+				break
+			}
 		}
 
 		if !shouldRetryWithPolicy(c, newAPIError, globalRetryPolicy, retryParam.GetRetry()) {
@@ -347,9 +352,13 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			autoBanInt = 0
 		}
 		channelID := c.GetInt("channel_id")
-		if retryParam != nil && retryParam.EstimatedInputTokens != nil {
+		currentChannel, currentChannelErr := model.CacheGetChannel(channelID)
+		if currentChannelErr == nil && currentChannel != nil {
+			if retryParam == nil || retryParam.EstimatedInputTokens == nil {
+				return currentChannel, nil
+			}
 			if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); !specificChannel {
-				if currentChannel, err := model.CacheGetChannel(channelID); err == nil && currentChannel != nil && !currentChannel.MatchesInputTokenRouting(retryParam.EstimatedInputTokens) {
+				if !currentChannel.MatchesInputTokenRouting(retryParam.EstimatedInputTokens) {
 					channel, channelErr := selectChannelByInputTokenRouting(c, info, retryParam)
 					if channelErr != nil {
 						return nil, channelErr
@@ -357,6 +366,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 					return channel, nil
 				}
 			}
+			return currentChannel, nil
 		}
 		return &model.Channel{
 			Id:      channelID,
@@ -366,6 +376,25 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		}, nil
 	}
 	return selectChannelByInputTokenRouting(c, info, retryParam)
+}
+
+func prepareMultiKeyChannelRetry(c *gin.Context, channel *model.Channel, info *relaycommon.RelayInfo) (*model.Channel, *types.NewAPIError) {
+	if !common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
+		return channel, nil
+	}
+	if channel == nil || !channel.ChannelInfo.IsMultiKey {
+		channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+		loadedChannel, err := model.CacheGetChannel(channelID)
+		if err != nil {
+			return channel, types.NewError(err, types.ErrorCodeGetChannelFailed)
+		}
+		channel = loadedChannel
+	}
+	if newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName); newAPIError != nil {
+		return channel, newAPIError
+	}
+	info.InitChannelMeta(c)
+	return channel, nil
 }
 
 func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {

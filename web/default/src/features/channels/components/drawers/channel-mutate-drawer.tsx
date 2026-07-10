@@ -275,6 +275,7 @@ const SENSITIVE_FORM_FIELDS = [
   'key_mode',
   'multi_key_type',
   'multi_key_affinity_ttl_seconds',
+  'multi_key_least_requests_window_seconds',
   'param_override',
   'header_override',
   'settings',
@@ -733,6 +734,10 @@ export function ChannelMutateDrawer({
         )}
       </span>
     )
+  } else if (multiKeyType === 'least_requests') {
+    multiKeyTypeDescription = t(
+      'Select the upstream key with the fewest requests in the recent window.'
+    )
   }
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
@@ -982,6 +987,7 @@ export function ChannelMutateDrawer({
     formErrors.multi_key_mode ||
     formErrors.multi_key_type ||
     formErrors.multi_key_affinity_ttl_seconds ||
+    formErrors.multi_key_least_requests_window_seconds ||
     formErrors.key_mode ||
     formErrors.vertex_key_type ||
     formErrors.aws_key_type ||
@@ -3215,61 +3221,68 @@ export function ChannelMutateDrawer({
                               {((isEditing && isMultiKeyChannel) ||
                                 (!isEditing &&
                                   multiKeyMode === 'multi_to_single')) && (
-                                  <FormField
-                                    control={form.control}
-                                    name='multi_key_type'
-                                    render={({ field }) => (
-                                      <FormItem>
-                                        <FormLabel>
-                                          {t('Multi-Key Strategy')}
-                                        </FormLabel>
-                                        <Select
-                                          items={[
-                                            {
-                                              value: 'random',
-                                              label: t('Random'),
-                                            },
-                                            {
-                                              value: 'polling',
-                                              label: t('Polling'),
-                                            },
-                                            {
-                                              value: 'affinity',
-                                              label: t('Cache affinity'),
-                                            },
-                                          ]}
-                                          onValueChange={field.onChange}
-                                          value={field.value}
+                                <FormField
+                                  control={form.control}
+                                  name='multi_key_type'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {t('Multi-Key Strategy')}
+                                      </FormLabel>
+                                      <Select
+                                        items={[
+                                          {
+                                            value: 'random',
+                                            label: t('Random'),
+                                          },
+                                          {
+                                            value: 'polling',
+                                            label: t('Polling'),
+                                          },
+                                          {
+                                            value: 'affinity',
+                                            label: t('Cache affinity'),
+                                          },
+                                          {
+                                            value: 'least_requests',
+                                            label: t('Least requests'),
+                                          },
+                                        ]}
+                                        onValueChange={field.onChange}
+                                        value={field.value}
+                                      >
+                                        <FormControl>
+                                          <SelectTrigger>
+                                            <SelectValue />
+                                          </SelectTrigger>
+                                        </FormControl>
+                                        <SelectContent
+                                          alignItemWithTrigger={false}
                                         >
-                                          <FormControl>
-                                            <SelectTrigger>
-                                              <SelectValue />
-                                            </SelectTrigger>
-                                          </FormControl>
-                                          <SelectContent
-                                            alignItemWithTrigger={false}
-                                          >
-                                            <SelectGroup>
-                                              <SelectItem value='random'>
-                                                {t('Random')}
-                                              </SelectItem>
-                                              <SelectItem value='polling'>
-                                                {t('Polling')}
-                                              </SelectItem>
-                                              <SelectItem value='affinity'>
-                                                {t('Cache affinity')}
-                                              </SelectItem>
-                                            </SelectGroup>
-                                          </SelectContent>
-                                        </Select>
-                                        <FormDescription>
-                                          {multiKeyTypeDescription}
-                                        </FormDescription>
-                                        <FormMessage />
-                                      </FormItem>
-                                    )}
-                                  />
-                                )}
+                                          <SelectGroup>
+                                            <SelectItem value='random'>
+                                              {t('Random')}
+                                            </SelectItem>
+                                            <SelectItem value='polling'>
+                                              {t('Polling')}
+                                            </SelectItem>
+                                            <SelectItem value='affinity'>
+                                              {t('Cache affinity')}
+                                            </SelectItem>
+                                            <SelectItem value='least_requests'>
+                                              {t('Least requests')}
+                                            </SelectItem>
+                                          </SelectGroup>
+                                        </SelectContent>
+                                      </Select>
+                                      <FormDescription>
+                                        {multiKeyTypeDescription}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
 
                               {((isEditing && isMultiKeyChannel) ||
                                 (!isEditing &&
@@ -3299,6 +3312,43 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'How long a user token stays bound to the selected upstream key.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
+
+                              {((isEditing && isMultiKeyChannel) ||
+                                (!isEditing &&
+                                  multiKeyMode === 'multi_to_single')) &&
+                                multiKeyType === 'least_requests' && (
+                                  <FormField
+                                    control={form.control}
+                                    name='multi_key_least_requests_window_seconds'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Statistics window (seconds)')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            type='number'
+                                            min={10}
+                                            max={3600}
+                                            step={10}
+                                            {...field}
+                                            onChange={(e) =>
+                                              field.onChange(
+                                                Number(e.target.value)
+                                              )
+                                            }
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Count requests in 10-second buckets within this recent window.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />
