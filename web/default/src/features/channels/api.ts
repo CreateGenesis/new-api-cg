@@ -291,7 +291,7 @@ export async function deleteDisabledChannels(): Promise<{
 }
 
 /**
- * Get channel key (requires 2FA verification)
+ * Get channel key (super admin only)
  */
 export async function getChannelKey(
   id: number,

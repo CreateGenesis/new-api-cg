@@ -2,14 +2,21 @@ package router
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestChannelStatusRoutesUseOperatePermission(t *testing.T) {
@@ -35,6 +42,114 @@ func TestChannelStatusRoutesRegisterWithoutConflict(t *testing.T) {
 	require.NotPanics(t, func() {
 		registerChannelRoutes(api)
 	})
+}
+
+func TestChannelKeyCanBeRevealedByRootWithoutSecureVerification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+
+	db, err := gorm.Open(sqlite.Open("file:channel_key_route?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = db
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.DB = previousDB
+		model.LOG_DB = previousLogDB
+		common.RedisEnabled = previousRedisEnabled
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Log{}))
+	root := &model.User{
+		Id:       1,
+		Username: "root",
+		Password: "test-password",
+		Role:     common.RoleRootUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}
+	require.NoError(t, db.Create(root).Error)
+	channel := &model.Channel{Id: 1, Name: "test-channel", Key: "sk-upstream-secret"}
+	require.NoError(t, db.Create(channel).Error)
+
+	engine := gin.New()
+	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("channel-key-route-test"))))
+	engine.GET("/login", func(c *gin.Context) {
+		session := sessions.Default(c)
+		session.Set("username", root.Username)
+		session.Set("role", root.Role)
+		session.Set("id", root.Id)
+		session.Set("status", root.Status)
+		session.Set("group", root.Group)
+		if err := session.Save(); err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	engine.GET("/login/admin", func(c *gin.Context) {
+		session := sessions.Default(c)
+		session.Set("username", "admin")
+		session.Set("role", common.RoleAdminUser)
+		session.Set("id", 2)
+		session.Set("status", common.UserStatusEnabled)
+		session.Set("group", "default")
+		if err := session.Save(); err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	registerChannelRoutes(engine.Group("/api"))
+
+	loginRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(loginRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
+	require.Equal(t, http.StatusNoContent, loginRecorder.Code)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
+	request.Header.Set("New-Api-User", "1")
+	for _, sessionCookie := range loginRecorder.Result().Cookies() {
+		request.AddCookie(sessionCookie)
+	}
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Key string `json:"key"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.Equal(t, channel.Key, response.Data.Key)
+
+	var auditLog model.Log
+	require.NoError(t, db.Where("type = ?", model.LogTypeManage).First(&auditLog).Error)
+	assert.Equal(t, "Viewed channel key test-channel (ID: 1)", auditLog.Content)
+
+	adminLoginRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(adminLoginRecorder, httptest.NewRequest(http.MethodGet, "/login/admin", nil))
+	require.Equal(t, http.StatusNoContent, adminLoginRecorder.Code)
+
+	adminRequest := httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
+	adminRequest.Header.Set("New-Api-User", "2")
+	for _, sessionCookie := range adminLoginRecorder.Result().Cookies() {
+		adminRequest.AddCookie(sessionCookie)
+	}
+	adminRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(adminRecorder, adminRequest)
+
+	require.Equal(t, http.StatusOK, adminRecorder.Code)
+	assert.NotContains(t, adminRecorder.Body.String(), channel.Key)
+	assert.Contains(t, adminRecorder.Body.String(), `"success":false`)
 }
 
 func assertChannelRoutePermission(t *testing.T, method string, path string, permission authz.Permission, handler any) {
