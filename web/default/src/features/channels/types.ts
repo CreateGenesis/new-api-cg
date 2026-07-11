@@ -144,6 +144,7 @@ export interface ChannelSettings {
   force_format?: boolean
   thinking_to_content?: boolean
   proxy?: string
+  proxy_fallback_direct?: boolean
   pass_through_body_enabled?: boolean
   system_prompt?: string
   system_prompt_override?: boolean

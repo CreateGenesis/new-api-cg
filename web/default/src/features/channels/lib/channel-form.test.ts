@@ -86,6 +86,34 @@ function testChannel(settings: string): Channel {
   }
 }
 
+describe('channel proxy fallback settings', () => {
+  test('loads and saves direct fallback with the channel proxy', () => {
+    const channel = testChannel('{}')
+    channel.setting = JSON.stringify({
+      proxy: 'socks5://127.0.0.1:1080',
+      proxy_fallback_direct: true,
+    })
+
+    const form = transformChannelToFormDefaults(channel)
+    assert.equal(form.proxy, 'socks5://127.0.0.1:1080')
+    assert.equal(form.proxy_fallback_direct, true)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const setting = JSON.parse(String(payload.channel.setting))
+
+    assert.equal(setting.proxy, 'socks5://127.0.0.1:1080')
+    assert.equal(setting.proxy_fallback_direct, true)
+  })
+})
+
 describe('channel form status code retry settings', () => {
   test('saves retry interval milliseconds into settings JSON', () => {
     const payload = transformFormDataToCreatePayload({

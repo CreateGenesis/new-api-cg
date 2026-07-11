@@ -1292,7 +1292,7 @@ func FetchModels(c *gin.Context) {
 	}
 
 	if req.Type == constant.ChannelTypeGemini {
-		models, err := gemini.FetchGeminiModels(baseURL, key, "")
+		models, err := gemini.FetchGeminiModels(baseURL, key, "", false)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

@@ -114,7 +114,7 @@ func exchangeJwtForAccessToken(signedJWT string, info *relaycommon.RelayInfo) (s
 	var client *http.Client
 	var err error
 	if info.ChannelSetting.Proxy != "" {
-		client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+		client, err = service.NewProxyHttpClientWithFallback(info.ChannelSetting.Proxy, info.ChannelSetting.ProxyFallbackDirect)
 		if err != nil {
 			return "", fmt.Errorf("new proxy http client failed: %w", err)
 		}
@@ -140,15 +140,15 @@ func exchangeJwtForAccessToken(signedJWT string, info *relaycommon.RelayInfo) (s
 	return "", fmt.Errorf("failed to get access token: %v", result)
 }
 
-func AcquireAccessToken(creds Credentials, proxy string) (string, error) {
+func AcquireAccessToken(creds Credentials, proxy string, proxyFallbackDirect bool) (string, error) {
 	signedJWT, err := createSignedJWT(creds.ClientEmail, creds.PrivateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to create signed JWT: %w", err)
 	}
-	return exchangeJwtForAccessTokenWithProxy(signedJWT, proxy)
+	return exchangeJwtForAccessTokenWithProxy(signedJWT, proxy, proxyFallbackDirect)
 }
 
-func exchangeJwtForAccessTokenWithProxy(signedJWT string, proxy string) (string, error) {
+func exchangeJwtForAccessTokenWithProxy(signedJWT string, proxy string, proxyFallbackDirect bool) (string, error) {
 	authURL := "https://www.googleapis.com/oauth2/v4/token"
 	data := url.Values{}
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
@@ -157,7 +157,7 @@ func exchangeJwtForAccessTokenWithProxy(signedJWT string, proxy string) (string,
 	var client *http.Client
 	var err error
 	if proxy != "" {
-		client, err = service.NewProxyHttpClient(proxy)
+		client, err = service.NewProxyHttpClientWithFallback(proxy, proxyFallbackDirect)
 		if err != nil {
 			return "", fmt.Errorf("new proxy http client failed: %w", err)
 		}

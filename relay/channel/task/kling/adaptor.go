@@ -215,7 +215,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 }
 
 // FetchTask fetch task status
-func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string, proxyFallbackDirect bool) (*http.Response, error) {
 	taskID, ok := body["task_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid task_id")
@@ -244,7 +244,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "kling-sdk/1.0")
 
-	client, err := service.GetHttpClientWithProxy(proxy)
+	client, err := service.GetHttpClientWithProxyFallback(proxy, proxyFallbackDirect)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}

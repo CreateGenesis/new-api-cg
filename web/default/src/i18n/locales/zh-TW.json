@@ -1370,6 +1370,7 @@
     "Dify": "Dify",
     "Dify channels only support chatflow and agent, and agent does not support images": "Dify 渠道僅支援 chatflow 和 agent，agent 不支援圖像",
     "Digest:": "摘要：",
+    "Direct fallback on SOCKS failure": "SOCKS 失敗時直連",
     "Direction": "方向",
     "Directory File Count": "目錄檔案數",
     "Directory Total Size": "目錄總大小",

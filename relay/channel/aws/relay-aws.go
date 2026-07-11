@@ -53,7 +53,7 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 		err        error
 	)
 	if info.ChannelSetting.Proxy != "" {
-		httpClient, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+		httpClient, err = service.NewProxyHttpClientWithFallback(info.ChannelSetting.Proxy, info.ChannelSetting.ProxyFallbackDirect)
 		if err != nil {
 			return nil, fmt.Errorf("new proxy http client failed: %w", err)
 		}

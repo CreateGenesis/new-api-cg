@@ -284,6 +284,7 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'proxy',
+  'proxy_fallback_direct',
   'pass_through_body_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -343,6 +344,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.priority ||
     values.weight ||
     values.proxy?.trim() ||
+    values.proxy_fallback_direct ||
     values.system_prompt?.trim() ||
     values.force_format ||
     values.thinking_to_content ||
@@ -4676,29 +4678,49 @@ export function ChannelMutateDrawer({
                               />
                             </div>
 
-                            <FormField
-                              control={form.control}
-                              name='proxy'
-                              render={({ field }) => (
-                                <FormItem>
-                                  <FormLabel>{t('Proxy Address')}</FormLabel>
-                                  <FormControl>
-                                    <Input
-                                      placeholder={t(
-                                        'socks5://user:pass@host:port'
+                            <div className='grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]'>
+                              <FormField
+                                control={form.control}
+                                name='proxy'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>{t('Proxy Address')}</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        placeholder={t(
+                                          'socks5://user:pass@host:port'
+                                        )}
+                                        {...field}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Network proxy for this channel (supports socks5 protocol)'
                                       )}
-                                      {...field}
-                                    />
-                                  </FormControl>
-                                  <FormDescription>
-                                    {t(
-                                      'Network proxy for this channel (supports socks5 protocol)'
-                                    )}
-                                  </FormDescription>
-                                  <FormMessage />
-                                </FormItem>
-                              )}
-                            />
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='proxy_fallback_direct'
+                                render={({ field }) => (
+                                  <FormItem className='flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2 md:mt-6'>
+                                    <FormLabel className='text-sm leading-tight font-normal'>
+                                      {t('Direct fallback on SOCKS failure')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Switch
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                      />
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
 
                             <FormField
                               control={form.control}

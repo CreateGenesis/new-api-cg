@@ -19,8 +19,13 @@ var (
 	httpClient              *http.Client
 	ssrfProtectedHTTPClient *http.Client
 	proxyClientLock         sync.Mutex
-	proxyClients            = make(map[string]*http.Client)
+	proxyClients            = make(map[proxyClientCacheKey]*http.Client)
 )
+
+type proxyClientCacheKey struct {
+	proxyURL         string
+	fallbackToDirect bool
+}
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	urlStr := req.URL.String()
@@ -102,10 +107,16 @@ func GetSSRFProtectedHTTPClient() *http.Client {
 
 // GetHttpClientWithProxy returns the default client or a proxy-enabled one when proxyURL is provided.
 func GetHttpClientWithProxy(proxyURL string) (*http.Client, error) {
+	return GetHttpClientWithProxyFallback(proxyURL, false)
+}
+
+// GetHttpClientWithProxyFallback returns the default client when no proxy is
+// configured, otherwise it creates a proxy client with optional SOCKS fallback.
+func GetHttpClientWithProxyFallback(proxyURL string, fallbackToDirect bool) (*http.Client, error) {
 	if proxyURL == "" {
 		return GetHttpClient(), nil
 	}
-	return NewProxyHttpClient(proxyURL)
+	return NewProxyHttpClientWithFallback(proxyURL, fallbackToDirect)
 }
 
 // ResetProxyClientCache 清空代理客户端缓存，确保下次使用时重新初始化
@@ -117,11 +128,18 @@ func ResetProxyClientCache() {
 			transport.CloseIdleConnections()
 		}
 	}
-	proxyClients = make(map[string]*http.Client)
+	proxyClients = make(map[proxyClientCacheKey]*http.Client)
 }
 
 // NewProxyHttpClient 创建支持代理的 HTTP 客户端
 func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
+	return NewProxyHttpClientWithFallback(proxyURL, false)
+}
+
+// NewProxyHttpClientWithFallback creates a proxy-enabled HTTP client. For
+// SOCKS proxies, fallbackToDirect retries only when the proxy cannot establish
+// the TCP connection, before any HTTP request is sent to the upstream.
+func NewProxyHttpClientWithFallback(proxyURL string, fallbackToDirect bool) (*http.Client, error) {
 	if proxyURL == "" {
 		if client := GetHttpClient(); client != nil {
 			return client, nil
@@ -129,8 +147,12 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		return http.DefaultClient, nil
 	}
 
+	cacheKey := proxyClientCacheKey{
+		proxyURL:         proxyURL,
+		fallbackToDirect: fallbackToDirect,
+	}
 	proxyClientLock.Lock()
-	if client, ok := proxyClients[proxyURL]; ok {
+	if client, ok := proxyClients[cacheKey]; ok {
 		proxyClientLock.Unlock()
 		return client, nil
 	}
@@ -159,7 +181,7 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		}
 		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
 		proxyClientLock.Lock()
-		proxyClients[proxyURL] = client
+		proxyClients[cacheKey] = client
 		proxyClientLock.Unlock()
 		return client, nil
 
@@ -183,13 +205,29 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			return nil, err
 		}
 
+		directDialer := &net.Dialer{KeepAlive: 30 * time.Second}
 		transport := &http.Transport{
 			MaxIdleConns:        common.RelayMaxIdleConns,
 			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
 			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
 			ForceAttemptHTTP2:   true,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
+				var conn net.Conn
+				var proxyErr error
+				if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+					conn, proxyErr = contextDialer.DialContext(ctx, network, addr)
+				} else {
+					conn, proxyErr = dialer.Dial(network, addr)
+				}
+				if proxyErr == nil || !fallbackToDirect {
+					return conn, proxyErr
+				}
+
+				conn, directErr := directDialer.DialContext(ctx, network, addr)
+				if directErr != nil {
+					return nil, fmt.Errorf("SOCKS proxy dial failed: %v; direct fallback failed: %w", proxyErr, directErr)
+				}
+				return conn, nil
 			},
 		}
 		if common.TLSInsecureSkipVerify {
@@ -199,7 +237,7 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		client := &http.Client{Transport: transport, CheckRedirect: checkRedirect}
 		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
 		proxyClientLock.Lock()
-		proxyClients[proxyURL] = client
+		proxyClients[cacheKey] = client
 		proxyClientLock.Unlock()
 		return client, nil
 

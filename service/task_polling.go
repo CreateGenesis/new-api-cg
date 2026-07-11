@@ -26,7 +26,7 @@ import (
 // TaskPollingAdaptor 定义轮询所需的最小适配器接口，避免 service -> relay 的循环依赖
 type TaskPollingAdaptor interface {
 	Init(info *relaycommon.RelayInfo)
-	FetchTask(baseURL string, key string, body map[string]any, proxy string) (*http.Response, error)
+	FetchTask(baseURL string, key string, body map[string]any, proxy string, proxyFallbackDirect bool) (*http.Response, error)
 	ParseTaskResult(body []byte) (*relaycommon.TaskInfo, error)
 	// AdjustBillingOnComplete 在任务到达终态（成功/失败）时由轮询循环调用。
 	// 返回正数触发差额结算（补扣/退还），返回 0 保持预扣费金额不变。
@@ -235,10 +235,11 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 	if adaptor == nil {
 		return errors.New("adaptor not found")
 	}
-	proxy := ch.GetSetting().Proxy
+	channelSetting := ch.GetSetting()
+	proxy := channelSetting.Proxy
 	resp, err := adaptor.FetchTask(*ch.BaseURL, ch.Key, map[string]any{
 		"ids": taskIds,
-	}, proxy)
+	}, proxy, channelSetting.ProxyFallbackDirect)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("Get Task Do req error: %v", err))
 		return err
@@ -436,7 +437,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if ch.GetBaseURL() != "" {
 		baseURL = ch.GetBaseURL()
 	}
-	proxy := ch.GetSetting().Proxy
+	channelSetting := ch.GetSetting()
+	proxy := channelSetting.Proxy
 
 	task := taskM[taskId]
 	if task == nil {
@@ -452,7 +454,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
-	}, proxy)
+	}, proxy, channelSetting.ProxyFallbackDirect)
 	if err != nil {
 		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
 	}

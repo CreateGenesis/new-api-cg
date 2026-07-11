@@ -10,7 +10,11 @@
     - 用于配置网络代理
     - 类型为字符串，填写代理地址（例如 socks5 协议的代理地址）
 
-3. thinking_to_content
+3. proxy_fallback_direct
+   - SOCKS5 代理建连或握手失败时改用直连
+   - 类型为布尔值，仅影响 socks5 和 socks5h 代理
+
+4. thinking_to_content
    - 用于标识是否将思考内容`reasoning_content`转换为`<think>`标签拼接到内容中返回
    - 类型为布尔值，设置为 true 时启用思考内容转换
 
@@ -24,7 +28,8 @@
 {
     "force_format": true,
    "thinking_to_content": true,
-    "proxy": "socks5://xxxxxxx"
+    "proxy": "socks5://xxxxxxx",
+    "proxy_fallback_direct": true
 }
 ```
 

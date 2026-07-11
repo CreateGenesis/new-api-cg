@@ -1370,6 +1370,7 @@
     "Dify": "Dify",
     "Dify channels only support chatflow and agent, and agent does not support images": "Kênh Dify chỉ hỗ trợ chatflow và agent, và agent không hỗ trợ hình ảnh",
     "Digest:": "Tóm tắt:",
+    "Direct fallback on SOCKS failure": "Kết nối trực tiếp khi SOCKS lỗi",
     "Direction": "Hướng",
     "Directory File Count": "Số tệp trong thư mục",
     "Directory Total Size": "Tổng dung lượng thư mục",

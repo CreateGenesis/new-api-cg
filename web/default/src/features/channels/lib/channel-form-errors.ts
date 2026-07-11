@@ -39,6 +39,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'thinking_to_content',
   'pass_through_body_enabled',
   'proxy',
+  'proxy_fallback_direct',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',

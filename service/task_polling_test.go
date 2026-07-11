@@ -31,7 +31,7 @@ type taskPollingFetchAdaptor struct {
 
 func (a *taskPollingFetchAdaptor) Init(_ *relaycommon.RelayInfo) {}
 
-func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string) (*http.Response, error) {
+func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string, _ bool) (*http.Response, error) {
 	taskID, _ := body["task_id"].(string)
 	if taskID == a.blockTaskID && a.releaseBlock != nil {
 		a.blockOnce.Do(func() {

@@ -10,6 +10,7 @@ type ChannelSettings struct {
 	ForceFormat            bool   `json:"force_format,omitempty"`
 	ThinkingToContent      bool   `json:"thinking_to_content,omitempty"`
 	Proxy                  string `json:"proxy"`
+	ProxyFallbackDirect    bool   `json:"proxy_fallback_direct,omitempty"`
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
