@@ -197,6 +197,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		if channel == nil {
+			break
+		}
 		actualChannelID := 0
 		channelRetryPolicy := relayRetryPolicy{}
 		sameChannelRetryState := &service.SameChannelRetryState{}
@@ -295,7 +298,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if internalRetryBlockedByOverload {
 			if shouldSwitchChannelAfterInternalRetryOverload(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count()) {
-				selectParam.ExcludeAttemptedChannel(actualChannelID)
+				selectParam.ExcludeAttemptedChannel(channel)
 				interChannelRetryState.Increase()
 				continue
 			}
@@ -307,7 +310,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		if actualChannelID > 0 {
-			selectParam.ExcludeAttemptedChannel(actualChannelID)
+			selectParam.ExcludeAttemptedChannel(channel)
 		}
 		interChannelRetryState.Increase()
 	}
@@ -352,7 +355,7 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 			return channel, nil, channelOverloadedError()
 		}
 
-		selectParam.ExcludeUnavailableChannel(channel.Id)
+		selectParam.ExcludeUnavailableChannel(channel)
 		next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(selectParam)
 		if selectErr != nil {
 			return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
@@ -534,16 +537,6 @@ func prepareMultiKeyChannelRetry(c *gin.Context, channel *model.Channel, info *r
 
 func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam) (*model.Channel, *types.NewAPIError) {
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(selectParam)
-	if err == nil && channel == nil && selectParam.BeginNextSelectionSweep() {
-		channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(selectParam)
-		if err == nil && channel == nil {
-			// A single eligible channel must be reusable after a sweep. With
-			// multiple channels, keeping the last failure excluded avoids an
-			// immediate repeat at the start of the next sweep.
-			selectParam.AllowLastAttemptedChannel()
-			channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(selectParam)
-		}
-	}
 
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 
@@ -551,6 +544,9 @@ func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInf
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		if len(selectParam.ExcludedChannelIDs) > 0 {
+			return nil, nil
+		}
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
@@ -999,6 +995,9 @@ func RelayTask(c *gin.Context) {
 				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
 				break
 			}
+			if channel == nil {
+				break
+			}
 		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -1038,7 +1037,7 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-interChannelRetryState.Count()) {
 			break
 		}
-		selectParam.ExcludeAttemptedChannel(channel.Id)
+		selectParam.ExcludeAttemptedChannel(channel)
 		interChannelRetryState.Increase()
 	}
 

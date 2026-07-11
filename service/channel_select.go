@@ -42,70 +42,30 @@ type ChannelSelectParam struct {
 	RequestPath          string
 	EstimatedInputTokens *int
 	ExcludedChannelIDs   map[int]struct{}
-	LastAttemptedChannel int
-	DeferredChannelID    int
+	MaxPriority          *int64
 	AutoGroupIndex       int
 	AutoGroupSelected    bool
 }
 
-func (p *ChannelSelectParam) ExcludeAttemptedChannel(channelID int) {
-	p.excludeChannel(channelID)
-	if channelID > 0 {
-		p.LastAttemptedChannel = channelID
-	}
+func (p *ChannelSelectParam) ExcludeAttemptedChannel(channel *model.Channel) {
+	p.excludeSelectedChannel(channel)
 }
 
-func (p *ChannelSelectParam) ExcludeUnavailableChannel(channelID int) {
-	p.excludeChannel(channelID)
+func (p *ChannelSelectParam) ExcludeUnavailableChannel(channel *model.Channel) {
+	p.excludeSelectedChannel(channel)
 }
 
-func (p *ChannelSelectParam) excludeChannel(channelID int) {
-	if channelID <= 0 {
+func (p *ChannelSelectParam) excludeSelectedChannel(channel *model.Channel) {
+	if channel == nil || channel.Id <= 0 {
 		return
 	}
 	if p.ExcludedChannelIDs == nil {
 		p.ExcludedChannelIDs = make(map[int]struct{})
 	}
-	p.ExcludedChannelIDs[channelID] = struct{}{}
-}
-
-func (p *ChannelSelectParam) BeginNextSelectionSweep() bool {
-	if len(p.ExcludedChannelIDs) == 0 {
-		return false
-	}
-	p.ExcludedChannelIDs = make(map[int]struct{})
-	p.DeferredChannelID = 0
-	if p.LastAttemptedChannel > 0 {
-		p.ExcludedChannelIDs[p.LastAttemptedChannel] = struct{}{}
-		p.DeferredChannelID = p.LastAttemptedChannel
-	}
-	if p.TokenGroup != "auto" || common.GetContextKeyBool(p.Ctx, constant.ContextKeyTokenCrossGroupRetry) {
-		p.AutoGroupIndex = 0
-		p.AutoGroupSelected = false
-	}
-	return true
-}
-
-func (p *ChannelSelectParam) AllowLastAttemptedChannel() {
-	delete(p.ExcludedChannelIDs, p.LastAttemptedChannel)
-	p.DeferredChannelID = 0
-	if len(p.ExcludedChannelIDs) == 0 {
-		p.ExcludedChannelIDs = nil
-	}
-	if p.TokenGroup != "auto" || common.GetContextKeyBool(p.Ctx, constant.ContextKeyTokenCrossGroupRetry) {
-		p.AutoGroupIndex = 0
-		p.AutoGroupSelected = false
-	}
-}
-
-func (p *ChannelSelectParam) restoreDeferredChannelAfterSelection() {
-	if p.DeferredChannelID <= 0 {
-		return
-	}
-	delete(p.ExcludedChannelIDs, p.DeferredChannelID)
-	p.DeferredChannelID = 0
-	if len(p.ExcludedChannelIDs) == 0 {
-		p.ExcludedChannelIDs = nil
+	p.ExcludedChannelIDs[channel.Id] = struct{}{}
+	priority := channel.GetPriority()
+	if p.MaxPriority == nil || priority < *p.MaxPriority {
+		p.MaxPriority = common.GetPointer(priority)
 	}
 }
 
@@ -155,7 +115,7 @@ func CacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			autoGroup := autoGroups[i]
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s", autoGroup)
 
-			channel, err = model.GetRandomSatisfiedChannelExcluding(autoGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs)
+			channel, err = model.GetRandomSatisfiedChannelExcludingPriority(autoGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs, param.MaxPriority)
 			if err != nil {
 				return nil, autoGroup, err
 			}
@@ -177,16 +137,10 @@ func CacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelExcluding(param.TokenGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs)
+		channel, err = model.GetRandomSatisfiedChannelExcludingPriority(param.TokenGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs, param.MaxPriority)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
-	}
-	if channel != nil {
-		// The final channel from the previous sweep is deferred only for the
-		// first pick of the new sweep. Restore it immediately afterwards so the
-		// new sweep still exhausts every eligible peer before another reset.
-		param.restoreDeferredChannelAfterSelection()
 	}
 	return channel, selectGroup, nil
 }

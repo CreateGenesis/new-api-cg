@@ -110,9 +110,13 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 }
 
 func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
+	return GetRandomSatisfiedChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, nil)
+}
+
+func GetRandomSatisfiedChannelExcludingPriority(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelExcluding(group, model, retry, requestPath, estimatedInputTokens, excluded)
+		return GetChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, maxPriority)
 	}
 
 	channelSyncLock.RLock()
@@ -121,12 +125,20 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][model], requestPath), estimatedInputTokens)
 	channels = filterExcludedChannelIDs(channels, excluded)
+	channels, err := filterChannelsByMaxPriority(channels, maxPriority)
+	if err != nil {
+		return nil, err
+	}
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath), estimatedInputTokens)
 		channels = filterExcludedChannelIDs(channels, excluded)
+		channels, err = filterChannelsByMaxPriority(channels, maxPriority)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if len(channels) == 0 {
@@ -224,6 +236,23 @@ func filterExcludedChannelIDs(channels []int, excluded map[int]struct{}) []int {
 		}
 	}
 	return filtered
+}
+
+func filterChannelsByMaxPriority(channels []int, maxPriority *int64) ([]int, error) {
+	if maxPriority == nil {
+		return channels, nil
+	}
+	filtered := make([]int, 0, len(channels))
+	for _, channelID := range channels {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
+		}
+		if channel.GetPriority() <= *maxPriority {
+			filtered = append(filtered, channelID)
+		}
+	}
+	return filtered, nil
 }
 
 // filterChannelsByRequestPath restricts candidates by request path. Only Advanced

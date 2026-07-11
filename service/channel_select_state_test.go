@@ -36,7 +36,7 @@ func TestInterAndSameChannelRetryStatesHaveIndependentStorage(t *testing.T) {
 	assert.Equal(t, 0, nextChannelState.Count())
 }
 
-func TestSelectionSweepStateCannotRewriteRetryCounters(t *testing.T) {
+func TestChannelSelectionStatePermanentlyExcludesChannelsAndDescendsPriority(t *testing.T) {
 	interChannelState := &InterChannelRetryState{}
 	sameChannelState := &SameChannelRetryState{}
 	for range 7 {
@@ -45,17 +45,15 @@ func TestSelectionSweepStateCannotRewriteRetryCounters(t *testing.T) {
 	for range 2 {
 		sameChannelState.Increase()
 	}
+	priorityHigh := int64(10)
+	priorityLow := int64(5)
 	selectParam := &ChannelSelectParam{}
-	selectParam.ExcludeAttemptedChannel(3)
-	selectParam.ExcludeAttemptedChannel(10)
+	selectParam.ExcludeAttemptedChannel(&model.Channel{Id: 3, Priority: &priorityHigh})
+	selectParam.ExcludeAttemptedChannel(&model.Channel{Id: 10, Priority: &priorityLow})
 
-	assert.True(t, selectParam.BeginNextSelectionSweep())
-	assert.Equal(t, map[int]struct{}{10: {}}, selectParam.ExcludedChannelIDs)
-	assert.Equal(t, 7, interChannelState.Count())
-	assert.Equal(t, 2, sameChannelState.Count())
-
-	selectParam.AllowLastAttemptedChannel()
-	assert.Empty(t, selectParam.ExcludedChannelIDs)
+	assert.Equal(t, map[int]struct{}{3: {}, 10: {}}, selectParam.ExcludedChannelIDs)
+	require.NotNil(t, selectParam.MaxPriority)
+	assert.Equal(t, priorityLow, *selectParam.MaxPriority)
 	assert.Equal(t, 7, interChannelState.Count())
 	assert.Equal(t, 2, sameChannelState.Count())
 }
@@ -87,15 +85,16 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 		}
 	})
 
-	priority := int64(10)
+	priorityHigh := int64(10)
+	priorityLow := int64(5)
 	weight := uint(1)
 	channels := []model.Channel{
-		{Id: 1, Name: "group-a", Status: common.ChannelStatusEnabled, Group: "group-a", Models: "retry-model", Priority: &priority, Weight: &weight},
-		{Id: 2, Name: "group-b", Status: common.ChannelStatusEnabled, Group: "group-b", Models: "retry-model", Priority: &priority, Weight: &weight},
+		{Id: 1, Name: "group-a", Status: common.ChannelStatusEnabled, Group: "group-a", Models: "retry-model", Priority: &priorityHigh, Weight: &weight},
+		{Id: 2, Name: "group-b", Status: common.ChannelStatusEnabled, Group: "group-b", Models: "retry-model", Priority: &priorityLow, Weight: &weight},
 	}
 	abilities := []model.Ability{
-		{Group: "group-a", Model: "retry-model", ChannelId: 1, Enabled: true, Priority: &priority, Weight: weight},
-		{Group: "group-b", Model: "retry-model", ChannelId: 2, Enabled: true, Priority: &priority, Weight: weight},
+		{Group: "group-a", Model: "retry-model", ChannelId: 1, Enabled: true, Priority: &priorityHigh, Weight: weight},
+		{Group: "group-b", Model: "retry-model", ChannelId: 2, Enabled: true, Priority: &priorityLow, Weight: weight},
 	}
 	require.NoError(t, db.Create(&channels).Error)
 	require.NoError(t, db.Create(&abilities).Error)
@@ -111,20 +110,13 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	assert.Equal(t, 1, channel.Id)
 	assert.Equal(t, "group-a", group)
 
-	noCrossParam.ExcludeAttemptedChannel(channel.Id)
+	noCrossParam.ExcludeAttemptedChannel(channel)
 	channel, _, err = CacheGetRandomSatisfiedChannel(noCrossParam)
 	require.NoError(t, err)
 	assert.Nil(t, channel, "disabled cross-group retry must not move to group-b")
-	require.True(t, noCrossParam.BeginNextSelectionSweep())
 	channel, _, err = CacheGetRandomSatisfiedChannel(noCrossParam)
 	require.NoError(t, err)
-	assert.Nil(t, channel, "the last channel is deferred for the first pick of a new sweep")
-	noCrossParam.AllowLastAttemptedChannel()
-	channel, group, err = CacheGetRandomSatisfiedChannel(noCrossParam)
-	require.NoError(t, err)
-	require.NotNil(t, channel)
-	assert.Equal(t, 1, channel.Id)
-	assert.Equal(t, "group-a", group)
+	assert.Nil(t, channel, "an attempted channel must remain excluded")
 
 	crossContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	common.SetContextKey(crossContext, constant.ContextKeyUserGroup, "default")
@@ -143,7 +135,7 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	require.NotNil(t, channel)
 	assert.Equal(t, 1, channel.Id)
 	assert.Equal(t, "group-a", group)
-	crossParam.ExcludeAttemptedChannel(channel.Id)
+	crossParam.ExcludeAttemptedChannel(channel)
 
 	channel, group, err = CacheGetRandomSatisfiedChannel(crossParam)
 	require.NoError(t, err)
@@ -152,7 +144,7 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	assert.Equal(t, "group-b", group)
 	assert.Equal(t, 4, interChannelState.Count())
 	assert.Equal(t, 2, sameChannelState.Count())
-	crossParam.ExcludeAttemptedChannel(channel.Id)
+	crossParam.ExcludeAttemptedChannel(channel)
 
 	channel, _, err = CacheGetRandomSatisfiedChannel(crossParam)
 	require.NoError(t, err)
@@ -160,12 +152,9 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	channel, _, err = CacheGetRandomSatisfiedChannel(crossParam)
 	require.NoError(t, err)
 	assert.Nil(t, channel, "an exhausted auto-group index must not implicitly reset")
-	require.True(t, crossParam.BeginNextSelectionSweep())
-	channel, group, err = CacheGetRandomSatisfiedChannel(crossParam)
-	require.NoError(t, err)
-	require.NotNil(t, channel)
-	assert.Equal(t, 1, channel.Id)
-	assert.Equal(t, "group-a", group)
+	assert.Equal(t, map[int]struct{}{1: {}, 2: {}}, crossParam.ExcludedChannelIDs)
+	require.NotNil(t, crossParam.MaxPriority)
+	assert.Equal(t, priorityLow, *crossParam.MaxPriority)
 	assert.Equal(t, 4, interChannelState.Count())
 	assert.Equal(t, 2, sameChannelState.Count())
 }

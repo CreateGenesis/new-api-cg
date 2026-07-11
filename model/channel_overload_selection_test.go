@@ -49,6 +49,11 @@ func TestGetRandomSatisfiedChannelExcludingPrefersSamePriorityThenFallsBack(t *t
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 3, selected.Id)
+
+	selected, err = GetRandomSatisfiedChannelExcludingPriority("default", "test-model", 0, "", nil, nil, &priorityLow)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 3, selected.Id, "a retry must not climb above its current priority ceiling")
 }
 
 func TestGetRandomSatisfiedChannelExcludingRetryIndexDoesNotSkipSamePriority(t *testing.T) {
@@ -173,6 +178,11 @@ func TestGetChannelExcludingRetryIndexDoesNotSkipSamePriority(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 11, selected.Id)
+
+	selected, err = GetChannelExcludingPriority("default", "test-model-db", 0, "", &estimatedTokens, nil, &priorityLow)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 11, selected.Id, "the database selector must enforce the same priority ceiling")
 }
 
 func TestGetChannelFiltersBeforeChoosingHighestPriority(t *testing.T) {

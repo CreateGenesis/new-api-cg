@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRelayRetryHarnessUsesChannelAndSystemBudgetsAcrossSelectionSweeps(t *testing.T) {
+func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var (
@@ -66,7 +66,7 @@ func TestRelayRetryHarnessUsesChannelAndSystemBudgetsAcrossSelectionSweeps(t *te
 	})
 
 	modelName := "retry-harness-model"
-	priority := int64(10)
+	priorities := []int64{10, 10, 5}
 	weight := uint(1)
 	autoBan := 0
 	retryTimes := 3
@@ -75,6 +75,7 @@ func TestRelayRetryHarnessUsesChannelAndSystemBudgetsAcrossSelectionSweeps(t *te
 	abilities := make([]model.Ability, 0, 3)
 	for id := 1; id <= 3; id++ {
 		baseURL := upstream.URL
+		priority := priorities[id-1]
 		channels = append(channels, model.Channel{
 			Id:       id,
 			Type:     constant.ChannelTypeOpenAI,
@@ -138,11 +139,12 @@ func TestRelayRetryHarnessUsesChannelAndSystemBudgetsAcrossSelectionSweeps(t *te
 	attemptsMu.Lock()
 	gotAttempts := append([]string(nil), attempts...)
 	attemptsMu.Unlock()
-	require.Len(t, gotAttempts, 44)
+	require.Len(t, gotAttempts, 12)
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Len(t, ctx.GetStringSlice("use_channel"), 44)
+	assert.Contains(t, recorder.Body.String(), "busy", "candidate exhaustion must preserve the last upstream error")
+	require.Len(t, ctx.GetStringSlice("use_channel"), 12)
 
-	runs := make([][]string, 0, 11)
+	runs := make([][]string, 0, 3)
 	for _, channelKey := range gotAttempts {
 		if len(runs) == 0 || runs[len(runs)-1][0] != channelKey {
 			runs = append(runs, []string{channelKey})
@@ -150,16 +152,9 @@ func TestRelayRetryHarnessUsesChannelAndSystemBudgetsAcrossSelectionSweeps(t *te
 		}
 		runs[len(runs)-1] = append(runs[len(runs)-1], channelKey)
 	}
-	require.Len(t, runs, 11, "system retry=10 must produce the initial channel round plus ten inter-channel retries")
+	require.Len(t, runs, 3, "system retry budget must not restart an exhausted channel selection")
 	for interChannelRound, run := range runs {
 		assert.Lenf(t, run, 4, "channel round %d must contain one request plus three channel-internal retries", interChannelRound)
 	}
-
-	for sweepStart := 0; sweepStart+3 <= len(runs); sweepStart += 3 {
-		seen := make(map[string]struct{}, 3)
-		for _, run := range runs[sweepStart : sweepStart+3] {
-			seen[run[0]] = struct{}{}
-		}
-		assert.Lenf(t, seen, 3, "selection sweep starting at round %d must exhaust all three peers before reuse", sweepStart)
-	}
+	assert.Equal(t, []string{"channel-1", "channel-2", "channel-3"}, []string{runs[0][0], runs[1][0], runs[2][0]})
 }

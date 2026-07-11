@@ -66,6 +66,10 @@ func GetChannel(group string, model string, retry int, requestPath string, estim
 }
 
 func GetChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
+	return GetChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, nil)
+}
+
+func GetChannelExcludingPriority(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
 	var abilities []Ability
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
 	err := channelQuery.Order("weight DESC").Find(&abilities).Error
@@ -78,6 +82,19 @@ func GetChannelExcluding(group string, model string, retry int, requestPath stri
 		filtered := make([]Ability, 0, len(abilities))
 		for _, ability := range abilities {
 			if _, found := excluded[ability.ChannelId]; !found {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
+	if maxPriority != nil {
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if priority <= *maxPriority {
 				filtered = append(filtered, ability)
 			}
 		}
