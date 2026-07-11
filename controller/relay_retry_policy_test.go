@@ -41,6 +41,35 @@ func TestRelayRetryPolicyFromContextUsesGlobalDefaults(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 2))
 }
 
+func TestBuildRelayErrorLogDetailsIncludesUpstreamDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("channel_name", "primary")
+	ctx.Set("channel_type", constant.ChannelTypeOpenAI)
+	ctx.Set("use_channel", []string{"12"})
+
+	upstreamErr := types.NewErrorWithStatusCode(
+		errors.New("rate limited"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusServiceUnavailable,
+	)
+	upstreamErr.SetUpstreamResponse(
+		http.StatusTooManyRequests,
+		`{"error":{"message":"request to https://api.example.com/v1 failed"}}`,
+	)
+
+	details := buildRelayErrorLogDetails(ctx, upstreamErr, 12)
+
+	assert.Equal(t, http.StatusServiceUnavailable, details["status_code"])
+	adminInfo, ok := details["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, http.StatusTooManyRequests, adminInfo["upstream_status_code"])
+	assert.Equal(t, []string{"12"}, adminInfo["use_channel"])
+	assert.NotContains(t, adminInfo["upstream_response"], "api.example.com")
+	assert.Contains(t, adminInfo["upstream_response"], "request to https://***.com")
+}
+
 func TestChannelOverloadedNeverRetries(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

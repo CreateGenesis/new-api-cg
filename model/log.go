@@ -118,6 +118,18 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		logs[i].ChannelName = ""
 		var otherMap map[string]interface{}
 		otherMap, _ = common.StrToMap(logs[i].Other)
+		if logs[i].Type == LogTypeError {
+			logs[i].ChannelId = 0
+			logs[i].UpstreamRequestId = ""
+			logs[i].Content = stripErrorStatusCodePrefix(logs[i].Content)
+			delete(otherMap, "error_type")
+			delete(otherMap, "error_code")
+			delete(otherMap, "status_code")
+			delete(otherMap, "channel_id")
+			delete(otherMap, "channel_name")
+			delete(otherMap, "channel_type")
+			delete(otherMap, "request_path")
+		}
 		if otherMap != nil {
 			// Remove admin-only debug fields.
 			delete(otherMap, "admin_info")
@@ -129,6 +141,29 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
 	assignDisplayLogIds(logs, startIdx)
+}
+
+func stripErrorStatusCodePrefix(content string) string {
+	const prefix = "status_code="
+	if !strings.HasPrefix(content, prefix) {
+		return content
+	}
+
+	remainder := strings.TrimPrefix(content, prefix)
+	digitEnd := 0
+	for digitEnd < len(remainder) && remainder[digitEnd] >= '0' && remainder[digitEnd] <= '9' {
+		digitEnd++
+	}
+	if digitEnd == 0 {
+		return content
+	}
+	if digitEnd == len(remainder) {
+		return ""
+	}
+	if strings.HasPrefix(remainder[digitEnd:], ", ") {
+		return remainder[digitEnd+2:]
+	}
+	return content
 }
 
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {

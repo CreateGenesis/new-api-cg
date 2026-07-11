@@ -33,3 +33,48 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	// Non-admin billing fields remain visible.
 	require.Contains(t, parsed, "model_price")
 }
+
+func TestFormatUserLogsRedactsErrorDiagnostics(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":   "openai_error",
+		"error_code":   "bad_response_status_code",
+		"status_code":  429,
+		"channel_id":   12,
+		"channel_name": "primary",
+		"channel_type": 1,
+		"request_path": "/v1/chat/completions",
+		"admin_info": map[string]interface{}{
+			"upstream_status_code": 429,
+			"upstream_response":    `{"error":{"message":"rate limited"}}`,
+		},
+	})
+	logs := []*Log{{
+		Type:              LogTypeError,
+		Content:           "status_code=429, rate limited",
+		ChannelId:         12,
+		ChannelName:       "primary",
+		UpstreamRequestId: "upstream-request-id",
+		Other:             other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, "rate limited", logs[0].Content)
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	for _, key := range []string{
+		"error_type",
+		"error_code",
+		"status_code",
+		"channel_id",
+		"channel_name",
+		"channel_type",
+		"request_path",
+		"admin_info",
+	} {
+		require.NotContains(t, parsed, key)
+	}
+}

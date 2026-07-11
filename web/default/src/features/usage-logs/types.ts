@@ -111,6 +111,8 @@ export interface LogOtherData {
     admin_id?: number | string
     admin_role?: number
     auth_method?: 'session' | 'access_token' | string
+    upstream_status_code?: number
+    upstream_response?: string
     // Quota saturation marker: set when a quota conversion clamped at the
     // int32 bound (overflow/underflow) or hit a NaN fallback while computing
     // this request's charge. Admin-only (nested under admin_info).
@@ -139,6 +141,9 @@ export interface LogOtherData {
   // Login audit fields (type=7); visible to the log owner
   login_method?: string
   user_agent?: string
+  error_type?: string
+  error_code?: string
+  status_code?: number
   request_path?: string
   request_conversion?: string[]
   ws?: boolean

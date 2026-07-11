@@ -89,14 +89,16 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err                error
+	RelayError         any
+	skipRetry          bool
+	recordErrorLog     *bool
+	errorType          ErrorType
+	errorCode          ErrorCode
+	StatusCode         int
+	Metadata           json.RawMessage
+	upstreamStatusCode int
+	upstreamResponse   string
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -119,6 +121,28 @@ func (e *NewAPIError) GetErrorType() ErrorType {
 		return ""
 	}
 	return e.errorType
+}
+
+func (e *NewAPIError) SetUpstreamResponse(statusCode int, response string) {
+	if e == nil {
+		return
+	}
+	e.upstreamStatusCode = statusCode
+	e.upstreamResponse = response
+}
+
+func (e *NewAPIError) GetUpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.upstreamStatusCode
+}
+
+func (e *NewAPIError) GetUpstreamResponse() string {
+	if e == nil {
+		return ""
+	}
+	return e.upstreamResponse
 }
 
 func (e *NewAPIError) Error() string {

@@ -120,6 +120,8 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 
 	require.NotNil(t, newAPIError)
 	require.Equal(t, message, newAPIError.Error())
+	require.Equal(t, http.StatusInternalServerError, newAPIError.GetUpstreamStatusCode())
+	require.Equal(t, body, newAPIError.GetUpstreamResponse())
 }
 
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
