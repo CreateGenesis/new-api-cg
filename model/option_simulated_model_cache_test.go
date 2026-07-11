@@ -27,3 +27,21 @@ func TestHandleConfigUpdateAppliesSimulatedModelCacheMemoryBudgetImmediately(t *
 	require.True(t, handled)
 	assert.Equal(t, 384, common.GetSimulatedModelCacheMemoryBudgetMB())
 }
+
+func TestHandleConfigUpdateAppliesSimulatedModelCacheEntryLimitImmediately(t *testing.T) {
+	original := common.GetSimulatedModelCacheEntriesPerScope()
+	t.Cleanup(func() {
+		require.True(t, handleConfigUpdate(
+			"performance_setting.simulated_model_cache_max_entries_per_scope",
+			strconv.Itoa(original),
+		))
+	})
+
+	handled := handleConfigUpdate(
+		"performance_setting.simulated_model_cache_max_entries_per_scope",
+		"40",
+	)
+
+	require.True(t, handled)
+	assert.Equal(t, 40, common.GetSimulatedModelCacheEntriesPerScope())
+}

@@ -54,6 +54,18 @@ func validateSimulatedModelCacheMemoryBudgetMB(value string) error {
 	return nil
 }
 
+func validateSimulatedModelCacheMaxEntriesPerScope(value string) error {
+	maxEntries, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || !common.IsValidSimulatedModelCacheEntriesPerScope(maxEntries) {
+		return fmt.Errorf(
+			"模拟缓存每用户模型的条数上限必须是 %d 到 %d 之间的整数",
+			common.SimulatedModelCacheMinEntriesPerScope,
+			common.SimulatedModelCacheMaxEntriesPerScope,
+		)
+	}
+	return nil
+}
+
 func collectModelNamesFromOptionValue(raw string, modelNames map[string]struct{}) {
 	if strings.TrimSpace(raw) == "" {
 		return
@@ -164,6 +176,14 @@ func UpdateOption(c *gin.Context) {
 	switch option.Key {
 	case "performance_setting.simulated_model_cache_memory_budget_mb":
 		if err := validateSimulatedModelCacheMemoryBudgetMB(option.Value.(string)); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "performance_setting.simulated_model_cache_max_entries_per_scope":
+		if err := validateSimulatedModelCacheMaxEntriesPerScope(option.Value.(string)); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": err.Error(),

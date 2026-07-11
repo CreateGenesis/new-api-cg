@@ -447,7 +447,8 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 	matcher := newSimulatedModelCacheFingerprintMatcher(current)
 
 	indexKey := simulatedModelCacheScopeIndexKey(req.UserID, req.Model)
-	promptIDs, err := common.RDB.ZRevRange(ctx, indexKey, 0, simulatedModelCacheMaxEntriesPerScope-1).Result()
+	maxEntries := common.GetSimulatedModelCacheEntriesPerScope()
+	promptIDs, err := common.RDB.ZRevRange(ctx, indexKey, 0, int64(maxEntries-1)).Result()
 	if err != nil {
 		result.BypassReason = SimulatedModelCacheBypassRedisError
 		result.MatchDuration = time.Since(startedAt)
@@ -572,7 +573,7 @@ func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 	if err := extendSimulatedModelCacheTTL(ctx, indexKey, ttl); err != nil {
 		return err
 	}
-	return evictSimulatedModelCacheOldestPromptIDs(ctx, indexKey, simulatedModelCacheMaxEntriesPerScope)
+	return evictSimulatedModelCacheOldestPromptIDs(ctx, indexKey, common.GetSimulatedModelCacheEntriesPerScope())
 }
 
 func extendSimulatedModelCacheTTL(ctx context.Context, key string, ttl time.Duration) error {

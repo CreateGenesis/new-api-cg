@@ -296,12 +296,17 @@ func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *test
 
 func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndModel(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
+	originalMaxEntries := common.GetSimulatedModelCacheEntriesPerScope()
+	common.SetSimulatedModelCacheEntriesPerScope(3)
+	t.Cleanup(func() {
+		common.SetSimulatedModelCacheEntriesPerScope(originalMaxEntries)
+	})
 	const userID = 4242
 	const otherUserID = 4243
 	const model = "gpt-test"
 	const otherModel = "other-test"
 
-	for i := 0; i < 101; i++ {
+	for i := 0; i < 4; i++ {
 		prompt := fmt.Sprintf("prompt %03d %s", i, strings.Repeat("content ", 20))
 		err := StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
 			UserID:     userID,
@@ -328,9 +333,9 @@ func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndMo
 	indexKey := simulatedModelCacheScopeIndexKey(userID, model)
 	promptIDs, err := common.RDB.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
-	require.Len(t, promptIDs, simulatedModelCacheMaxEntriesPerScope)
+	require.Len(t, promptIDs, 3)
 	assert.NotContains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 0, strings.Repeat("content ", 20)))))
-	assert.Contains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 100, strings.Repeat("content ", 20)))))
+	assert.Contains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 3, strings.Repeat("content ", 20)))))
 
 	otherUserCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(otherUserID, model)).Result()
 	require.NoError(t, err)

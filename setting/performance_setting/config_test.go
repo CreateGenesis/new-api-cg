@@ -23,3 +23,19 @@ func TestUpdateAndSyncAppliesSimulatedModelCacheMemoryBudgetImmediately(t *testi
 	UpdateAndSync()
 	assert.Equal(t, 512, common.GetSimulatedModelCacheMemoryBudgetMB())
 }
+
+func TestUpdateAndSyncAppliesSimulatedModelCacheEntryLimitImmediately(t *testing.T) {
+	original := performanceSetting
+	t.Cleanup(func() {
+		performanceSetting = original
+		UpdateAndSync()
+	})
+
+	performanceSetting.SimulatedModelCacheMaxEntriesPerScope = 25
+	UpdateAndSync()
+	assert.Equal(t, 25, common.GetSimulatedModelCacheEntriesPerScope())
+
+	performanceSetting.SimulatedModelCacheMaxEntriesPerScope = 50
+	UpdateAndSync()
+	assert.Equal(t, 50, common.GetSimulatedModelCacheEntriesPerScope())
+}

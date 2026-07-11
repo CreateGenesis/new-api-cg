@@ -9,6 +9,8 @@ import (
 type PerformanceSetting struct {
 	// SimulatedModelCacheMemoryBudgetMB 模拟模型缓存的全局内存预算（MB）
 	SimulatedModelCacheMemoryBudgetMB int `json:"simulated_model_cache_memory_budget_mb"`
+	// SimulatedModelCacheMaxEntriesPerScope 每个用户和模型组合保留的最大指纹数
+	SimulatedModelCacheMaxEntriesPerScope int `json:"simulated_model_cache_max_entries_per_scope"`
 
 	// DiskCacheEnabled 是否启用磁盘缓存（磁盘换内存）
 	DiskCacheEnabled bool `json:"disk_cache_enabled"`
@@ -31,7 +33,8 @@ type PerformanceSetting struct {
 
 // 默认配置
 var performanceSetting = PerformanceSetting{
-	SimulatedModelCacheMemoryBudgetMB: common.GetSimulatedModelCacheMemoryBudgetMB(),
+	SimulatedModelCacheMemoryBudgetMB:     common.GetSimulatedModelCacheMemoryBudgetMB(),
+	SimulatedModelCacheMaxEntriesPerScope: common.GetSimulatedModelCacheEntriesPerScope(),
 
 	DiskCacheEnabled:     false,
 	DiskCacheThresholdMB: 10,   // 超过 10MB 使用磁盘缓存
@@ -55,6 +58,9 @@ func init() {
 func syncToCommon() {
 	performanceSetting.SimulatedModelCacheMemoryBudgetMB = common.SetSimulatedModelCacheMemoryBudgetMB(
 		performanceSetting.SimulatedModelCacheMemoryBudgetMB,
+	)
+	performanceSetting.SimulatedModelCacheMaxEntriesPerScope = common.SetSimulatedModelCacheEntriesPerScope(
+		performanceSetting.SimulatedModelCacheMaxEntriesPerScope,
 	)
 
 	common.SetDiskCacheConfig(common.DiskCacheConfig{

@@ -111,6 +111,10 @@ const OPERATIONS_SECTIONS = [
             settings[
               'performance_setting.simulated_model_cache_memory_budget_mb'
             ] ?? 1024,
+          'performance_setting.simulated_model_cache_max_entries_per_scope':
+            settings[
+              'performance_setting.simulated_model_cache_max_entries_per_scope'
+            ] ?? 100,
           'performance_setting.disk_cache_enabled':
             settings['performance_setting.disk_cache_enabled'] ?? false,
           'performance_setting.disk_cache_threshold_mb':

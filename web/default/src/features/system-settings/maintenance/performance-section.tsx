@@ -77,6 +77,11 @@ const perfSchema = z.object({
       .int()
       .min(1)
       .max(1048576),
+    simulated_model_cache_max_entries_per_scope: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(5000),
     disk_cache_enabled: z.boolean(),
     disk_cache_threshold_mb: z.coerce.number().min(1),
     disk_cache_max_size_mb: z.coerce.number().min(100),
@@ -93,6 +98,7 @@ type PerfFormValues = z.output<typeof perfSchema>
 
 type FlatPerfDefaults = {
   'performance_setting.simulated_model_cache_memory_budget_mb': number
+  'performance_setting.simulated_model_cache_max_entries_per_scope': number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -107,6 +113,10 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
   performance_setting: {
     simulated_model_cache_memory_budget_mb:
       defaults['performance_setting.simulated_model_cache_memory_budget_mb'],
+    simulated_model_cache_max_entries_per_scope:
+      defaults[
+        'performance_setting.simulated_model_cache_max_entries_per_scope'
+      ],
     disk_cache_enabled: defaults['performance_setting.disk_cache_enabled'],
     disk_cache_threshold_mb:
       defaults['performance_setting.disk_cache_threshold_mb'],
@@ -126,6 +136,8 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
 const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
   'performance_setting.simulated_model_cache_memory_budget_mb':
     values.performance_setting.simulated_model_cache_memory_budget_mb,
+  'performance_setting.simulated_model_cache_max_entries_per_scope':
+    values.performance_setting.simulated_model_cache_max_entries_per_scope,
   'performance_setting.disk_cache_enabled':
     values.performance_setting.disk_cache_enabled,
   'performance_setting.disk_cache_threshold_mb':
@@ -447,7 +459,7 @@ export function PerformanceSection(props: Props) {
           <Separator />
 
           <div>
-            <h4 className='font-medium'>{t('Simulated Cache Memory')}</h4>
+            <h4 className='font-medium'>{t('Simulated Cache')}</h4>
             <p className='text-muted-foreground mt-1 text-xs'>
               {t(
                 'This global budget is shared by prompt fingerprint matching and response buffering. Changes take effect immediately without restarting the service.'
@@ -455,30 +467,60 @@ export function PerformanceSection(props: Props) {
             </p>
           </div>
 
-          <FormField
-            control={form.control}
-            name='performance_setting.simulated_model_cache_memory_budget_mb'
-            render={({ field }) => (
-              <FormItem className='max-w-md'>
-                <FormLabel>{t('Simulated Cache Memory Budget (MB)')}</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    min={1}
-                    max={1048576}
-                    step={1}
-                    {...safeNumberFieldProps(field)}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t(
-                    'This limit does not include Redis, disk cache, or other process memory. When the budget is insufficient, simulated cache matching is skipped.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='performance_setting.simulated_model_cache_memory_budget_mb'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Simulated Cache Memory Budget (MB)')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={1}
+                      max={1048576}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'This limit does not include Redis, disk cache, or other process memory. When the budget is insufficient, simulated cache matching is skipped.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='performance_setting.simulated_model_cache_max_entries_per_scope'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Simulated Cache Entries per User and Model')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={1}
+                      max={5000}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Each user and model combination keeps at most this many recent prompt fingerprints. Changes take effect immediately without restarting the service.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
 
           <Separator />
 
