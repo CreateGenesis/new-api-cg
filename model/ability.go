@@ -155,10 +155,9 @@ func GetChannelExcluding(group string, model string, retry int, requestPath stri
 		}
 		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
 		if len(priorities) > 0 {
-			if retry >= len(priorities) {
-				retry = len(priorities) - 1
-			}
-			targetPriority := priorities[retry]
+			// Exclusions represent channels already attempted. Continue from the
+			// highest priority that still has a candidate before falling back.
+			targetPriority := priorities[0]
 			filtered = abilities[:0]
 			for _, ability := range abilities {
 				priority := int64(0)

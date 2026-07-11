@@ -265,6 +265,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetryWithPolicy(c, newAPIError, globalRetryPolicy, retryParam.GetRetry()) {
 			break
 		}
+		retryParam.ExcludeChannel(channel.Id)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -307,10 +308,7 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, retr
 			return channel, nil, channelOverloadedError()
 		}
 
-		if retryParam.ExcludedChannelIDs == nil {
-			retryParam.ExcludedChannelIDs = make(map[int]struct{})
-		}
-		retryParam.ExcludedChannelIDs[channel.Id] = struct{}{}
+		retryParam.ExcludeChannel(channel.Id)
 		next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(retryParam)
 		if selectErr != nil {
 			return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)

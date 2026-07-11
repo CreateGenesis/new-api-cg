@@ -157,6 +157,11 @@ func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, r
 	if retry >= len(uniquePriorities) {
 		retry = len(uniquePriorities) - 1
 	}
+	if len(excluded) > 0 {
+		// Retry from the highest priority that still has an untried channel.
+		// The retry counter limits attempts; it must not skip remaining peers.
+		retry = 0
+	}
 	targetPriority := int64(sortedUniquePriorities[retry])
 
 	// get the priority for the given retry number
