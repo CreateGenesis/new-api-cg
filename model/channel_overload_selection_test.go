@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -172,4 +173,91 @@ func TestGetChannelExcludingRetryIndexDoesNotSkipSamePriority(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 11, selected.Id)
+}
+
+func TestGetChannelFiltersBeforeChoosingHighestPriority(t *testing.T) {
+	truncateTables(t)
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCacheEnabled })
+
+	priorityHigh := int64(10)
+	priorityLow := int64(5)
+	channels := []Channel{
+		{Id: 21, Name: "high-token-mismatch", Key: "sk-21", OtherSettings: `{"input_token_routing":{"enabled":true,"min_tokens":5000,"max_tokens":9000}}`},
+		{Id: 22, Name: "low-token-match", Key: "sk-22", OtherSettings: `{"input_token_routing":{"enabled":true,"min_tokens":100,"max_tokens":4999}}`},
+	}
+	require.NoError(t, DB.Create(&channels).Error)
+	require.NoError(t, DB.Create(&[]Ability{
+		{Group: "default", Model: "filtered-priority", ChannelId: 21, Enabled: true, Priority: &priorityHigh, Weight: 1},
+		{Group: "default", Model: "filtered-priority", ChannelId: 22, Enabled: true, Priority: &priorityLow, Weight: 1},
+	}).Error)
+
+	estimatedTokens := 1000
+	selected, err := GetChannelExcluding("default", "filtered-priority", 0, "", &estimatedTokens, nil)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 22, selected.Id)
+}
+
+func TestCachedChannelSelectionFiltersBeforeChoosingHighestPriority(t *testing.T) {
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCacheEnabled })
+
+	priorityHigh := int64(10)
+	priorityLow := int64(5)
+	weight := uint(1)
+	channels := map[int]*Channel{
+		31: {Id: 31, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityHigh, Weight: &weight},
+		32: {Id: 32, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityLow, Weight: &weight},
+	}
+
+	channelSyncLock.Lock()
+	originalGroups := group2model2channels
+	originalChannels := channelsIDM
+	originalAdvanced := channel2advancedCustomConfig
+	group2model2channels = map[string]map[string][]int{"default": {"path-priority": {31, 32}}}
+	channelsIDM = channels
+	channel2advancedCustomConfig = map[int]*dto.AdvancedCustomConfig{
+		31: {Routes: []dto.AdvancedCustomRoute{{IncomingPath: "/v1/messages"}}},
+		32: {Routes: []dto.AdvancedCustomRoute{{IncomingPath: "/v1/responses"}}},
+	}
+	channelSyncLock.Unlock()
+	t.Cleanup(func() {
+		channelSyncLock.Lock()
+		group2model2channels = originalGroups
+		channelsIDM = originalChannels
+		channel2advancedCustomConfig = originalAdvanced
+		channelSyncLock.Unlock()
+	})
+
+	selected, err := GetRandomSatisfiedChannelExcluding("default", "path-priority", 0, "/v1/responses", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 32, selected.Id)
+}
+
+func TestDatabaseChannelSelectionFiltersPathBeforeChoosingHighestPriority(t *testing.T) {
+	truncateTables(t)
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCacheEnabled })
+
+	priorityHigh := int64(10)
+	priorityLow := int64(5)
+	channels := []Channel{
+		{Id: 41, Type: constant.ChannelTypeAdvancedCustom, Name: "high-path-mismatch", Key: "sk-41", OtherSettings: `{"advanced_custom":{"advanced_routes":[{"incoming_path":"/v1/messages"}]}}`},
+		{Id: 42, Type: constant.ChannelTypeAdvancedCustom, Name: "low-path-match", Key: "sk-42", OtherSettings: `{"advanced_custom":{"advanced_routes":[{"incoming_path":"/v1/responses"}]}}`},
+	}
+	require.NoError(t, DB.Create(&channels).Error)
+	require.NoError(t, DB.Create(&[]Ability{
+		{Group: "default", Model: "path-priority-db", ChannelId: 41, Enabled: true, Priority: &priorityHigh, Weight: 1},
+		{Group: "default", Model: "path-priority-db", ChannelId: 42, Enabled: true, Priority: &priorityLow, Weight: 1},
+	}).Error)
+
+	selected, err := GetChannelExcluding("default", "path-priority-db", 0, "/v1/responses", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 42, selected.Id)
 }

@@ -330,7 +330,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
-	defer service.ReleaseChannelOverloadLease(c)
+	if !service.IsChannelOverloadLeaseControllerOwned(c) {
+		defer service.ReleaseChannelOverloadLease(c)
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -366,7 +368,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
-	defer service.ReleaseChannelOverloadLease(c)
+	if !service.IsChannelOverloadLeaseControllerOwned(c) {
+		defer service.ReleaseChannelOverloadLease(c)
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
