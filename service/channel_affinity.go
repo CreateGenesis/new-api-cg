@@ -25,6 +25,7 @@ const (
 	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityBypassed   = "channel_affinity_bypassed"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -54,6 +55,7 @@ type channelAffinityMeta struct {
 	UsingGroup     string
 	ModelName      string
 	RequestPath    string
+	CandidateID    int
 }
 
 type ChannelAffinityStatsContext struct {
@@ -634,11 +636,47 @@ func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 			return b
 		}
 	}
+	return false
+}
+
+func MarkChannelAffinityCandidate(c *gin.Context, channelID int) {
+	if c == nil || channelID <= 0 {
+		return
+	}
 	meta, ok := getChannelAffinityMeta(c)
 	if !ok {
-		return false
+		return
 	}
-	return meta.SkipRetry
+	meta.CandidateID = channelID
+	c.Set(ginKeyChannelAffinityMeta, meta)
+	c.Set(ginKeyChannelAffinitySkipRetry, false)
+}
+
+func ConfirmChannelAffinitySelection(c *gin.Context, selectedGroup string, channelID int) {
+	if c == nil {
+		return
+	}
+	meta, ok := getChannelAffinityMeta(c)
+	if !ok || meta.CandidateID <= 0 {
+		return
+	}
+	if meta.CandidateID != channelID {
+		ClearRequestChannelAffinitySelection(c)
+		return
+	}
+	MarkChannelAffinityUsed(c, selectedGroup, channelID)
+}
+
+func ClearRequestChannelAffinitySelection(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	meta, ok := getChannelAffinityMeta(c)
+	if ok && meta.CandidateID > 0 {
+		c.Set(ginKeyChannelAffinityBypassed, true)
+	}
+	c.Set(ginKeyChannelAffinitySkipRetry, false)
+	c.Set(ginKeyChannelAffinityLogInfo, nil)
 }
 
 func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
@@ -716,6 +754,9 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	}
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil || !setting.Enabled {
+		return
+	}
+	if c != nil && c.GetBool(ginKeyChannelAffinityBypassed) {
 		return
 	}
 	if setting.SwitchOnSuccess && c != nil {

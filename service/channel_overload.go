@@ -291,6 +291,17 @@ func SetChannelOverloadLease(c *gin.Context, lease *OverloadLease) {
 	common.SetContextKey(c, constant.ContextKeyChannelOverloadLease, lease)
 }
 
+func SetChannelOverloadLeaseControllerOwned(c *gin.Context, owned bool) {
+	if c == nil {
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelOverloadOwner, owned)
+}
+
+func IsChannelOverloadLeaseControllerOwned(c *gin.Context) bool {
+	return common.GetContextKeyBool(c, constant.ContextKeyChannelOverloadOwner)
+}
+
 func GetChannelOverloadLease(c *gin.Context) *OverloadLease {
 	if c == nil {
 		return nil

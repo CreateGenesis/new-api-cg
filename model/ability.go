@@ -61,73 +61,14 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-func getPriority(group string, model string, retry int) (int, error) {
-
-	var priorities []int
-	err := DB.Model(&Ability{}).
-		Select("DISTINCT(priority)").
-		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
-		Order("priority DESC").              // 按优先级降序排序
-		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
-
-	if err != nil {
-		// 处理错误
-		return 0, err
-	}
-
-	if len(priorities) == 0 {
-		// 如果没有查询到优先级，则返回错误
-		return 0, errors.New("数据库一致性被破坏")
-	}
-
-	// 确定要使用的优先级
-	var priorityToUse int
-	if retry >= len(priorities) {
-		// 如果重试次数大于优先级数，则使用最小的优先级
-		priorityToUse = priorities[len(priorities)-1]
-	} else {
-		priorityToUse = priorities[retry]
-	}
-	return priorityToUse, nil
-}
-
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
-	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
-	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
-		if err != nil {
-			return nil, err
-		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
-		}
-	}
-
-	return channelQuery, nil
-}
-
 func GetChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
 	return GetChannelExcluding(group, model, retry, requestPath, estimatedInputTokens, nil)
 }
 
 func GetChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
-
-	var err error = nil
-	var channelQuery *gorm.DB
-	if len(excluded) > 0 {
-		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
-	} else {
-		channelQuery, err = getChannelQuery(group, model, retry)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if common.UsingMainDatabase(common.DatabaseTypeSQLite) || common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
-	} else {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
-	}
+	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	err := channelQuery.Order("weight DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err
 	}
@@ -141,35 +82,40 @@ func GetChannelExcluding(group string, model string, retry int, requestPath stri
 			}
 		}
 		abilities = filtered
-		priorities := make([]int64, 0)
-		seenPriorities := make(map[int64]struct{})
+	}
+	priorities := make([]int64, 0)
+	seenPriorities := make(map[int64]struct{})
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if _, found := seenPriorities[priority]; !found {
+			seenPriorities[priority] = struct{}{}
+			priorities = append(priorities, priority)
+		}
+	}
+	sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+	if len(priorities) > 0 {
+		priorityIndex := retry
+		if len(excluded) > 0 {
+			priorityIndex = 0
+		}
+		if priorityIndex >= len(priorities) {
+			priorityIndex = len(priorities) - 1
+		}
+		targetPriority := priorities[priorityIndex]
+		filtered := abilities[:0]
 		for _, ability := range abilities {
 			priority := int64(0)
 			if ability.Priority != nil {
 				priority = *ability.Priority
 			}
-			if _, found := seenPriorities[priority]; !found {
-				seenPriorities[priority] = struct{}{}
-				priorities = append(priorities, priority)
+			if priority == targetPriority {
+				filtered = append(filtered, ability)
 			}
 		}
-		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
-		if len(priorities) > 0 {
-			// Exclusions represent channels already attempted. Continue from the
-			// highest priority that still has a candidate before falling back.
-			targetPriority := priorities[0]
-			filtered = abilities[:0]
-			for _, ability := range abilities {
-				priority := int64(0)
-				if ability.Priority != nil {
-					priority = *ability.Priority
-				}
-				if priority == targetPriority {
-					filtered = append(filtered, ability)
-				}
-			}
-			abilities = filtered
-		}
+		abilities = filtered
 	}
 	channel := Channel{}
 	if len(abilities) > 0 {

@@ -123,38 +123,68 @@ func TestDoApiRequestCountsActualUpstreamAttempt(t *testing.T) {
 	assert.Equal(t, service.OverloadScopeChannel, scope)
 }
 
-func TestDoApiRequestKeepsConcurrentLeaseUntilResponseBodyCloses(t *testing.T) {
+func TestControllerOwnedDoApiRequestKeepsConcurrentLeaseUntilResponseFinishes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originalRedisEnabled := common.RedisEnabled
 	common.RedisEnabled = false
-	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
 	service.InitHttpClient()
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
 
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{}`))
-	channel := &model.Channel{Id: 960002, ChannelInfo: model.ChannelInfo{
-		ChannelOverloadProtection: model.OverloadProtection{Enabled: true, ConcurrentRequests: 1},
-	}}
-	lease, scope, err := service.AcquireChannelOverloadLease(ctx.Request.Context(), channel, 0)
-	require.NoError(t, err)
-	require.NotNil(t, lease)
-	assert.Empty(t, scope)
-	service.SetChannelOverloadLease(ctx, lease)
+	for testIndex, contentType := range []string{"application/json", "text/event-stream"} {
+		t.Run(contentType, func(t *testing.T) {
+			releaseBody := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", contentType)
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-releaseBody
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			t.Cleanup(func() {
+				select {
+				case <-releaseBody:
+				default:
+					close(releaseBody)
+				}
+				upstream.Close()
+			})
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`ok`))
-	}))
-	t.Cleanup(upstream.Close)
-	response, err := DoApiRequest(&overloadAdmissionTestAdaptor{requestURL: upstream.URL}, ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, bytes.NewBufferString(`{}`))
-	require.NoError(t, err)
-	require.NotNil(t, response)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{}`))
+			channel := &model.Channel{Id: 961000 + testIndex, ChannelInfo: model.ChannelInfo{
+				ChannelOverloadProtection: model.OverloadProtection{Enabled: true, ConcurrentRequests: 1},
+			}}
+			lease, scope, err := service.AcquireChannelOverloadLease(ctx.Request.Context(), channel, 0)
+			require.NoError(t, err)
+			require.NotNil(t, lease)
+			assert.Empty(t, scope)
+			service.SetChannelOverloadLease(ctx, lease)
+			service.SetChannelOverloadLeaseControllerOwned(ctx, true)
 
-	blocked, scope, err := service.AcquireChannelOverloadLease(context.Background(), channel, 0)
-	require.NoError(t, err)
-	assert.Nil(t, blocked)
-	assert.Equal(t, service.OverloadScopeChannel, scope)
-	require.NoError(t, response.Body.Close())
+			adaptor := &overloadAdmissionTestAdaptor{requestURL: upstream.URL}
+			response, err := DoApiRequest(adaptor, ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, bytes.NewBufferString(`{}`))
+			require.NoError(t, err)
+			require.NotNil(t, response)
+
+			blocked, blockedScope, err := service.AcquireChannelOverloadLease(context.Background(), channel, 0)
+			require.NoError(t, err)
+			assert.Nil(t, blocked)
+			assert.Equal(t, service.OverloadScopeChannel, blockedScope)
+
+			close(releaseBody)
+			_, err = io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			service.ReleaseChannelOverloadLease(ctx)
+			service.ResetChannelOverloadState(context.Background(), channel.Id, 1)
+
+			next, nextScope, acquireErr := service.AcquireChannelOverloadLease(context.Background(), channel, 0)
+			require.NoError(t, acquireErr)
+			require.NotNil(t, next)
+			assert.Empty(t, nextScope)
+			next.Release(context.Background())
+		})
+	}
 }
 
 var _ Adaptor = (*overloadAdmissionTestAdaptor)(nil)

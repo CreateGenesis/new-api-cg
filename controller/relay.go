@@ -115,6 +115,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	layeredRetryEnabled := controllerOwnsRelayOverloadLease(relayFormat, relayInfo.RelayMode)
+	c.Set("layered_relay_retry", layeredRetryEnabled)
+	service.SetChannelOverloadLeaseControllerOwned(c, layeredRetryEnabled)
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -197,15 +200,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		actualChannelID := 0
 		channelRetryPolicy := relayRetryPolicy{}
 		sameChannelRetryState := &service.SameChannelRetryState{}
+		internalRetryBlockedByOverload := false
 
 		for {
-			internalRetry := actualChannelID != 0
+			internalRetry := layeredRetryEnabled && actualChannelID != 0
 			selectedChannel, overloadLease, acquireErr := acquireRelayOverloadLease(c, relayInfo, selectParam, channel, internalRetry)
 			if acquireErr != nil {
 				if internalRetry && acquireErr.GetErrorCode() == types.ErrorCodeChannelOverloaded {
 					// The channel became overloaded between its upstream attempts.
 					// Preserve its last upstream error and let the outer loop decide
 					// whether the independent cross-channel budget permits a switch.
+					internalRetryBlockedByOverload = true
 					break
 				}
 				newAPIError = acquireErr
@@ -218,7 +223,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				channelRetryPolicy = relayRetryPolicyFromContext(c)
 			} else {
 				channel = selectedChannel
+				if !layeredRetryEnabled {
+					actualChannelID = channel.Id
+				}
 			}
+			selectedGroup := selectParam.TokenGroup
+			if selectedGroup == "auto" {
+				selectedGroup = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+			}
+			service.ConfirmChannelAffinitySelection(c, selectedGroup, channel.Id)
 			service.SetChannelOverloadLease(c, overloadLease)
 			addUsedChannel(c, channel.Id)
 			bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -280,6 +293,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 		}
 
+		if internalRetryBlockedByOverload {
+			if shouldSwitchChannelAfterInternalRetryOverload(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count()) {
+				selectParam.ExcludeAttemptedChannel(actualChannelID)
+				interChannelRetryState.Increase()
+				continue
+			}
+			recordInternalRetryOverloadBlocked(c, channel, newAPIError, globalRetryPolicy, interChannelRetryState.Count())
+			break
+		}
+
 		if !shouldRetryWithPolicy(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count()) {
 			break
 		}
@@ -305,8 +328,6 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 	if _, specified := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specified {
 		return channel, nil, nil
 	}
-	sweepRestarted := false
-	lastAttemptedAllowed := false
 	for {
 		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		lease, scope, err := service.AcquireChannelOverloadLease(c.Request.Context(), channel, keyIndex)
@@ -336,24 +357,10 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 		if selectErr != nil {
 			return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
 		}
-		if next == nil && !sweepRestarted && selectParam.BeginNextSelectionSweep() {
-			sweepRestarted = true
-			next, selectGroup, selectErr = service.CacheGetRandomSatisfiedChannel(selectParam)
-			if selectErr != nil {
-				return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
-			}
-		}
-		if next == nil && sweepRestarted && !lastAttemptedAllowed && selectParam.LastAttemptedChannel > 0 {
-			selectParam.AllowLastAttemptedChannel()
-			lastAttemptedAllowed = true
-			next, selectGroup, selectErr = service.CacheGetRandomSatisfiedChannel(selectParam)
-			if selectErr != nil {
-				return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
-			}
-		}
 		if next == nil {
 			return channel, nil, channelOverloadedError()
 		}
+		service.ClearRequestChannelAffinitySelection(c)
 		if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.OriginModelName); setupErr != nil {
 			return channel, nil, setupErr
 		}
@@ -369,6 +376,19 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 
 func channelOverloadedError() *types.NewAPIError {
 	return types.NewError(errors.New("all available channels are overloaded"), types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
+}
+
+func controllerOwnsRelayOverloadLease(relayFormat types.RelayFormat, relayMode int) bool {
+	if relayFormat == types.RelayFormatClaude {
+		return true
+	}
+	if relayFormat == types.RelayFormatOpenAIResponses && relayMode == relayconstant.RelayModeResponses {
+		return true
+	}
+	if relayFormat != types.RelayFormatOpenAI {
+		return false
+	}
+	return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions
 }
 
 func releaseOverloadLease(lease *service.OverloadLease) {
@@ -473,6 +493,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 			}
 			if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); !specificChannel {
 				if !currentChannel.MatchesInputTokenRouting(selectParam.EstimatedInputTokens) {
+					service.ClearRequestChannelAffinitySelection(c)
 					channel, channelErr := selectChannelByInputTokenRouting(c, info, selectParam)
 					if channelErr != nil {
 						return nil, channelErr
@@ -637,6 +658,9 @@ func shouldRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIErro
 		}
 	}
 	if types.IsChannelError(openaiErr) {
+		if allowSpecificChannelRetry && c.GetBool("layered_relay_retry") {
+			return openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded
+		}
 		return true
 	}
 	code := openaiErr.StatusCode
@@ -650,6 +674,61 @@ func shouldRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIErro
 		return false
 	}
 	return operation_setting.ShouldRetryByStatusCodeRanges(policy.statusCodeRanges, code)
+}
+
+func shouldSwitchChannelAfterInternalRetryOverload(c *gin.Context, lastUpstreamErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) bool {
+	if lastUpstreamErr == nil || types.IsSkipRetryError(lastUpstreamErr) {
+		return false
+	}
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specificChannel {
+		return false
+	}
+	return currentRetry < policy.retryTimes
+}
+
+func recordInternalRetryOverloadBlocked(c *gin.Context, channel *model.Channel, lastUpstreamErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) {
+	if c == nil || channel == nil || lastUpstreamErr == nil {
+		return
+	}
+	reason := "retry_budget_exhausted"
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		reason = "affinity"
+	} else if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specificChannel {
+		reason = "specific_channel"
+	} else if types.IsSkipRetryError(lastUpstreamErr) {
+		reason = "skip_retry"
+	}
+	marker := map[string]interface{}{
+		"reason":                  reason,
+		"channel_id":              channel.Id,
+		"inter_channel_retry":     currentRetry,
+		"inter_channel_retry_max": policy.retryTimes,
+	}
+	c.Set("internal_retry_overload_blocked", marker)
+	logger.LogWarn(c, fmt.Sprintf("same-channel retry blocked by overload: channel=%d reason=%s inter_retry=%d/%d", channel.Id, reason, currentRetry, policy.retryTimes))
+	if !constant.ErrorLogEnabled || !types.IsRecordErrorLog(lastUpstreamErr) {
+		return
+	}
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	model.RecordErrorLog(
+		c,
+		c.GetInt("id"),
+		channel.Id,
+		c.GetString("original_model"),
+		c.GetString("token_name"),
+		lastUpstreamErr.MaskSensitiveError(),
+		c.GetInt("token_id"),
+		int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+		c.GetString("group"),
+		buildRelayErrorLogDetails(c, lastUpstreamErr, channel.Id),
+	)
 }
 
 func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) {
@@ -733,6 +812,9 @@ func buildRelayErrorLogDetails(c *gin.Context, err *types.NewAPIError, channelId
 		adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 	}
 	service.AppendChannelAffinityAdminInfo(c, adminInfo)
+	if marker, ok := c.Get("internal_retry_overload_blocked"); ok {
+		adminInfo["internal_retry_overload_blocked"] = marker
+	}
 	other["admin_info"] = adminInfo
 	return other
 }
