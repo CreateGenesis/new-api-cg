@@ -103,7 +103,7 @@ func TestLockedChannelOverloadDoesNotFallback(t *testing.T) {
 	}
 	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, channel, "sora"))
 	info := &relaycommon.RelayInfo{OriginModelName: "sora"}
-	param := &service.RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: "sora", Retry: common.GetPointer(0)}
+	param := &service.ChannelSelectParam{Ctx: ctx, TokenGroup: "default", ModelName: "sora"}
 	first, scope, err := service.AcquireChannelOverloadLease(ctx.Request.Context(), channel, 0)
 	require.NoError(t, err)
 	require.NotNil(t, first)
@@ -220,6 +220,72 @@ func TestChannelStatusCodeRetryRunsBeforeGlobalRetry(t *testing.T) {
 	assert.True(t, shouldRetrySameChannelWithPolicy(ctx, upstreamErr, channelPolicy, 1))
 	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, upstreamErr, channelPolicy, 2))
 	assert.True(t, shouldRetryWithPolicy(ctx, upstreamErr, globalPolicy, 0))
+}
+
+func TestIndependentRetryCountersProduceFortyFourAttempts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("503")
+	require.NoError(t, err)
+	channelPolicy := relayRetryPolicy{
+		retryTimes:       3,
+		statusCodeRanges: ranges,
+		channelOverride:  true,
+	}
+	globalPolicy := relayRetryPolicy{
+		retryTimes:       10,
+		statusCodeRanges: ranges,
+	}
+	interChannelState := &service.InterChannelRetryState{}
+	upstreamErr := statusCodeError(http.StatusServiceUnavailable)
+	attempts := 0
+	trace := make([][2]int, 0, 44)
+
+	for {
+		sameChannelState := &service.SameChannelRetryState{}
+		for {
+			attempts++
+			trace = append(trace, [2]int{interChannelState.Count(), sameChannelState.Count()})
+			if !shouldRetrySameChannelWithPolicy(ctx, upstreamErr, channelPolicy, sameChannelState.Count()) {
+				break
+			}
+			sameChannelState.Increase()
+		}
+		if !shouldRetryWithPolicy(ctx, upstreamErr, globalPolicy, interChannelState.Count()) {
+			break
+		}
+		interChannelState.Increase()
+	}
+
+	assert.Equal(t, 44, attempts)
+	require.Len(t, trace, 44)
+	for interChannelRetry := 0; interChannelRetry <= 10; interChannelRetry++ {
+		for sameChannelRetry := 0; sameChannelRetry <= 3; sameChannelRetry++ {
+			index := interChannelRetry*4 + sameChannelRetry
+			assert.Equal(t, [2]int{interChannelRetry, sameChannelRetry}, trace[index])
+		}
+	}
+}
+
+func TestAffinitySkipDoesNotSuppressConfiguredSameChannelRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("channel_affinity_skip_retry_on_failure", true)
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("503")
+	require.NoError(t, err)
+	channelPolicy := relayRetryPolicy{
+		retryTimes:       1,
+		statusCodeRanges: ranges,
+		channelOverride:  true,
+	}
+	globalPolicy := relayRetryPolicy{
+		retryTimes:       1,
+		statusCodeRanges: ranges,
+	}
+	upstreamErr := statusCodeError(http.StatusServiceUnavailable)
+
+	assert.True(t, shouldRetrySameChannelWithPolicy(ctx, upstreamErr, channelPolicy, 0))
+	assert.False(t, shouldRetryWithPolicy(ctx, upstreamErr, globalPolicy, 0))
 }
 
 func TestChannelStatusCodeRetryAllowsSpecificChannelSameChannelRetryOnly(t *testing.T) {

@@ -3353,24 +3353,37 @@ export function ChannelMutateDrawer({
                                     disabled={
                                       !multiKeyOverloadEnabled || isSubmitting
                                     }
-                                    className='grid gap-4 disabled:opacity-60 sm:grid-cols-3'
+                                    className='grid gap-4 disabled:opacity-60 sm:grid-cols-2 xl:grid-cols-5'
                                   >
                                     {(
                                       [
                                         [
                                           'multi_key_overload_requests_per_second',
                                           'Requests per second',
+                                          2147483647,
                                         ],
                                         [
                                           'multi_key_overload_requests_per_minute',
                                           'Requests per minute',
+                                          2147483647,
+                                        ],
+                                        [
+                                          'multi_key_overload_tokens_per_minute',
+                                          'Tokens per minute',
+                                          Number.MAX_SAFE_INTEGER,
                                         ],
                                         [
                                           'multi_key_overload_concurrent_requests',
                                           'Concurrent requests',
+                                          2147483647,
+                                        ],
+                                        [
+                                          'multi_key_overload_recovery_seconds',
+                                          'Recovery time (seconds)',
+                                          86400,
                                         ],
                                       ] as const
-                                    ).map(([name, label]) => (
+                                    ).map(([name, label, maximum]) => (
                                       <FormField
                                         key={name}
                                         control={form.control}
@@ -3382,7 +3395,7 @@ export function ChannelMutateDrawer({
                                               <Input
                                                 type='number'
                                                 min={0}
-                                                max={2147483647}
+                                                max={maximum}
                                                 step={1}
                                                 {...field}
                                                 onChange={(event) =>
@@ -3400,7 +3413,12 @@ export function ChannelMutateDrawer({
                                   </fieldset>
                                   <FormDescription>
                                     {t(
-                                      'Zero means unlimited. Overloaded keys are skipped temporarily without changing their enabled status.'
+                                      'TPM counts only actual tokens reported by the upstream. When any limit is reached, the key is skipped until recovery; request and token counters reset while active requests remain counted.'
+                                    )}
+                                  </FormDescription>
+                                  <FormDescription>
+                                    {t(
+                                      'Zero means unlimited for traffic limits. Recovery time defaults to 2 seconds when set to zero.'
                                     )}
                                   </FormDescription>
                                 </div>
@@ -3933,24 +3951,32 @@ export function ChannelMutateDrawer({
                             />
                             <fieldset
                               disabled={!channelOverloadEnabled || isSubmitting}
-                              className='grid gap-4 disabled:opacity-60 sm:grid-cols-3'
+                              className='grid gap-4 disabled:opacity-60 sm:grid-cols-2 xl:grid-cols-4'
                             >
                               {(
                                 [
                                   [
                                     'channel_overload_requests_per_second',
                                     'Requests per second',
+                                    2147483647,
                                   ],
                                   [
                                     'channel_overload_requests_per_minute',
                                     'Requests per minute',
+                                    2147483647,
                                   ],
                                   [
                                     'channel_overload_concurrent_requests',
                                     'Concurrent requests',
+                                    2147483647,
+                                  ],
+                                  [
+                                    'channel_overload_recovery_seconds',
+                                    'Recovery time (seconds)',
+                                    86400,
                                   ],
                                 ] as const
-                              ).map(([name, label]) => (
+                              ).map(([name, label, maximum]) => (
                                 <FormField
                                   key={name}
                                   control={form.control}
@@ -3962,7 +3988,7 @@ export function ChannelMutateDrawer({
                                         <Input
                                           type='number'
                                           min={0}
-                                          max={2147483647}
+                                          max={maximum}
                                           step={1}
                                           {...field}
                                           onChange={(event) =>
@@ -3980,7 +4006,12 @@ export function ChannelMutateDrawer({
                             </fieldset>
                             <FormDescription>
                               {t(
-                                'Zero means unlimited. Protection recovers automatically as rolling traffic falls or connections close.'
+                                'When any request or concurrency limit is reached, the channel is skipped until recovery; request counters reset while active requests remain counted.'
+                              )}
+                            </FormDescription>
+                            <FormDescription>
+                              {t(
+                                'Zero means unlimited for traffic limits. Recovery time defaults to 2 seconds when set to zero.'
                               )}
                             </FormDescription>
                           </div>

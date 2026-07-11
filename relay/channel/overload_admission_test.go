@@ -123,4 +123,38 @@ func TestDoApiRequestCountsActualUpstreamAttempt(t *testing.T) {
 	assert.Equal(t, service.OverloadScopeChannel, scope)
 }
 
+func TestDoApiRequestKeepsConcurrentLeaseUntilResponseBodyCloses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = originalRedisEnabled })
+	service.InitHttpClient()
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{}`))
+	channel := &model.Channel{Id: 960002, ChannelInfo: model.ChannelInfo{
+		ChannelOverloadProtection: model.OverloadProtection{Enabled: true, ConcurrentRequests: 1},
+	}}
+	lease, scope, err := service.AcquireChannelOverloadLease(ctx.Request.Context(), channel, 0)
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	assert.Empty(t, scope)
+	service.SetChannelOverloadLease(ctx, lease)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	t.Cleanup(upstream.Close)
+	response, err := DoApiRequest(&overloadAdmissionTestAdaptor{requestURL: upstream.URL}, ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, bytes.NewBufferString(`{}`))
+	require.NoError(t, err)
+	require.NotNil(t, response)
+
+	blocked, scope, err := service.AcquireChannelOverloadLease(context.Background(), channel, 0)
+	require.NoError(t, err)
+	assert.Nil(t, blocked)
+	assert.Equal(t, service.OverloadScopeChannel, scope)
+	require.NoError(t, response.Body.Close())
+}
+
 var _ Adaptor = (*overloadAdmissionTestAdaptor)(nil)

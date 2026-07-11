@@ -42,6 +42,36 @@ func applyUpstreamContentLength(req *http.Request, info *common.RelayInfo) {
 	}
 }
 
+type overloadLeaseResponseBody struct {
+	io.ReadCloser
+	lease *service.OverloadLease
+	once  sync.Once
+}
+
+func (body *overloadLeaseResponseBody) Close() error {
+	err := body.ReadCloser.Close()
+	body.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		body.lease.Release(ctx)
+	})
+	return err
+}
+
+func attachOverloadLeaseToResponse(c *gin.Context, resp *http.Response) {
+	lease := service.DetachChannelOverloadLease(c)
+	if lease == nil {
+		return
+	}
+	if resp == nil || resp.Body == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		lease.Release(ctx)
+		return
+	}
+	resp.Body = &overloadLeaseResponseBody{ReadCloser: resp.Body, lease: lease}
+}
+
 func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Header) {
 	if info.RelayMode == constant.RelayModeAudioTranscription || info.RelayMode == constant.RelayModeAudioTranslation {
 		// multipart/form-data
@@ -330,11 +360,12 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
-	defer service.ReleaseChannelOverloadLease(c)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.ReleaseChannelOverloadLease(c)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	attachOverloadLeaseToResponse(c, resp)
 	return resp, nil
 }
 
@@ -366,11 +397,12 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
-	defer service.ReleaseChannelOverloadLease(c)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.ReleaseChannelOverloadLease(c)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	attachOverloadLeaseToResponse(c, resp)
 	return resp, nil
 }
 
@@ -561,10 +593,11 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
-	defer service.ReleaseChannelOverloadLease(c)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.ReleaseChannelOverloadLease(c)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	attachOverloadLeaseToResponse(c, resp)
 	return resp, nil
 }

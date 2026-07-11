@@ -187,6 +187,7 @@ func handleTTSResponse(c *gin.Context, resp *http.Response, info *relaycommon.Re
 		PromptTokens:     info.GetEstimatePromptTokens(),
 		CompletionTokens: 0,
 		TotalTokens:      info.GetEstimatePromptTokens(),
+		Estimated:        true,
 	}
 
 	return usage, nil
@@ -287,6 +288,7 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 					PromptTokens:     info.GetEstimatePromptTokens(),
 					CompletionTokens: 0,
 					TotalTokens:      info.GetEstimatePromptTokens(),
+					Estimated:        true,
 				}
 				return usage, nil
 			}
@@ -300,6 +302,7 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		PromptTokens:     info.GetEstimatePromptTokens(),
 		CompletionTokens: 0,
 		TotalTokens:      info.GetEstimatePromptTokens(),
+		Estimated:        true,
 	}
 	return usage, nil
 }

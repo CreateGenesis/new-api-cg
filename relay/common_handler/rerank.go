@@ -58,6 +58,7 @@ func RerankHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			Usage: dto.Usage{
 				PromptTokens: info.GetEstimatePromptTokens(),
 				TotalTokens:  info.GetEstimatePromptTokens(),
+				Estimated:    true,
 			},
 		}
 	} else {

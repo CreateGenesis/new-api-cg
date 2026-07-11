@@ -335,6 +335,7 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
+	recordMultiKeyOverloadUsage(ctx, relayInfo, originUsage)
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}

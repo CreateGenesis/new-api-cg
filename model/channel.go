@@ -82,20 +82,45 @@ type ChannelInfo struct {
 }
 
 type OverloadProtection struct {
-	Enabled            bool `json:"enabled"`
-	RequestsPerSecond  int  `json:"requests_per_second"`
-	RequestsPerMinute  int  `json:"requests_per_minute"`
-	ConcurrentRequests int  `json:"concurrent_requests"`
+	Enabled            bool  `json:"enabled"`
+	RequestsPerSecond  int   `json:"requests_per_second"`
+	RequestsPerMinute  int   `json:"requests_per_minute"`
+	TokensPerMinute    int64 `json:"tokens_per_minute"`
+	ConcurrentRequests int   `json:"concurrent_requests"`
+	RecoverySeconds    int   `json:"recovery_seconds"`
 }
 
-func (p OverloadProtection) Validate() error {
-	if p.RequestsPerSecond < 0 || p.RequestsPerMinute < 0 || p.ConcurrentRequests < 0 {
+const (
+	DefaultOverloadRecoverySeconds = 2
+	MaxOverloadRecoverySeconds     = 86400
+)
+
+func (p *OverloadProtection) normalize(allowTokens bool) {
+	if p == nil {
+		return
+	}
+	if !allowTokens {
+		p.TokensPerMinute = 0
+	}
+	if p.RecoverySeconds == 0 {
+		p.RecoverySeconds = DefaultOverloadRecoverySeconds
+	}
+}
+
+func (p OverloadProtection) Validate(allowTokens bool) error {
+	if p.RequestsPerSecond < 0 || p.RequestsPerMinute < 0 || p.TokensPerMinute < 0 || p.ConcurrentRequests < 0 {
 		return errors.New("overload protection thresholds must be non-negative integers")
 	}
 	if p.RequestsPerSecond > math.MaxInt32 || p.RequestsPerMinute > math.MaxInt32 || p.ConcurrentRequests > math.MaxInt32 {
 		return errors.New("overload protection thresholds must not exceed 2147483647")
 	}
-	if p.Enabled && p.RequestsPerSecond == 0 && p.RequestsPerMinute == 0 && p.ConcurrentRequests == 0 {
+	if !allowTokens && p.TokensPerMinute != 0 {
+		return errors.New("tokens per minute is only supported for multi-key overload protection")
+	}
+	if p.RecoverySeconds < 0 || p.RecoverySeconds > MaxOverloadRecoverySeconds {
+		return fmt.Errorf("overload recovery seconds must be between 0 and %d", MaxOverloadRecoverySeconds)
+	}
+	if p.Enabled && p.RequestsPerSecond == 0 && p.RequestsPerMinute == 0 && p.TokensPerMinute == 0 && p.ConcurrentRequests == 0 {
 		return errors.New("enabled overload protection requires at least one positive threshold")
 	}
 	return nil
@@ -105,10 +130,12 @@ func ValidateAndNormalizeChannelInfo(info *ChannelInfo) error {
 	if info == nil {
 		return nil
 	}
-	if err := info.ChannelOverloadProtection.Validate(); err != nil {
+	info.ChannelOverloadProtection.normalize(false)
+	info.MultiKeyOverloadProtection.normalize(true)
+	if err := info.ChannelOverloadProtection.Validate(false); err != nil {
 		return fmt.Errorf("channel overload protection: %w", err)
 	}
-	if err := info.MultiKeyOverloadProtection.Validate(); err != nil {
+	if err := info.MultiKeyOverloadProtection.Validate(true); err != nil {
 		return fmt.Errorf("multi-key overload protection: %w", err)
 	}
 	if !info.IsMultiKey {
@@ -228,6 +255,8 @@ func (c *ChannelInfo) Scan(value interface{}) error {
 	} else {
 		c.MultiKeyLeastRequestsWindowSeconds = DefaultMultiKeyLeastRequestsWindowSeconds
 	}
+	c.ChannelOverloadProtection.normalize(false)
+	c.MultiKeyOverloadProtection.normalize(true)
 	return nil
 }
 

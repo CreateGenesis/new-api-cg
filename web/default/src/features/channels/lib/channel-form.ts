@@ -150,13 +150,17 @@ const CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO: Channel['channel_info'] = {
     enabled: false,
     requests_per_second: 0,
     requests_per_minute: 0,
+    tokens_per_minute: 0,
     concurrent_requests: 0,
+    recovery_seconds: 2,
   },
   multi_key_overload_protection: {
     enabled: false,
     requests_per_second: 0,
     requests_per_minute: 0,
+    tokens_per_minute: 0,
     concurrent_requests: 0,
+    recovery_seconds: 2,
   },
 }
 
@@ -172,9 +176,14 @@ function overloadPayload(
     requests_per_minute: Number(
       formData[`${scope}_overload_requests_per_minute`]
     ),
+    tokens_per_minute:
+      scope === 'multi_key'
+        ? Number(formData.multi_key_overload_tokens_per_minute)
+        : 0,
     concurrent_requests: Number(
       formData[`${scope}_overload_concurrent_requests`]
     ),
+    recovery_seconds: Number(formData[`${scope}_overload_recovery_seconds`]),
   }
 }
 
@@ -239,11 +248,14 @@ export const channelFormSchema = z
     multi_key_overload_enabled: z.boolean().optional(),
     multi_key_overload_requests_per_second: z.number().optional(),
     multi_key_overload_requests_per_minute: z.number().optional(),
+    multi_key_overload_tokens_per_minute: z.number().optional(),
     multi_key_overload_concurrent_requests: z.number().optional(),
+    multi_key_overload_recovery_seconds: z.number().optional(),
     channel_overload_enabled: z.boolean().optional(),
     channel_overload_requests_per_second: z.number().optional(),
     channel_overload_requests_per_minute: z.number().optional(),
     channel_overload_concurrent_requests: z.number().optional(),
+    channel_overload_recovery_seconds: z.number().optional(),
     batch_add_set_key_prefix_2_name: z.boolean().optional(),
     key_mode: z.enum(['append', 'replace']).optional(), // For editing multi-key channels
     // Channel extra settings (stored in setting JSON, not sent directly)
@@ -391,38 +403,68 @@ export const channelFormSchema = z
       }
     }
 
-    const overloadFields = [
-      ['channel_overload_enabled', 'channel_overload'] as const,
-      ['multi_key_overload_enabled', 'multi_key_overload'] as const,
-    ]
-    for (const [enabledField, prefix] of overloadFields) {
-      const values = [
-        data[`${prefix}_requests_per_second`],
-        data[`${prefix}_requests_per_minute`],
-        data[`${prefix}_concurrent_requests`],
-      ]
-      for (const [index, value] of values.entries()) {
+    const overloadConfigs = [
+      {
+        enabledField: 'channel_overload_enabled',
+        recoveryField: 'channel_overload_recovery_seconds',
+        thresholdFields: [
+          'channel_overload_requests_per_second',
+          'channel_overload_requests_per_minute',
+          'channel_overload_concurrent_requests',
+        ],
+      },
+      {
+        enabledField: 'multi_key_overload_enabled',
+        recoveryField: 'multi_key_overload_recovery_seconds',
+        thresholdFields: [
+          'multi_key_overload_requests_per_second',
+          'multi_key_overload_requests_per_minute',
+          'multi_key_overload_tokens_per_minute',
+          'multi_key_overload_concurrent_requests',
+        ],
+      },
+    ] as const
+    for (const config of overloadConfigs) {
+      for (const fieldName of config.thresholdFields) {
+        const value = data[fieldName]
+        const isTokensPerMinute =
+          fieldName === 'multi_key_overload_tokens_per_minute'
+        const maximum = isTokensPerMinute ? Number.MAX_SAFE_INTEGER : 2147483647
         if (
-          !Number.isInteger(value) ||
+          !Number.isSafeInteger(value) ||
           Number(value) < 0 ||
-          Number(value) > 2147483647
+          Number(value) > maximum
         ) {
-          const suffix = [
-            'requests_per_second',
-            'requests_per_minute',
-            'concurrent_requests',
-          ][index]
           addRequiredIssue(
             ctx,
-            `${prefix}_${suffix}`,
-            'Overload thresholds must be integers from 0 to 2147483647.'
+            fieldName,
+            isTokensPerMinute
+              ? 'Tokens per minute must be a non-negative safe integer.'
+              : 'Overload thresholds must be integers from 0 to 2147483647.'
           )
         }
       }
-      if (data[enabledField] && values.every((value) => Number(value) === 0)) {
+      const recoverySeconds = data[config.recoveryField]
+      if (
+        !Number.isInteger(recoverySeconds) ||
+        Number(recoverySeconds) < 0 ||
+        Number(recoverySeconds) > 86400
+      ) {
         addRequiredIssue(
           ctx,
-          `${prefix}_requests_per_second`,
+          config.recoveryField,
+          'Recovery time must be an integer from 0 to 86400 seconds.'
+        )
+      }
+      if (
+        data[config.enabledField] &&
+        config.thresholdFields.every(
+          (fieldName) => Number(data[fieldName]) === 0
+        )
+      ) {
+        addRequiredIssue(
+          ctx,
+          config.thresholdFields[0],
           'Set at least one overload threshold above zero.'
         )
       }
@@ -535,11 +577,14 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   multi_key_overload_enabled: false,
   multi_key_overload_requests_per_second: 0,
   multi_key_overload_requests_per_minute: 0,
+  multi_key_overload_tokens_per_minute: 0,
   multi_key_overload_concurrent_requests: 0,
+  multi_key_overload_recovery_seconds: 2,
   channel_overload_enabled: false,
   channel_overload_requests_per_second: 0,
   channel_overload_requests_per_minute: 0,
   channel_overload_concurrent_requests: 0,
+  channel_overload_recovery_seconds: 2,
   batch_add_set_key_prefix_2_name: false,
   key_mode: 'append',
   // Channel extra settings
@@ -804,9 +849,14 @@ export function transformChannelToFormDefaults(
     multi_key_overload_requests_per_minute:
       channel.channel_info.multi_key_overload_protection?.requests_per_minute ||
       0,
+    multi_key_overload_tokens_per_minute:
+      channel.channel_info.multi_key_overload_protection?.tokens_per_minute ||
+      0,
     multi_key_overload_concurrent_requests:
       channel.channel_info.multi_key_overload_protection?.concurrent_requests ||
       0,
+    multi_key_overload_recovery_seconds:
+      channel.channel_info.multi_key_overload_protection?.recovery_seconds || 2,
     channel_overload_enabled:
       channel.channel_info.channel_overload_protection?.enabled === true,
     channel_overload_requests_per_second:
@@ -818,6 +868,8 @@ export function transformChannelToFormDefaults(
     channel_overload_concurrent_requests:
       channel.channel_info.channel_overload_protection?.concurrent_requests ||
       0,
+    channel_overload_recovery_seconds:
+      channel.channel_info.channel_overload_protection?.recovery_seconds || 2,
     batch_add_set_key_prefix_2_name: false,
     key_mode: 'append', // Default to append mode for editing multi-key channels
     // Channel extra settings

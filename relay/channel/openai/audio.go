@@ -26,7 +26,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	// the subsequent failure of the response body should be regarded as a non-recoverable error,
 	// and can be terminated directly.
 	defer service.CloseResponseBodyGracefully(resp)
-	usage := &dto.Usage{}
+	usage := &dto.Usage{Estimated: true}
 	usage.PromptTokens = info.GetEstimatePromptTokens()
 	usage.TotalTokens = info.GetEstimatePromptTokens()
 	for k, v := range resp.Header {
@@ -45,6 +45,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 					logger.LogError(c, err.Error())
 					sr.Error(err)
 				} else if simpleResponse.Usage.TotalTokens != 0 {
+					usage.Estimated = false
 					usage.PromptTokens = simpleResponse.Usage.InputTokens
 					usage.CompletionTokens = simpleResponse.OutputTokens
 					usage.TotalTokens = simpleResponse.TotalTokens
@@ -141,7 +142,7 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		}
 	}
 
-	usage := &dto.Usage{}
+	usage := &dto.Usage{Estimated: true}
 	usage.PromptTokens = info.GetEstimatePromptTokens()
 	usage.CompletionTokens = 0
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

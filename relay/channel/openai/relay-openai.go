@@ -318,6 +318,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			PromptTokens:     info.GetEstimatePromptTokens(),
 			CompletionTokens: completionTokens,
 			TotalTokens:      info.GetEstimatePromptTokens() + completionTokens,
+			Estimated:        true,
 		}
 		usageModified = true
 	}

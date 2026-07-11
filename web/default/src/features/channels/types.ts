@@ -39,26 +39,39 @@ export const channelInfoSchema = z.object({
       enabled: z.boolean().default(false),
       requests_per_second: z.number().int().min(0).default(0),
       requests_per_minute: z.number().int().min(0).default(0),
+      tokens_per_minute: z.number().int().min(0).default(0),
       concurrent_requests: z.number().int().min(0).default(0),
+      recovery_seconds: z.number().int().min(0).max(86400).default(2),
     })
     .default({
       enabled: false,
       requests_per_second: 0,
       requests_per_minute: 0,
+      tokens_per_minute: 0,
       concurrent_requests: 0,
+      recovery_seconds: 2,
     }),
   multi_key_overload_protection: z
     .object({
       enabled: z.boolean().default(false),
       requests_per_second: z.number().int().min(0).default(0),
       requests_per_minute: z.number().int().min(0).default(0),
+      tokens_per_minute: z
+        .number()
+        .int()
+        .min(0)
+        .max(Number.MAX_SAFE_INTEGER)
+        .default(0),
       concurrent_requests: z.number().int().min(0).default(0),
+      recovery_seconds: z.number().int().min(0).max(86400).default(2),
     })
     .default({
       enabled: false,
       requests_per_second: 0,
       requests_per_minute: 0,
+      tokens_per_minute: 0,
       concurrent_requests: 0,
+      recovery_seconds: 2,
     }),
 })
 
@@ -105,13 +118,17 @@ export const channelSchema = z.object({
       enabled: false,
       requests_per_second: 0,
       requests_per_minute: 0,
+      tokens_per_minute: 0,
       concurrent_requests: 0,
+      recovery_seconds: 2,
     },
     multi_key_overload_protection: {
       enabled: false,
       requests_per_second: 0,
       requests_per_minute: 0,
+      tokens_per_minute: 0,
       concurrent_requests: 0,
+      recovery_seconds: 2,
     },
   }),
   settings: z.string().default('{}'), // other_settings JSON

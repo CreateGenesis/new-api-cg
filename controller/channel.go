@@ -1004,6 +1004,7 @@ func UpdateChannel(c *gin.Context) {
 		})
 		return
 	}
+	resetOverloadState := channelOverloadSettingsChanged(originChannel.ChannelInfo, channel.ChannelInfo, requestData)
 
 	// 处理多key模式下的密钥追加/覆盖逻辑
 	if channel.KeyMode != nil && channel.ChannelInfo.IsMultiKey {
@@ -1090,6 +1091,10 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if resetOverloadState {
+		keyCount := max(len(originChannel.GetKeys()), len(channel.GetKeys()))
+		service.ResetChannelOverloadState(c.Request.Context(), channel.Id, keyCount)
+	}
 	model.InitChannelCache()
 	service.ResetProxyClientCache()
 	// 记录变更的字段名（语言无关的字段标识），密钥仅记录"已更换"绝不记录内容。
@@ -1138,6 +1143,35 @@ func mergeChannelOverloadSettings(target *model.ChannelInfo, incoming model.Chan
 	if _, provided := rawChannelInfo["multi_key_overload_protection"]; provided {
 		target.MultiKeyOverloadProtection = incoming.MultiKeyOverloadProtection
 	}
+}
+
+func channelOverloadSettingsProvided(requestData map[string]any) bool {
+	rawChannelInfo, ok := requestData["channel_info"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, channelProvided := rawChannelInfo["channel_overload_protection"]
+	_, multiKeyProvided := rawChannelInfo["multi_key_overload_protection"]
+	return channelProvided || multiKeyProvided
+}
+
+func channelOverloadSettingsChanged(origin, current model.ChannelInfo, requestData map[string]any) bool {
+	if !channelOverloadSettingsProvided(requestData) {
+		return false
+	}
+	rawChannelInfo, ok := requestData["channel_info"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, provided := rawChannelInfo["channel_overload_protection"]; provided &&
+		origin.ChannelOverloadProtection != current.ChannelOverloadProtection {
+		return true
+	}
+	if _, provided := rawChannelInfo["multi_key_overload_protection"]; provided &&
+		origin.MultiKeyOverloadProtection != current.MultiKeyOverloadProtection {
+		return true
+	}
+	return false
 }
 
 func UpdateChannelStatus(c *gin.Context) {

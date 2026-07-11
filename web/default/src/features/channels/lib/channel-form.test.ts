@@ -69,13 +69,17 @@ function testChannel(settings: string): Channel {
         enabled: false,
         requests_per_second: 0,
         requests_per_minute: 0,
+        tokens_per_minute: 0,
         concurrent_requests: 0,
+        recovery_seconds: 2,
       },
       multi_key_overload_protection: {
         enabled: false,
         requests_per_second: 0,
         requests_per_minute: 0,
+        tokens_per_minute: 0,
         concurrent_requests: 0,
+        recovery_seconds: 2,
       },
     },
     settings,
@@ -273,8 +277,11 @@ describe('channel form overload protection', () => {
       multi_key_mode: 'multi_to_single',
       channel_overload_enabled: true,
       channel_overload_requests_per_second: 5,
+      channel_overload_recovery_seconds: 7,
       multi_key_overload_enabled: true,
+      multi_key_overload_tokens_per_minute: 100000,
       multi_key_overload_concurrent_requests: 2,
+      multi_key_overload_recovery_seconds: 3,
     })
 
     assert.deepEqual(
@@ -283,7 +290,9 @@ describe('channel form overload protection', () => {
         enabled: true,
         requests_per_second: 5,
         requests_per_minute: 0,
+        tokens_per_minute: 0,
         concurrent_requests: 0,
+        recovery_seconds: 7,
       }
     )
     assert.deepEqual(
@@ -292,7 +301,9 @@ describe('channel form overload protection', () => {
         enabled: true,
         requests_per_second: 0,
         requests_per_minute: 0,
+        tokens_per_minute: 100000,
         concurrent_requests: 2,
+        recovery_seconds: 3,
       }
     )
   })
@@ -304,24 +315,62 @@ describe('channel form overload protection', () => {
       enabled: true,
       requests_per_second: 3,
       requests_per_minute: 20,
+      tokens_per_minute: 0,
       concurrent_requests: 4,
+      recovery_seconds: 6,
     }
     channel.channel_info.multi_key_overload_protection = {
       enabled: true,
       requests_per_second: 1,
       requests_per_minute: 10,
+      tokens_per_minute: 90000,
       concurrent_requests: 2,
+      recovery_seconds: 4,
     }
 
     const form = transformChannelToFormDefaults(channel)
     assert.equal(form.channel_overload_requests_per_minute, 20)
     assert.equal(form.multi_key_overload_concurrent_requests, 2)
+    assert.equal(form.multi_key_overload_tokens_per_minute, 90000)
+    assert.equal(form.channel_overload_recovery_seconds, 6)
+    assert.equal(form.multi_key_overload_recovery_seconds, 4)
   })
 
   test('rejects enabled overload protection with all thresholds zero', () => {
     const parsed = channelFormSchema.safeParse({
       ...CHANNEL_FORM_DEFAULT_VALUES,
       channel_overload_enabled: true,
+    })
+    assert.equal(parsed.success, false)
+  })
+
+  test('allows key overload protection with only TPM configured', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_overload_enabled: true,
+      multi_key_overload_tokens_per_minute: 1000,
+    })
+    assert.equal(parsed.success, true)
+  })
+
+  test('rejects invalid recovery time and unsafe TPM values', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_overload_enabled: true,
+      multi_key_overload_tokens_per_minute: Number.MAX_SAFE_INTEGER + 1,
+      multi_key_overload_recovery_seconds: 86401,
     })
     assert.equal(parsed.success, false)
   })

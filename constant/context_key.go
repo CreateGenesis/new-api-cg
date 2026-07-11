@@ -40,6 +40,7 @@ const (
 	ContextKeyChannelMultiKeyOverload  ContextKey = "channel_multi_key_overload"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 	ContextKeyChannelOverloadLease     ContextKey = "channel_overload_lease"
+	ContextKeyChannelOverloadTokens    ContextKey = "channel_overload_tokens_recorded"
 
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
