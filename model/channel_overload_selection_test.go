@@ -96,13 +96,13 @@ func TestGetRandomSatisfiedChannelExcludingRetryIndexDoesNotSkipSamePriority(t *
 		channelSyncLock.Unlock()
 	})
 
-	estimatedTokens := 1200
+	estimatedTokens := inputTokenEstimates(1200, 1200)
 	selected, err := GetRandomSatisfiedChannelExcluding(
 		"default",
 		"test-model",
 		1,
 		"",
-		&estimatedTokens,
+		estimatedTokens,
 		map[int]struct{}{3: {}},
 	)
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestGetRandomSatisfiedChannelExcludingRetryIndexDoesNotSkipSamePriority(t *
 		"test-model",
 		2,
 		"",
-		&estimatedTokens,
+		estimatedTokens,
 		map[int]struct{}{3: {}, 10: {}},
 	)
 	require.NoError(t, err)
@@ -154,13 +154,13 @@ func TestGetChannelExcludingRetryIndexDoesNotSkipSamePriority(t *testing.T) {
 	}
 	require.NoError(t, DB.Create(&abilities).Error)
 
-	estimatedTokens := 1200
+	estimatedTokens := inputTokenEstimates(1200, 1200)
 	selected, err := GetChannelExcluding(
 		"default",
 		"test-model-db",
 		1,
 		"",
-		&estimatedTokens,
+		estimatedTokens,
 		map[int]struct{}{3: {}},
 	)
 	require.NoError(t, err)
@@ -172,14 +172,14 @@ func TestGetChannelExcludingRetryIndexDoesNotSkipSamePriority(t *testing.T) {
 		"test-model-db",
 		2,
 		"",
-		&estimatedTokens,
+		estimatedTokens,
 		map[int]struct{}{3: {}, 10: {}},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 11, selected.Id)
 
-	selected, err = GetChannelExcludingPriority("default", "test-model-db", 0, "", &estimatedTokens, nil, &priorityLow)
+	selected, err = GetChannelExcludingPriority("default", "test-model-db", 0, "", estimatedTokens, nil, &priorityLow)
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 11, selected.Id, "the database selector must enforce the same priority ceiling")
@@ -203,8 +203,8 @@ func TestGetChannelFiltersBeforeChoosingHighestPriority(t *testing.T) {
 		{Group: "default", Model: "filtered-priority", ChannelId: 22, Enabled: true, Priority: &priorityLow, Weight: 1},
 	}).Error)
 
-	estimatedTokens := 1000
-	selected, err := GetChannelExcluding("default", "filtered-priority", 0, "", &estimatedTokens, nil)
+	estimatedTokens := inputTokenEstimates(1000, 1000)
+	selected, err := GetChannelExcluding("default", "filtered-priority", 0, "", estimatedTokens, nil)
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, 22, selected.Id)

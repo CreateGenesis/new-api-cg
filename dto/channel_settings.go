@@ -80,9 +80,15 @@ func (s SimulatedModelCacheSettings) IsActive() bool {
 
 type InputTokenRoutingSettings struct {
 	Enabled   bool                     `json:"enabled,omitempty"`
+	GLM52Mode bool                     `json:"glm_5_2_mode,omitempty"`
 	MinTokens int                      `json:"min_tokens,omitempty"`
 	MaxTokens int                      `json:"max_tokens,omitempty"`
 	Ranges    []InputTokenRoutingRange `json:"ranges,omitempty"`
+}
+
+type InputTokenEstimates struct {
+	Default int
+	GLM52   int
 }
 
 type InputTokenRoutingRange struct {

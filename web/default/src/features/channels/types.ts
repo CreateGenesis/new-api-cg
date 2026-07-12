@@ -176,6 +176,7 @@ export interface ChannelOtherSettings {
   }
   input_token_routing?: {
     enabled?: boolean
+    glm_5_2_mode?: boolean
     min_tokens?: number
     max_tokens?: number
     ranges?: Array<{

@@ -150,6 +150,37 @@ describe('channel form status code retry settings', () => {
   })
 })
 
+describe('channel form input token routing settings', () => {
+  test('round trips GLM-5.2 mode and an open-ended range', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        '{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":50000,"max_tokens":0}]}}'
+      )
+    )
+
+    assert.equal(form.input_token_routing_enabled, true)
+    assert.equal(form.input_token_routing_glm_5_2_mode, true)
+    assert.equal(form.input_token_routing_ranges, '50000-')
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.deepEqual(settings.input_token_routing, {
+      enabled: true,
+      glm_5_2_mode: true,
+      ranges: [{ min_tokens: 50000, max_tokens: 0 }],
+    })
+  })
+})
+
 describe('channel form simulated model cache settings', () => {
   test('loads enabled simulated cache settings', () => {
     const form = transformChannelToFormDefaults(

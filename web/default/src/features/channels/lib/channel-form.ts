@@ -288,6 +288,7 @@ export const channelFormSchema = z
     status_code_retry_interval_ms: z.number().optional(),
     status_code_retry_status_codes: z.string().optional(),
     input_token_routing_enabled: z.boolean().optional(),
+    input_token_routing_glm_5_2_mode: z.boolean().optional(),
     input_token_routing_ranges: z.string().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
@@ -618,6 +619,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
   status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
   input_token_routing_enabled: false,
+  input_token_routing_glm_5_2_mode: false,
   input_token_routing_ranges: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
@@ -685,6 +687,7 @@ export function transformChannelToFormDefaults(
   let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
   let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
   let inputTokenRoutingEnabled = false
+  let inputTokenRoutingGLM52Mode = false
   let inputTokenRoutingRanges = ''
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
@@ -761,6 +764,7 @@ export function transformChannelToFormDefaults(
           unknown
         >
         inputTokenRoutingEnabled = inputTokenRouting.enabled === true
+        inputTokenRoutingGLM52Mode = inputTokenRouting.glm_5_2_mode === true
         const ranges: InputTokenRoutingRange[] = []
         if (Array.isArray(inputTokenRouting.ranges)) {
           for (const item of inputTokenRouting.ranges) {
@@ -775,10 +779,14 @@ export function transformChannelToFormDefaults(
               maxTokens >= 0 &&
               (minTokens > 0 || maxTokens > 0)
             ) {
-              ranges.push({
-                min_tokens: Math.min(minTokens, maxTokens),
-                max_tokens: Math.max(minTokens, maxTokens),
-              })
+              if (maxTokens === 0 && minTokens > 0) {
+                ranges.push({ min_tokens: minTokens, max_tokens: 0 })
+              } else {
+                ranges.push({
+                  min_tokens: Math.min(minTokens, maxTokens),
+                  max_tokens: Math.max(minTokens, maxTokens),
+                })
+              }
             }
           }
         } else {
@@ -791,10 +799,14 @@ export function transformChannelToFormDefaults(
             maxTokens >= 0 &&
             (minTokens > 0 || maxTokens > 0)
           ) {
-            ranges.push({
-              min_tokens: Math.min(minTokens, maxTokens),
-              max_tokens: Math.max(minTokens, maxTokens),
-            })
+            if (maxTokens === 0 && minTokens > 0) {
+              ranges.push({ min_tokens: minTokens, max_tokens: 0 })
+            } else {
+              ranges.push({
+                min_tokens: Math.min(minTokens, maxTokens),
+                max_tokens: Math.max(minTokens, maxTokens),
+              })
+            }
           }
         }
         inputTokenRoutingRanges = formatInputTokenRoutingRanges(ranges)
@@ -898,6 +910,7 @@ export function transformChannelToFormDefaults(
     status_code_retry_interval_ms: statusCodeRetryIntervalMS,
     status_code_retry_status_codes: statusCodeRetryStatusCodes,
     input_token_routing_enabled: inputTokenRoutingEnabled,
+    input_token_routing_glm_5_2_mode: inputTokenRoutingGLM52Mode,
     input_token_routing_ranges: inputTokenRoutingRanges,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
@@ -1071,6 +1084,7 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if (parsedRanges.ok) {
       settingsObj.input_token_routing = {
         enabled: true,
+        glm_5_2_mode: formData.input_token_routing_glm_5_2_mode === true,
         ranges: parsedRanges.ranges,
       }
     }

@@ -25,7 +25,7 @@ export type ParseInputTokenRoutingRangesResult =
   | { ok: true; ranges: InputTokenRoutingRange[] }
   | { ok: false }
 
-const RANGE_PATTERN = /^(\d+)\s*-\s*(\d+)$/
+const RANGE_PATTERN = /^(\d+)\s*-\s*(\d*)$/
 
 export function parseInputTokenRoutingRanges(
   value: string | undefined
@@ -42,21 +42,27 @@ export function parseInputTokenRoutingRanges(
     if (!match) return { ok: false }
 
     const first = Number(match[1])
-    const second = Number(match[2])
+    const openEnded = match[2] === ''
+    const second = openEnded ? 0 : Number(match[2])
     if (
       !Number.isSafeInteger(first) ||
       !Number.isSafeInteger(second) ||
       first < 0 ||
       second < 0 ||
+      (openEnded && first === 0) ||
       (first === 0 && second === 0)
     ) {
       return { ok: false }
     }
 
-    ranges.push({
-      min_tokens: Math.min(first, second),
-      max_tokens: Math.max(first, second),
-    })
+    if (openEnded) {
+      ranges.push({ min_tokens: first, max_tokens: 0 })
+    } else {
+      ranges.push({
+        min_tokens: Math.min(first, second),
+        max_tokens: Math.max(first, second),
+      })
+    }
   }
 
   return { ok: true, ranges }
@@ -66,6 +72,10 @@ export function formatInputTokenRoutingRanges(
   ranges: InputTokenRoutingRange[]
 ): string {
   return ranges
-    .map((item) => `${item.min_tokens}-${item.max_tokens}`)
+    .map((item) =>
+      item.max_tokens === 0 && item.min_tokens > 0
+        ? `${item.min_tokens}-`
+        : `${item.min_tokens}-${item.max_tokens}`
+    )
     .join('\n')
 }

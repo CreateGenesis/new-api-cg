@@ -58,6 +58,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'status_code_retry_interval_ms',
   'status_code_retry_status_codes',
   'input_token_routing_enabled',
+  'input_token_routing_glm_5_2_mode',
   'input_token_routing_ranges',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',

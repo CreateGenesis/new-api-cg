@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { parseInputTokenRoutingRanges } from './input-token-routing'
+import {
+  formatInputTokenRoutingRanges,
+  parseInputTokenRoutingRanges,
+} from './input-token-routing'
 
 describe('input token routing helpers', () => {
   test('parses multiple ranges and normalizes reversed bounds', () => {
@@ -37,5 +40,17 @@ describe('input token routing helpers', () => {
   test('rejects empty and malformed range text', () => {
     assert.equal(parseInputTokenRoutingRanges('').ok, false)
     assert.equal(parseInputTokenRoutingRanges('0 - abc').ok, false)
+    assert.equal(parseInputTokenRoutingRanges('-50000').ok, false)
+    assert.equal(parseInputTokenRoutingRanges('0-').ok, false)
+    assert.equal(parseInputTokenRoutingRanges('-1-50000').ok, false)
+  })
+
+  test('round trips an open-ended range without losing its lower bound', () => {
+    const result = parseInputTokenRoutingRanges('50000-')
+
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.ranges, [{ min_tokens: 50000, max_tokens: 0 }])
+    assert.equal(formatInputTokenRoutingRanges(result.ranges), '50000-')
   })
 })

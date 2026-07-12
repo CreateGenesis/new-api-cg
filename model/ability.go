@@ -61,15 +61,15 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-func GetChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
-	return GetChannelExcluding(group, model, retry, requestPath, estimatedInputTokens, nil)
+func GetChannel(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates) (*Channel, error) {
+	return GetChannelExcluding(group, model, retry, requestPath, inputTokenEstimates, nil)
 }
 
-func GetChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
-	return GetChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, nil)
+func GetChannelExcluding(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates, excluded map[int]struct{}) (*Channel, error) {
+	return GetChannelExcludingPriority(group, model, retry, requestPath, inputTokenEstimates, excluded, nil)
 }
 
-func GetChannelExcludingPriority(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
+func GetChannelExcludingPriority(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
 	var abilities []Ability
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
 	err := channelQuery.Order("weight DESC").Find(&abilities).Error
@@ -77,7 +77,7 @@ func GetChannelExcludingPriority(group string, model string, retry int, requestP
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPath(abilities, requestPath)
-	abilities = filterAbilitiesByInputTokens(abilities, estimatedInputTokens)
+	abilities = filterAbilitiesByInputTokens(abilities, inputTokenEstimates)
 	if len(excluded) > 0 {
 		filtered := make([]Ability, 0, len(abilities))
 		for _, ability := range abilities {
@@ -204,8 +204,8 @@ func filterAbilitiesByRequestPath(abilities []Ability, requestPath string) []Abi
 	return filtered
 }
 
-func filterAbilitiesByInputTokens(abilities []Ability, estimatedInputTokens *int) []Ability {
-	if estimatedInputTokens == nil || len(abilities) == 0 {
+func filterAbilitiesByInputTokens(abilities []Ability, inputTokenEstimates *dto.InputTokenEstimates) []Ability {
+	if inputTokenEstimates == nil || len(abilities) == 0 {
 		return abilities
 	}
 
@@ -225,7 +225,7 @@ func filterAbilitiesByInputTokens(abilities []Ability, estimatedInputTokens *int
 	}
 	channelMatches := make(map[int]bool, len(channels))
 	for _, channel := range channels {
-		channelMatches[channel.Id] = channel.MatchesInputTokenRouting(estimatedInputTokens)
+		channelMatches[channel.Id] = channel.MatchesInputTokenRouting(inputTokenEstimates)
 	}
 
 	filtered := make([]Ability, 0, len(abilities))

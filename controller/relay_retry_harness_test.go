@@ -22,23 +22,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
+func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var (
-		attemptsMu       sync.Mutex
-		attempts         []string
-		succeedOnAttempt int
+		attemptsMu            sync.Mutex
+		attempts              []string
+		succeedOnAttempt      int
+		routeOnBoundedHTTP400 bool
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptsMu.Lock()
-		attempts = append(attempts, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		channelKey := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		attempts = append(attempts, channelKey)
 		attemptNumber := len(attempts)
 		shouldSucceed := succeedOnAttempt > 0 && attemptNumber == succeedOnAttempt
+		if routeOnBoundedHTTP400 && channelKey != "channel-1" {
+			shouldSucceed = true
+		}
+		boundedHTTP400 := routeOnBoundedHTTP400 && channelKey == "channel-1"
 		attemptsMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if shouldSucceed {
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-retry-success","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
+		if boundedHTTP400 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds this route capacity","type":"invalid_request_error","code":"context_length_exceeded"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -201,4 +212,75 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	require.Len(t, successAttempts, 3)
 	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
 	assert.Equal(t, int64(1), errorLogCount, "a successful retry must not persist intermediate upstream errors")
+
+	channels[0].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":1,"max_tokens":500000}]}}`
+	channels[1].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":0}]}}`
+	channels[2].OtherSettings = channels[0].OtherSettings
+	for i := range channels {
+		require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[i].Id).Update("settings", channels[i].OtherSettings).Error)
+	}
+	common.RetryTimes = 0
+	attemptsMu.Lock()
+	attempts = nil
+	succeedOnAttempt = 0
+	routeOnBoundedHTTP400 = true
+	attemptsMu.Unlock()
+
+	routingRecorder := httptest.NewRecorder()
+	routingCtx, _ := gin.CreateTestContext(routingRecorder)
+	largeRoutingRequestBody := fmt.Sprintf(
+		`{"model":"%s","messages":[{"role":"user","content":"%s"}]}`,
+		modelName,
+		strings.Repeat("路", 560000),
+	)
+	routingCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(largeRoutingRequestBody),
+	)
+	routingCtx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(routingCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(routingCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(routingCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(routingCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(routingCtx, &channels[0], modelName))
+
+	Relay(routingCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	routingAttempts := append([]string(nil), attempts...)
+	attemptsMu.Unlock()
+	assert.Equal(t, http.StatusOK, routingRecorder.Code)
+	assert.Equal(t, []string{"channel-1", "channel-2"}, routingAttempts)
+	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
+	assert.Equal(t, int64(1), errorLogCount, "a successful token-range upgrade must not persist its intermediate upstream 400")
+
+	channels[1].OtherSettings = channels[0].OtherSettings
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[1].Id).Update("settings", channels[1].OtherSettings).Error)
+	attemptsMu.Lock()
+	attempts = nil
+	attemptsMu.Unlock()
+
+	noHigherRecorder := httptest.NewRecorder()
+	noHigherCtx, _ := gin.CreateTestContext(noHigherRecorder)
+	noHigherCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(largeRoutingRequestBody),
+	)
+	noHigherCtx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(noHigherCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(noHigherCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(noHigherCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(noHigherCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(noHigherCtx, &channels[0], modelName))
+
+	Relay(noHigherCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	noHigherAttempts := append([]string(nil), attempts...)
+	attemptsMu.Unlock()
+	assert.Equal(t, http.StatusBadRequest, noHigherRecorder.Code)
+	assert.Equal(t, []string{"channel-1"}, noHigherAttempts)
+	assert.Contains(t, noHigherRecorder.Body.String(), "input exceeds this route capacity")
 }

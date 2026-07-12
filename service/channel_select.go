@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
@@ -36,15 +37,15 @@ func (s *SameChannelRetryState) Increase() {
 }
 
 type ChannelSelectParam struct {
-	Ctx                  *gin.Context
-	TokenGroup           string
-	ModelName            string
-	RequestPath          string
-	EstimatedInputTokens *int
-	ExcludedChannelIDs   map[int]struct{}
-	MaxPriority          *int64
-	AutoGroupIndex       int
-	AutoGroupSelected    bool
+	Ctx                 *gin.Context
+	TokenGroup          string
+	ModelName           string
+	RequestPath         string
+	InputTokenEstimates *dto.InputTokenEstimates
+	ExcludedChannelIDs  map[int]struct{}
+	MaxPriority         *int64
+	AutoGroupIndex      int
+	AutoGroupSelected   bool
 }
 
 func (p *ChannelSelectParam) ExcludeAttemptedChannel(channel *model.Channel) {
@@ -115,7 +116,7 @@ func CacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			autoGroup := autoGroups[i]
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s", autoGroup)
 
-			channel, err = model.GetRandomSatisfiedChannelExcludingPriority(autoGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs, param.MaxPriority)
+			channel, err = model.GetRandomSatisfiedChannelExcludingPriority(autoGroup, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority)
 			if err != nil {
 				return nil, autoGroup, err
 			}
@@ -137,7 +138,7 @@ func CacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelExcludingPriority(param.TokenGroup, param.ModelName, 0, param.RequestPath, param.EstimatedInputTokens, param.ExcludedChannelIDs, param.MaxPriority)
+		channel, err = model.GetRandomSatisfiedChannelExcludingPriority(param.TokenGroup, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

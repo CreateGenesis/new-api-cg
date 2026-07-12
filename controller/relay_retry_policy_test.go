@@ -454,14 +454,14 @@ func TestShouldRetryWithPolicyKeepsExistingSkipRules(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusTooManyRequests), policy, 0))
 }
 
-func TestEstimatedInputTokensForRoutingUsesConservativeTextEstimateForRanges(t *testing.T) {
+func TestInputTokenEstimatesForRoutingKeepsDefaultAndGLM52ModesSeparate(t *testing.T) {
 	text := strings.Repeat("routingtoken ", 1000)
 	meta := &types.TokenCountMeta{
 		TokenType:   types.TokenTypeTokenizer,
 		CombineText: text,
 	}
 
-	estimatedTokens := estimatedInputTokensForRouting(
+	estimates := inputTokenEstimatesForRouting(
 		types.RelayFormatOpenAI,
 		relayconstant.RelayModeChatCompletions,
 		1500,
@@ -469,10 +469,145 @@ func TestEstimatedInputTokensForRoutingUsesConservativeTextEstimateForRanges(t *
 		"glm-5.2",
 	)
 
-	require.NotNil(t, estimatedTokens)
-	assert.GreaterOrEqual(t, *estimatedTokens, 3001)
-	channel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"ranges":[{"min_tokens":3001,"max_tokens":5000}]}}`}
-	assert.True(t, channel.MatchesInputTokenRouting(estimatedTokens))
+	require.NotNil(t, estimates)
+	assert.GreaterOrEqual(t, estimates.Default, 3001)
+	assert.Equal(t, 8128, estimates.GLM52)
+	defaultChannel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"ranges":[{"min_tokens":3001,"max_tokens":5000}]}}`}
+	glmChannel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":8000,"max_tokens":9000}]}}`}
+	assert.True(t, defaultChannel.MatchesInputTokenRouting(estimates))
+	assert.True(t, glmChannel.MatchesInputTokenRouting(estimates))
+}
+
+func TestGLM52InputTokensForRoutingUsesUnicodeCharactersAndExistingOverhead(t *testing.T) {
+	meta := &types.TokenCountMeta{
+		CombineText:   "你a好bc世界d",
+		MessagesCount: 2,
+		ToolsCount:    1,
+		NameCount:     1,
+		Files: []*types.FileMeta{
+			{FileType: types.FileTypeImage},
+			{FileType: types.FileTypeAudio},
+		},
+	}
+
+	// Eight Unicode characters become five text tokens. OpenAI framing adds
+	// 20 tokens, and the image/audio estimates add 776.
+	assert.Equal(t, 801, glm52InputTokensForRouting(types.RelayFormatOpenAI, meta))
+	assert.Equal(t, 781, glm52InputTokensForRouting(types.RelayFormatClaude, meta))
+}
+
+func TestUpgradeInputTokenRoutingAfterUpstream400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	channel := &model.Channel{
+		Id:            12,
+		Priority:      common.GetPointer[int64](10),
+		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":500000}]}}`,
+	}
+	param := &service.ChannelSelectParam{InputTokenEstimates: &dto.InputTokenEstimates{Default: 520000, GLM52: 350000}}
+	upstreamErr := statusCodeError(http.StatusBadRequest)
+	upstreamErr.SetUpstreamResponse(http.StatusBadRequest, `{"error":"too large"}`)
+	retryState := &service.InterChannelRetryState{}
+
+	upgraded := upgradeInputTokenRoutingAfterUpstream400(ctx, upstreamErr, channel, param, 0, relayRetryPolicy{retryTimes: 0}, retryState)
+
+	assert.True(t, upgraded, "the first bounded-range upgrade must not require a global retry budget")
+	assert.Equal(t, 500001, param.InputTokenEstimates.GLM52)
+	assert.Equal(t, 520000, param.InputTokenEstimates.Default)
+	assert.Contains(t, param.ExcludedChannelIDs, channel.Id)
+	assert.Equal(t, 0, retryState.Count())
+
+	secondChannel := &model.Channel{
+		Id:            13,
+		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":750000}]}}`,
+	}
+	assert.True(t, upgradeInputTokenRoutingAfterUpstream400(
+		ctx,
+		upstreamErr,
+		secondChannel,
+		param,
+		1,
+		relayRetryPolicy{retryTimes: 1},
+		retryState,
+	))
+	assert.Equal(t, 750001, param.InputTokenEstimates.GLM52)
+	assert.Equal(t, 1, retryState.Count(), "further upgrades consume the global inter-channel retry budget")
+}
+
+func TestUpgradeInputTokenRoutingAfterUpstream400RejectsIneligibleErrorsAndChannels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name          string
+		channel       *model.Channel
+		configure     func(*gin.Context)
+		error         *types.NewAPIError
+		upgradeCount  int
+		globalRetries int
+	}{
+		{
+			name:    "local 400",
+			channel: boundedGLMChannel(),
+			error:   statusCodeError(http.StatusBadRequest),
+		},
+		{
+			name:    "fixed channel",
+			channel: boundedGLMChannel(),
+			configure: func(ctx *gin.Context) {
+				common.SetContextKey(ctx, constant.ContextKeyTokenSpecificChannelId, "12")
+			},
+			error: upstreamStatusCodeError(http.StatusBadRequest),
+		},
+		{
+			name: "unbounded range",
+			channel: &model.Channel{
+				Id:            12,
+				OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":0}]}}`,
+			},
+			error: upstreamStatusCodeError(http.StatusBadRequest),
+		},
+		{
+			name:          "further upgrade without global budget",
+			channel:       boundedGLMChannel(),
+			error:         upstreamStatusCodeError(http.StatusBadRequest),
+			upgradeCount:  1,
+			globalRetries: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tt.configure != nil {
+				tt.configure(ctx)
+			}
+			param := &service.ChannelSelectParam{InputTokenEstimates: &dto.InputTokenEstimates{Default: 520000, GLM52: 350000}}
+			assert.False(t, upgradeInputTokenRoutingAfterUpstream400(
+				ctx,
+				tt.error,
+				tt.channel,
+				param,
+				tt.upgradeCount,
+				relayRetryPolicy{retryTimes: tt.globalRetries},
+				&service.InterChannelRetryState{},
+			))
+			assert.Equal(t, 350000, param.InputTokenEstimates.GLM52)
+		})
+	}
+}
+
+func boundedGLMChannel() *model.Channel {
+	return &model.Channel{
+		Id:            12,
+		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":500000}]}}`,
+	}
+}
+
+func upstreamStatusCodeError(statusCode int) *types.NewAPIError {
+	err := statusCodeError(statusCode)
+	err.SetUpstreamResponse(statusCode, `{}`)
+	return err
 }
 
 func statusCodeError(statusCode int) *types.NewAPIError {

@@ -1202,22 +1202,38 @@ func (channel *Channel) SetOtherSettings(setting dto.ChannelOtherSettings) {
 	channel.OtherSettings = string(settingBytes)
 }
 
-func (channel *Channel) MatchesInputTokenRouting(estimatedTokens *int) bool {
-	if channel == nil || estimatedTokens == nil {
-		return true
+type InputTokenRoutingMatch struct {
+	Enabled         bool
+	Matched         bool
+	GLM52Mode       bool
+	EstimatedTokens int
+	MinTokens       int
+	MaxTokens       int
+}
+
+func (channel *Channel) MatchInputTokenRouting(estimates *dto.InputTokenEstimates) InputTokenRoutingMatch {
+	match := InputTokenRoutingMatch{Matched: true}
+	if channel == nil || estimates == nil {
+		return match
 	}
 	settings := channel.GetOtherSettings()
 	if settings.InputTokenRouting == nil {
-		return true
+		return match
 	}
 	routing := settings.InputTokenRouting.Normalize()
 	if !routing.Enabled {
-		return true
+		return match
 	}
-	tokens := *estimatedTokens
+	match.Enabled = true
+	match.GLM52Mode = routing.GLM52Mode
+	tokens := estimates.Default
+	if routing.GLM52Mode {
+		tokens = estimates.GLM52
+	}
 	if tokens < 0 {
 		tokens = 0
 	}
+	match.EstimatedTokens = tokens
 	if len(routing.Ranges) > 0 {
 		for _, item := range routing.Ranges {
 			if item.MinTokens > 0 && tokens < item.MinTokens {
@@ -1226,17 +1242,28 @@ func (channel *Channel) MatchesInputTokenRouting(estimatedTokens *int) bool {
 			if item.MaxTokens > 0 && tokens > item.MaxTokens {
 				continue
 			}
-			return true
+			match.MinTokens = item.MinTokens
+			match.MaxTokens = item.MaxTokens
+			return match
 		}
-		return false
+		match.Matched = false
+		return match
 	}
 	if routing.MinTokens > 0 && tokens < routing.MinTokens {
-		return false
+		match.Matched = false
+		return match
 	}
 	if routing.MaxTokens > 0 && tokens > routing.MaxTokens {
-		return false
+		match.Matched = false
+		return match
 	}
-	return true
+	match.MinTokens = routing.MinTokens
+	match.MaxTokens = routing.MaxTokens
+	return match
+}
+
+func (channel *Channel) MatchesInputTokenRouting(estimates *dto.InputTokenEstimates) bool {
+	return channel.MatchInputTokenRouting(estimates).Matched
 }
 
 func (channel *Channel) GetParamOverride() map[string]interface{} {

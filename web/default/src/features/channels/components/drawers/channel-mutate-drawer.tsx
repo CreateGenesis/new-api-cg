@@ -304,6 +304,7 @@ const SENSITIVE_FORM_FIELDS = [
   'status_code_retry_interval_ms',
   'status_code_retry_status_codes',
   'input_token_routing_enabled',
+  'input_token_routing_glm_5_2_mode',
   'input_token_routing_ranges',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
@@ -354,6 +355,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.simulated_model_cache_enabled ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
+    values.input_token_routing_glm_5_2_mode ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -774,6 +776,9 @@ export function ChannelMutateDrawer({
   const currentInputTokenRoutingEnabled = form.watch(
     'input_token_routing_enabled'
   )
+  const currentInputTokenRoutingGLM52Mode = form.watch(
+    'input_token_routing_glm_5_2_mode'
+  )
   const currentInputTokenRoutingRanges = form.watch(
     'input_token_routing_ranges'
   )
@@ -1065,7 +1070,9 @@ export function ChannelMutateDrawer({
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
   const inputTokenRoutingConfigured = Boolean(
-    currentInputTokenRoutingEnabled || currentInputTokenRoutingRanges?.trim()
+    currentInputTokenRoutingEnabled ||
+    currentInputTokenRoutingGLM52Mode ||
+    currentInputTokenRoutingRanges?.trim()
   )
   const advancedConfigured = Boolean(
     routingStrategyConfigured ||
@@ -4058,6 +4065,34 @@ export function ChannelMutateDrawer({
                                     </FormItem>
                                   )}
                                 />
+                                <FormField
+                                  control={form.control}
+                                  name='input_token_routing_glm_5_2_mode'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel className='text-sm'>
+                                          {t('GLM-5.2 estimation mode')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Estimate GLM-5.2 text at about 1 token per 1.6 Unicode characters'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          disabled={
+                                            !currentInputTokenRoutingEnabled ||
+                                            isSubmitting
+                                          }
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
                               </div>
 
                               <FormField
@@ -4068,7 +4103,7 @@ export function ChannelMutateDrawer({
                                     <FormLabel>{t('Token ranges')}</FormLabel>
                                     <FormControl>
                                       <Textarea
-                                        placeholder={'0-200\n1000000-5000000'}
+                                        placeholder={'0-200\n50000-'}
                                         rows={3}
                                         disabled={
                                           !currentInputTokenRoutingEnabled ||
@@ -4080,7 +4115,7 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(
-                                        'One range per line, for example 0-200 or 1000000-5000000'
+                                        'One range per line, for example 0-200 or 50000- for no upper limit'
                                       )}
                                     </FormDescription>
                                     <FormMessage />

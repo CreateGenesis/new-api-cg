@@ -105,25 +105,25 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, estimatedInputTokens *int) (*Channel, error) {
-	return GetRandomSatisfiedChannelExcluding(group, model, retry, requestPath, estimatedInputTokens, nil)
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates) (*Channel, error) {
+	return GetRandomSatisfiedChannelExcluding(group, model, retry, requestPath, inputTokenEstimates, nil)
 }
 
-func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}) (*Channel, error) {
-	return GetRandomSatisfiedChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, nil)
+func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates, excluded map[int]struct{}) (*Channel, error) {
+	return GetRandomSatisfiedChannelExcludingPriority(group, model, retry, requestPath, inputTokenEstimates, excluded, nil)
 }
 
-func GetRandomSatisfiedChannelExcludingPriority(group string, model string, retry int, requestPath string, estimatedInputTokens *int, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
+func GetRandomSatisfiedChannelExcludingPriority(group string, model string, retry int, requestPath string, inputTokenEstimates *dto.InputTokenEstimates, excluded map[int]struct{}, maxPriority *int64) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelExcludingPriority(group, model, retry, requestPath, estimatedInputTokens, excluded, maxPriority)
+		return GetChannelExcludingPriority(group, model, retry, requestPath, inputTokenEstimates, excluded, maxPriority)
 	}
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
 	// First, try to find channels with the exact model name.
-	channels := filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][model], requestPath), estimatedInputTokens)
+	channels := filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][model], requestPath), inputTokenEstimates)
 	channels = filterExcludedChannelIDs(channels, excluded)
 	channels, err := filterChannelsByMaxPriority(channels, maxPriority)
 	if err != nil {
@@ -133,7 +133,7 @@ func GetRandomSatisfiedChannelExcludingPriority(group string, model string, retr
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
-		channels = filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath), estimatedInputTokens)
+		channels = filterChannelsByInputTokens(filterChannelsByRequestPath(group2model2channels[group][normalizedModel], requestPath), inputTokenEstimates)
 		channels = filterExcludedChannelIDs(channels, excluded)
 		channels, err = filterChannelsByMaxPriority(channels, maxPriority)
 		if err != nil {
@@ -283,8 +283,8 @@ func filterChannelsByRequestPath(channels []int, requestPath string) []int {
 	return filtered
 }
 
-func filterChannelsByInputTokens(channels []int, estimatedInputTokens *int) []int {
-	if estimatedInputTokens == nil || len(channels) == 0 {
+func filterChannelsByInputTokens(channels []int, inputTokenEstimates *dto.InputTokenEstimates) []int {
+	if inputTokenEstimates == nil || len(channels) == 0 {
 		return channels
 	}
 	filtered := make([]int, 0, len(channels))
@@ -294,7 +294,7 @@ func filterChannelsByInputTokens(channels []int, estimatedInputTokens *int) []in
 			filtered = append(filtered, channelId)
 			continue
 		}
-		if channel.MatchesInputTokenRouting(estimatedInputTokens) {
+		if channel.MatchesInputTokenRouting(inputTokenEstimates) {
 			filtered = append(filtered, channelId)
 		}
 	}

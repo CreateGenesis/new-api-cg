@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -179,15 +181,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}()
 
 	selectParam := &service.ChannelSelectParam{
-		Ctx:                  c,
-		TokenGroup:           relayInfo.TokenGroup,
-		ModelName:            relayInfo.OriginModelName,
-		RequestPath:          c.Request.URL.Path,
-		EstimatedInputTokens: estimatedInputTokensForRouting(relayFormat, relayInfo.RelayMode, tokens, meta, relayInfo.OriginModelName),
-		AutoGroupIndex:       common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
-		AutoGroupSelected:    relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
+		Ctx:                 c,
+		TokenGroup:          relayInfo.TokenGroup,
+		ModelName:           relayInfo.OriginModelName,
+		RequestPath:         c.Request.URL.Path,
+		InputTokenEstimates: inputTokenEstimatesForRouting(relayFormat, relayInfo.RelayMode, tokens, meta, relayInfo.OriginModelName),
+		AutoGroupIndex:      common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
+		AutoGroupSelected:   relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
 	}
 	interChannelRetryState := &service.InterChannelRetryState{}
+	inputTokenRoutingUpgrades := 0
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 	globalRetryPolicy := relayGlobalRetryPolicy()
@@ -207,6 +210,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		channelRetryPolicy := relayRetryPolicy{}
 		sameChannelRetryState := &service.SameChannelRetryState{}
 		internalRetryBlockedByOverload := false
+		inputTokenRoutingUpgraded := false
 
 		for {
 			internalRetry := layeredRetryEnabled && actualChannelID != 0
@@ -287,6 +291,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
+			if upgradeInputTokenRoutingAfterUpstream400(c, newAPIError, channel, selectParam, inputTokenRoutingUpgrades, globalRetryPolicy, interChannelRetryState) {
+				inputTokenRoutingUpgrades++
+				inputTokenRoutingUpgraded = true
+				break
+			}
+
 			if !shouldRetrySameChannelWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetryState.Count()) {
 				break
 			}
@@ -297,6 +307,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				relayInfo.LastError = newAPIError
 				break
 			}
+		}
+
+		if inputTokenRoutingUpgraded {
+			continue
 		}
 
 		if internalRetryBlockedByOverload {
@@ -494,11 +508,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 		channelID := c.GetInt("channel_id")
 		currentChannel, currentChannelErr := model.CacheGetChannel(channelID)
 		if currentChannelErr == nil && currentChannel != nil {
-			if selectParam == nil || selectParam.EstimatedInputTokens == nil {
+			if selectParam == nil || selectParam.InputTokenEstimates == nil {
 				return currentChannel, nil
 			}
 			if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); !specificChannel {
-				if !currentChannel.MatchesInputTokenRouting(selectParam.EstimatedInputTokens) {
+				if !currentChannel.MatchesInputTokenRouting(selectParam.InputTokenEstimates) {
 					service.ClearRequestChannelAffinitySelection(c)
 					channel, channelErr := selectChannelByInputTokenRouting(c, info, selectParam)
 					if channelErr != nil {
@@ -560,7 +574,7 @@ func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInf
 	return channel, nil
 }
 
-func estimatedInputTokensForRouting(relayFormat types.RelayFormat, relayMode int, tokens int, meta *types.TokenCountMeta, modelName string) *int {
+func inputTokenEstimatesForRouting(relayFormat types.RelayFormat, relayMode int, tokens int, meta *types.TokenCountMeta, modelName string) *dto.InputTokenEstimates {
 	if !supportsInputTokenRouting(relayFormat, relayMode) {
 		return nil
 	}
@@ -570,7 +584,10 @@ func estimatedInputTokensForRouting(relayFormat types.RelayFormat, relayMode int
 	if routingTokens := conservativeInputTokensForRouting(relayFormat, meta, modelName); routingTokens > tokens {
 		tokens = routingTokens
 	}
-	return &tokens
+	return &dto.InputTokenEstimates{
+		Default: tokens,
+		GLM52:   glm52InputTokensForRouting(relayFormat, meta),
+	}
 }
 
 func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta, modelName string) int {
@@ -578,7 +595,7 @@ func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *type
 		return 0
 	}
 
-	tokens := 0
+	tokens := inputTokenRoutingOverhead(relayFormat, meta)
 	if meta.CombineText != "" {
 		textTokens := service.CountTextToken(meta.CombineText, modelName)
 		byteTokens := (len(meta.CombineText) + 3) / 4
@@ -587,6 +604,23 @@ func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *type
 		}
 		tokens += textTokens
 	}
+	return tokens
+}
+
+func glm52InputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
+	if meta == nil {
+		return 0
+	}
+	runeCount := utf8.RuneCountInString(meta.CombineText)
+	textTokens := runeCount/8*5 + (runeCount%8*5+7)/8
+	return textTokens + inputTokenRoutingOverhead(relayFormat, meta)
+}
+
+func inputTokenRoutingOverhead(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
+	if meta == nil {
+		return 0
+	}
+	tokens := 0
 	if relayFormat == types.RelayFormatOpenAI {
 		tokens += meta.ToolsCount * 8
 		tokens += meta.MessagesCount * 3
@@ -609,6 +643,56 @@ func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *type
 		}
 	}
 	return tokens
+}
+
+func upgradeInputTokenRoutingAfterUpstream400(
+	c *gin.Context,
+	err *types.NewAPIError,
+	channel *model.Channel,
+	selectParam *service.ChannelSelectParam,
+	upgradeCount int,
+	policy relayRetryPolicy,
+	retryState *service.InterChannelRetryState,
+) bool {
+	if err == nil || err.GetUpstreamStatusCode() != http.StatusBadRequest || channel == nil || selectParam == nil || selectParam.InputTokenEstimates == nil {
+		return false
+	}
+	if _, specificChannel := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specificChannel {
+		return false
+	}
+	if _, specificChannel := c.Get("specific_channel_id"); specificChannel {
+		return false
+	}
+	match := channel.MatchInputTokenRouting(selectParam.InputTokenEstimates)
+	if !match.Enabled || !match.Matched || match.MaxTokens <= 0 || match.MaxTokens == math.MaxInt {
+		return false
+	}
+	if upgradeCount > 0 {
+		if retryState == nil || retryState.Count() >= policy.retryTimes {
+			return false
+		}
+		retryState.Increase()
+	}
+
+	upgradedEstimate := match.MaxTokens + 1
+	mode := "default"
+	if match.GLM52Mode {
+		selectParam.InputTokenEstimates.GLM52 = upgradedEstimate
+		mode = "glm_5_2"
+	} else {
+		selectParam.InputTokenEstimates.Default = upgradedEstimate
+	}
+	selectParam.ExcludeAttemptedChannel(channel)
+	service.ClearRequestChannelAffinitySelection(c)
+	logger.LogInfo(c, fmt.Sprintf(
+		"input token routing upgraded after upstream 400: channel=%d mode=%s estimate=%d range_max=%d upgraded_estimate=%d",
+		channel.Id,
+		mode,
+		match.EstimatedTokens,
+		match.MaxTokens,
+		upgradedEstimate,
+	))
+	return true
 }
 
 func supportsInputTokenRouting(relayFormat types.RelayFormat, relayMode int) bool {
