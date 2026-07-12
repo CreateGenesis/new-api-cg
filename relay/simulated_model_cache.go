@@ -631,7 +631,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		return
 	}
 	originalInputTokens := simulatedModelCacheOriginalInputTokens(usage)
-	inputTokensEligible := originalInputTokens >= service.SimulatedModelCacheMinInputTokens
+	inputTokensEligible := originalInputTokens >= common.GetSimulatedModelCacheMinInputTokens()
 	if !inputTokensEligible {
 		attempt.bypassReason = service.SimulatedModelCacheBypassInputTokensLow
 	}

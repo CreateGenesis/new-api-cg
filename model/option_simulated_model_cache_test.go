@@ -45,3 +45,27 @@ func TestHandleConfigUpdateAppliesSimulatedModelCacheEntryLimitImmediately(t *te
 	require.True(t, handled)
 	assert.Equal(t, 40, common.GetSimulatedModelCacheEntriesPerScope())
 }
+
+func TestHandleConfigUpdateAppliesSimulatedModelCacheMinimumInputTokensImmediately(t *testing.T) {
+	original := common.GetSimulatedModelCacheMinInputTokens()
+	t.Cleanup(func() {
+		require.True(t, handleConfigUpdate(
+			"performance_setting.simulated_model_cache_min_input_tokens",
+			strconv.Itoa(original),
+		))
+	})
+
+	handled := handleConfigUpdate(
+		"performance_setting.simulated_model_cache_min_input_tokens",
+		"0",
+	)
+
+	require.True(t, handled)
+	assert.Equal(t, 0, common.GetSimulatedModelCacheMinInputTokens())
+
+	require.True(t, handleConfigUpdate(
+		"performance_setting.simulated_model_cache_min_input_tokens",
+		strconv.Itoa(common.SimulatedModelCacheMinimumInputTokensDefault),
+	))
+	assert.Equal(t, common.SimulatedModelCacheMinimumInputTokensDefault, common.GetSimulatedModelCacheMinInputTokens())
+}

@@ -39,3 +39,24 @@ func TestUpdateAndSyncAppliesSimulatedModelCacheEntryLimitImmediately(t *testing
 	UpdateAndSync()
 	assert.Equal(t, 50, common.GetSimulatedModelCacheEntriesPerScope())
 }
+
+func TestUpdateAndSyncAppliesSimulatedModelCacheMinimumInputTokensImmediately(t *testing.T) {
+	original := performanceSetting
+	t.Cleanup(func() {
+		performanceSetting = original
+		UpdateAndSync()
+	})
+
+	performanceSetting.SimulatedModelCacheMinInputTokens = 0
+	UpdateAndSync()
+	assert.Equal(t, 0, common.GetSimulatedModelCacheMinInputTokens())
+
+	performanceSetting.SimulatedModelCacheMinInputTokens = common.SimulatedModelCacheMinimumInputTokensDefault
+	UpdateAndSync()
+	assert.Equal(t, common.SimulatedModelCacheMinimumInputTokensDefault, common.GetSimulatedModelCacheMinInputTokens())
+
+	performanceSetting.SimulatedModelCacheMinInputTokens = -1
+	UpdateAndSync()
+	assert.Equal(t, common.SimulatedModelCacheMinimumInputTokensDefault, common.GetSimulatedModelCacheMinInputTokens())
+	assert.Equal(t, common.SimulatedModelCacheMinimumInputTokensDefault, performanceSetting.SimulatedModelCacheMinInputTokens)
+}

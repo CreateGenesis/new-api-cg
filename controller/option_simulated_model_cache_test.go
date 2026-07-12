@@ -60,3 +60,30 @@ func TestValidateSimulatedModelCacheMaxEntriesPerScope(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSimulatedModelCacheMinInputTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "disabled", value: "0"},
+		{name: "default", value: "128"},
+		{name: "maximum", value: "1000000"},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "too large", value: "1000001", wantErr: true},
+		{name: "fraction", value: "512.5", wantErr: true},
+		{name: "not a number", value: "invalid", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateSimulatedModelCacheMinInputTokens(test.value)
+			if test.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

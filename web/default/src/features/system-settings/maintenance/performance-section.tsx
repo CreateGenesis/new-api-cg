@@ -82,6 +82,11 @@ const perfSchema = z.object({
       .int()
       .min(1)
       .max(5000),
+    simulated_model_cache_min_input_tokens: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(1000000),
     disk_cache_enabled: z.boolean(),
     disk_cache_threshold_mb: z.coerce.number().min(1),
     disk_cache_max_size_mb: z.coerce.number().min(100),
@@ -99,6 +104,7 @@ type PerfFormValues = z.output<typeof perfSchema>
 type FlatPerfDefaults = {
   'performance_setting.simulated_model_cache_memory_budget_mb': number
   'performance_setting.simulated_model_cache_max_entries_per_scope': number
+  'performance_setting.simulated_model_cache_min_input_tokens': number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -117,6 +123,8 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
       defaults[
         'performance_setting.simulated_model_cache_max_entries_per_scope'
       ],
+    simulated_model_cache_min_input_tokens:
+      defaults['performance_setting.simulated_model_cache_min_input_tokens'],
     disk_cache_enabled: defaults['performance_setting.disk_cache_enabled'],
     disk_cache_threshold_mb:
       defaults['performance_setting.disk_cache_threshold_mb'],
@@ -138,6 +146,8 @@ const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
     values.performance_setting.simulated_model_cache_memory_budget_mb,
   'performance_setting.simulated_model_cache_max_entries_per_scope':
     values.performance_setting.simulated_model_cache_max_entries_per_scope,
+  'performance_setting.simulated_model_cache_min_input_tokens':
+    values.performance_setting.simulated_model_cache_min_input_tokens,
   'performance_setting.disk_cache_enabled':
     values.performance_setting.disk_cache_enabled,
   'performance_setting.disk_cache_threshold_mb':
@@ -514,6 +524,32 @@ export function PerformanceSection(props: Props) {
                   <FormDescription>
                     {t(
                       'Each user and model combination keeps at most this many recent prompt fingerprints. Changes take effect immediately without restarting the service.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='performance_setting.simulated_model_cache_min_input_tokens'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Simulated Cache Minimum Input Tokens')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={1000000}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Allowed range: 0–1,000,000. Set to 0 to disable the minimum threshold. Changes take effect immediately without restarting the service.'
                     )}
                   </FormDescription>
                   <FormMessage />

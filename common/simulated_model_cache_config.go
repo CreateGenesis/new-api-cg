@@ -10,10 +10,15 @@ const (
 	SimulatedModelCacheMinEntriesPerScope     = 1
 	SimulatedModelCacheDefaultEntriesPerScope = 100
 	SimulatedModelCacheMaxEntriesPerScope     = 5000
+
+	SimulatedModelCacheMinimumInputTokensMin     = 0
+	SimulatedModelCacheMinimumInputTokensDefault = 128
+	SimulatedModelCacheMinimumInputTokensMax     = 1000000
 )
 
 var simulatedModelCacheMemoryBudgetMB atomic.Int64
 var simulatedModelCacheEntriesPerScope atomic.Int64
+var simulatedModelCacheMinInputTokens atomic.Int64
 
 func init() {
 	SetSimulatedModelCacheMemoryBudgetMB(GetEnvOrDefault(
@@ -21,6 +26,7 @@ func init() {
 		SimulatedModelCacheDefaultMemoryBudgetMB,
 	))
 	SetSimulatedModelCacheEntriesPerScope(SimulatedModelCacheDefaultEntriesPerScope)
+	SetSimulatedModelCacheMinInputTokens(SimulatedModelCacheMinimumInputTokensDefault)
 }
 
 func IsValidSimulatedModelCacheMemoryBudgetMB(value int) bool {
@@ -63,4 +69,23 @@ func SetSimulatedModelCacheEntriesPerScope(value int) int {
 
 func GetSimulatedModelCacheEntriesPerScope() int {
 	return int(simulatedModelCacheEntriesPerScope.Load())
+}
+
+func IsValidSimulatedModelCacheMinInputTokens(value int) bool {
+	return value >= SimulatedModelCacheMinimumInputTokensMin && value <= SimulatedModelCacheMinimumInputTokensMax
+}
+
+func SetSimulatedModelCacheMinInputTokens(value int) int {
+	if value < SimulatedModelCacheMinimumInputTokensMin {
+		value = SimulatedModelCacheMinimumInputTokensDefault
+	}
+	if value > SimulatedModelCacheMinimumInputTokensMax {
+		value = SimulatedModelCacheMinimumInputTokensMax
+	}
+	simulatedModelCacheMinInputTokens.Store(int64(value))
+	return value
+}
+
+func GetSimulatedModelCacheMinInputTokens() int {
+	return int(simulatedModelCacheMinInputTokens.Load())
 }

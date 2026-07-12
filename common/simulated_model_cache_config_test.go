@@ -43,3 +43,23 @@ func TestIsValidSimulatedModelCacheEntriesPerScope(t *testing.T) {
 	assert.True(t, IsValidSimulatedModelCacheEntriesPerScope(SimulatedModelCacheMaxEntriesPerScope))
 	assert.False(t, IsValidSimulatedModelCacheEntriesPerScope(SimulatedModelCacheMaxEntriesPerScope+1))
 }
+
+func TestSetSimulatedModelCacheMinInputTokensNormalizesBounds(t *testing.T) {
+	original := GetSimulatedModelCacheMinInputTokens()
+	t.Cleanup(func() {
+		SetSimulatedModelCacheMinInputTokens(original)
+	})
+
+	assert.Equal(t, 0, SetSimulatedModelCacheMinInputTokens(0))
+	assert.Equal(t, 0, GetSimulatedModelCacheMinInputTokens())
+	assert.Equal(t, SimulatedModelCacheMinimumInputTokensDefault, SetSimulatedModelCacheMinInputTokens(-1))
+	assert.Equal(t, SimulatedModelCacheMinimumInputTokensMax, SetSimulatedModelCacheMinInputTokens(SimulatedModelCacheMinimumInputTokensMax+1))
+}
+
+func TestIsValidSimulatedModelCacheMinInputTokens(t *testing.T) {
+	assert.True(t, IsValidSimulatedModelCacheMinInputTokens(0))
+	assert.True(t, IsValidSimulatedModelCacheMinInputTokens(SimulatedModelCacheMinimumInputTokensDefault))
+	assert.True(t, IsValidSimulatedModelCacheMinInputTokens(SimulatedModelCacheMinimumInputTokensMax))
+	assert.False(t, IsValidSimulatedModelCacheMinInputTokens(-1))
+	assert.False(t, IsValidSimulatedModelCacheMinInputTokens(SimulatedModelCacheMinimumInputTokensMax+1))
+}

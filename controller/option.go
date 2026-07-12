@@ -66,6 +66,18 @@ func validateSimulatedModelCacheMaxEntriesPerScope(value string) error {
 	return nil
 }
 
+func validateSimulatedModelCacheMinInputTokens(value string) error {
+	minInputTokens, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || !common.IsValidSimulatedModelCacheMinInputTokens(minInputTokens) {
+		return fmt.Errorf(
+			"模拟缓存最低输入 Token 必须是 %d 到 %d 之间的整数",
+			common.SimulatedModelCacheMinimumInputTokensMin,
+			common.SimulatedModelCacheMinimumInputTokensMax,
+		)
+	}
+	return nil
+}
+
 func collectModelNamesFromOptionValue(raw string, modelNames map[string]struct{}) {
 	if strings.TrimSpace(raw) == "" {
 		return
@@ -184,6 +196,14 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "performance_setting.simulated_model_cache_max_entries_per_scope":
 		if err := validateSimulatedModelCacheMaxEntriesPerScope(option.Value.(string)); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "performance_setting.simulated_model_cache_min_input_tokens":
+		if err := validateSimulatedModelCacheMinInputTokens(option.Value.(string)); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": err.Error(),

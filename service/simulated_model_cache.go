@@ -20,7 +20,6 @@ import (
 const (
 	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v3"
 	SimulatedModelCacheFingerprintVersion = "v3"
-	SimulatedModelCacheMinInputTokens     = 512
 	legacySimulatedModelCacheReplayDir    = "simulated-model-cache"
 )
 

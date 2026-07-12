@@ -396,7 +396,8 @@ func TestSimulatedModelCacheOpenAIStreamExplicitUsageFalsePreservesResponse(t *t
 	assert.Equal(t, 256, usage.PromptTokensDetails.CachedTokens, "local billing still uses the simulated cache match")
 }
 
-func TestSimulatedModelCacheBelowMinimumInputTokensIgnoresMatchAndDoesNotStore(t *testing.T) {
+func TestSimulatedModelCacheConfiguredMinimumIgnoresMatchAndDoesNotStore(t *testing.T) {
+	setSimulatedModelCacheMinInputTokensForTest(t, 513)
 	ctx := withSimulatedModelCacheRelayTestRedis(t)
 	const userID = 10
 	const model = "gpt-test"
@@ -433,9 +434,9 @@ func TestSimulatedModelCacheBelowMinimumInputTokensIgnoresMatchAndDoesNotStore(t
 		info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, UserId: userID, ChannelMeta: &relaycommon.ChannelMeta{}}
 		recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
 		require.NotNil(t, recorder)
-		_, err = c.Writer.Write([]byte(`{"usage":{"prompt_tokens":511,"completion_tokens":1,"total_tokens":512}}`))
+		_, err = c.Writer.Write([]byte(`{"usage":{"prompt_tokens":512,"completion_tokens":1,"total_tokens":513}}`))
 		require.NoError(t, err)
-		usage := &dto.Usage{PromptTokens: 511, CompletionTokens: 1, TotalTokens: 512}
+		usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 1, TotalTokens: 513}
 
 		finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
@@ -450,54 +451,68 @@ func TestSimulatedModelCacheBelowMinimumInputTokensIgnoresMatchAndDoesNotStore(t
 		PromptText: "unrelated prompt",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, result.CandidateCount, "the 511-token prompt must not add a fingerprint")
+	assert.Equal(t, 1, result.CandidateCount, "the request below the configured threshold must not add a fingerprint")
 }
 
-func TestSimulatedModelCacheMinimumInputTokensStoresAndAllowsNextMatch(t *testing.T) {
-	ctx := withSimulatedModelCacheRelayTestRedis(t)
-	const userID = 10
-	const model = "gpt-test"
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Writer.Header().Set("Content-Type", "application/json")
-	attempt := &simulatedModelCacheAttempt{
-		settings:       dto.SimulatedModelCacheSettings{Enabled: true, TTLSeconds: 60},
-		promptText:     "hello AA",
-		cacheModelName: model,
+func TestSimulatedModelCacheConfiguredMinimumStoresEligibleRequests(t *testing.T) {
+	tests := []struct {
+		name        string
+		threshold   int
+		inputTokens int
+	}{
+		{name: "at default threshold", threshold: 128, inputTokens: 128},
+		{name: "minimum threshold disabled", threshold: 0, inputTokens: 0},
 	}
-	handle, bypassReason := service.SubmitSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
-		UserID:        userID,
-		Model:         model,
-		PromptText:    attempt.promptText,
-		MinMatchRatio: 0.8,
-		TTLSeconds:    attempt.settings.TTLSeconds,
-	})
-	require.Empty(t, bypassReason)
-	require.NotNil(t, handle)
-	attempt.partialMatch = handle
-	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, UserId: userID, ChannelMeta: &relaycommon.ChannelMeta{}}
-	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
-	require.NotNil(t, recorder)
-	_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":512,"completion_tokens":1,"total_tokens":513}}`))
-	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 1, TotalTokens: 513}
 
-	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setSimulatedModelCacheMinInputTokensForTest(t, test.threshold)
+			ctx := withSimulatedModelCacheRelayTestRedis(t)
+			const userID = 10
+			const model = "gpt-test"
 
-	if info.SimulatedModelCacheInfo != nil {
-		assert.Equal(t, service.SimulatedModelCacheBypassMatchNotReady, info.SimulatedModelCacheInfo.BypassReason)
-	}
-	require.Eventually(t, func() bool {
-		match, findErr := service.FindSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
-			UserID:        userID,
-			Model:         model,
-			PromptText:    "hello B",
-			MinMatchRatio: 0.8,
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Writer.Header().Set("Content-Type", "application/json")
+			attempt := &simulatedModelCacheAttempt{
+				settings:       dto.SimulatedModelCacheSettings{Enabled: true, TTLSeconds: 60},
+				promptText:     "hello AA",
+				cacheModelName: model,
+			}
+			handle, bypassReason := service.SubmitSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+				UserID:        userID,
+				Model:         model,
+				PromptText:    attempt.promptText,
+				MinMatchRatio: 0.8,
+				TTLSeconds:    attempt.settings.TTLSeconds,
+			})
+			require.Empty(t, bypassReason)
+			require.NotNil(t, handle)
+			attempt.partialMatch = handle
+			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, UserId: userID, ChannelMeta: &relaycommon.ChannelMeta{}}
+			recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+			require.NotNil(t, recorder)
+			_, err := c.Writer.Write([]byte(`{}`))
+			require.NoError(t, err)
+			usage := &dto.Usage{PromptTokens: test.inputTokens, CompletionTokens: 1, TotalTokens: test.inputTokens + 1}
+
+			finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+			if info.SimulatedModelCacheInfo != nil {
+				assert.Equal(t, service.SimulatedModelCacheBypassMatchNotReady, info.SimulatedModelCacheInfo.BypassReason)
+			}
+			require.Eventually(t, func() bool {
+				match, findErr := service.FindSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+					UserID:        userID,
+					Model:         model,
+					PromptText:    "hello B",
+					MinMatchRatio: 0.8,
+				})
+				return findErr == nil && match.Found && match.CandidateCount == 1
+			}, time.Second, 10*time.Millisecond)
 		})
-		return findErr == nil && match.Found && match.CandidateCount == 1
-	}, time.Second, 10*time.Millisecond)
+	}
 }
 
 func TestSimulatedModelCacheOriginalInputTokensUsesNormalizedFullInput(t *testing.T) {
@@ -520,9 +535,35 @@ func TestSimulatedModelCacheOriginalInputTokensUsesNormalizedFullInput(t *testin
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, service.SimulatedModelCacheMinInputTokens, simulatedModelCacheOriginalInputTokens(test.usage))
+			assert.Equal(t, 512, simulatedModelCacheOriginalInputTokens(test.usage))
 		})
 	}
+}
+
+func TestSimulatedModelCacheMinimumUsesClaudeFullOriginalInput(t *testing.T) {
+	setSimulatedModelCacheMinInputTokensForTest(t, 512)
+	c, _, info, attempt, recorder := newSimulatedModelCacheStreamTest(t, types.RelayFormatClaude, types.RelayFormatClaude, true, service.SimulatedModelCachePartialMatch{
+		Found:      true,
+		MatchRatio: 0.5,
+	})
+	_, err := c.Writer.Write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"))
+	require.NoError(t, err)
+	usage := &dto.Usage{
+		PromptTokens:     400,
+		CompletionTokens: 1,
+		TotalTokens:      401,
+		UsageSemantic:    "anthropic",
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         100,
+			CachedCreationTokens: 12,
+		},
+	}
+
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+	require.NotNil(t, info.SimulatedModelCacheInfo)
+	assert.Empty(t, info.SimulatedModelCacheInfo.BypassReason)
+	assert.Equal(t, "partial_fingerprint", info.SimulatedModelCacheInfo.Mode)
 }
 
 func TestSimulatedModelCacheStreamNoMatchPreservesRealUpstreamUsage(t *testing.T) {
@@ -759,6 +800,15 @@ func withSimulatedModelCacheRelayTestRedis(t *testing.T) context.Context {
 		common.RDB = oldRDB
 	})
 	return ctx
+}
+
+func setSimulatedModelCacheMinInputTokensForTest(t *testing.T, value int) {
+	t.Helper()
+	original := common.GetSimulatedModelCacheMinInputTokens()
+	common.SetSimulatedModelCacheMinInputTokens(value)
+	t.Cleanup(func() {
+		common.SetSimulatedModelCacheMinInputTokens(original)
+	})
 }
 
 func TestFlushSimulatedModelCacheRecorderRewritesContentLength(t *testing.T) {

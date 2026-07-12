@@ -46,6 +46,7 @@ const defaultOperationsSettings: OperationsSettings = {
   LogConsumeEnabled: false,
   'performance_setting.simulated_model_cache_memory_budget_mb': 1024,
   'performance_setting.simulated_model_cache_max_entries_per_scope': 100,
+  'performance_setting.simulated_model_cache_min_input_tokens': 128,
   'performance_setting.disk_cache_enabled': false,
   'performance_setting.disk_cache_threshold_mb': 10,
   'performance_setting.disk_cache_max_size_mb': 1024,
