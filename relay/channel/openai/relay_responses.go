@@ -44,12 +44,15 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	usage := dto.Usage{}
 	if responsesResponse.Usage != nil {
 		usage.PromptTokens = responsesResponse.Usage.InputTokens
+		usage.InputTokens = responsesResponse.Usage.InputTokens
 		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
+		usage.OutputTokens = responsesResponse.Usage.OutputTokens
 		usage.TotalTokens = responsesResponse.Usage.TotalTokens
 		if responsesResponse.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
+			usage.PromptTokensDetails = *responsesResponse.Usage.InputTokensDetails
 		}
 	}
+	usage = service.NormalizeUsageForSemantic(&usage, service.UsageSemanticOpenAI)
 	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
 		responseBody = rewriteResponsesBodyModel(c, info, responseBody)
 		service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -110,7 +113,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 						usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
 					}
 					if streamResponse.Response.Usage.InputTokensDetails != nil {
-						usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
+						usage.PromptTokensDetails = *streamResponse.Response.Usage.InputTokensDetails
 					}
 				}
 				if streamResponse.Response.HasImageGenerationCall() {
@@ -153,7 +156,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		usage.Estimated = true
 	}
 
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
+	usage = &normalized
 
 	return usage, nil
 }

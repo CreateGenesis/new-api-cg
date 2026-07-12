@@ -592,37 +592,13 @@ type ClaudeResponseInfo struct {
 	Done         bool
 }
 
-func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
-	if usage == nil {
-		return 0
-	}
-	splitCacheCreationTokens := usage.ClaudeCacheCreation5mTokens + usage.ClaudeCacheCreation1hTokens
-	if splitCacheCreationTokens == 0 {
-		return usage.PromptTokensDetails.CachedCreationTokens
-	}
-	if usage.PromptTokensDetails.CachedCreationTokens > splitCacheCreationTokens {
-		return usage.PromptTokensDetails.CachedCreationTokens
-	}
-	return splitCacheCreationTokens
-}
-
 func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
-	if usage == nil {
-		return dto.Usage{}
-	}
-	clone := *usage
+	clone := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
 	clone.ClaudeCacheCreation5mTokens, clone.ClaudeCacheCreation1hTokens = service.NormalizeCacheCreationSplit(
-		usage.PromptTokensDetails.CachedCreationTokens,
-		usage.ClaudeCacheCreation5mTokens,
-		usage.ClaudeCacheCreation1hTokens,
+		clone.PromptTokensDetails.CachedCreationTokens,
+		clone.ClaudeCacheCreation5mTokens,
+		clone.ClaudeCacheCreation1hTokens,
 	)
-	cacheCreationTokens := cacheCreationTokensForOpenAIUsage(usage)
-	totalInputTokens := usage.PromptTokens + usage.PromptTokensDetails.CachedTokens + cacheCreationTokens
-	clone.PromptTokens = totalInputTokens
-	clone.InputTokens = totalInputTokens
-	clone.TotalTokens = totalInputTokens + usage.CompletionTokens
-	clone.UsageSemantic = "openai"
-	clone.UsageSource = "anthropic"
 	return clone
 }
 
@@ -853,7 +829,9 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 	}
 	if claudeInfo.Usage != nil {
-		claudeInfo.Usage.UsageSemantic = "anthropic"
+		claudeInfo.Usage.UsageSemantic = service.UsageSemanticAnthropic
+		normalized := service.NormalizeUsageForSemantic(claudeInfo.Usage, service.UsageSemanticAnthropic)
+		*claudeInfo.Usage = normalized
 	}
 
 	if info.RelayFormat == types.RelayFormatClaude {
@@ -917,6 +895,8 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
 		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
 	}
+	normalizedUsage := service.NormalizeUsageForSemantic(claudeInfo.Usage, service.UsageSemanticAnthropic)
+	*claudeInfo.Usage = normalizedUsage
 	var responseData []byte
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:

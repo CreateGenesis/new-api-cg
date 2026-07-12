@@ -227,16 +227,18 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 	if oaiUsage == nil {
 		return nil
 	}
+	normalized := NormalizeUsageForSemantic(oaiUsage, UsageSemanticAnthropic)
+	input := NormalizeInputTokens(&normalized)
 	cacheCreation5m, cacheCreation1h := NormalizeCacheCreationSplit(
-		oaiUsage.PromptTokensDetails.CachedCreationTokens,
-		oaiUsage.ClaudeCacheCreation5mTokens,
-		oaiUsage.ClaudeCacheCreation1hTokens,
+		input.CacheCreationInputTokens,
+		input.CacheCreation5mInputTokens,
+		input.CacheCreation1hInputTokens,
 	)
 	usage := &dto.ClaudeUsage{
-		InputTokens:              oaiUsage.PromptTokens,
-		OutputTokens:             oaiUsage.CompletionTokens,
-		CacheCreationInputTokens: oaiUsage.PromptTokensDetails.CachedCreationTokens,
-		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokens,
+		InputTokens:              input.UncachedInputTokens,
+		OutputTokens:             normalized.OutputTokens,
+		CacheCreationInputTokens: input.CacheCreationInputTokens,
+		CacheReadInputTokens:     input.CacheReadInputTokens,
 	}
 	if cacheCreation5m > 0 || cacheCreation1h > 0 {
 		usage.CacheCreation = &dto.ClaudeCacheCreationUsage{
@@ -248,8 +250,14 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 }
 
 func NormalizeCacheCreationSplit(totalTokens int, tokens5m int, tokens1h int) (int, int) {
-	remainder := lo.Max([]int{totalTokens - tokens5m - tokens1h, 0})
-	return tokens5m + remainder, tokens1h
+	totalTokens = positiveTokenCount(totalTokens)
+	tokens5m = positiveTokenCount(tokens5m)
+	tokens1h = positiveTokenCount(tokens1h)
+	splitTotal := saturatingTokenAdd(tokens5m, tokens1h)
+	if splitTotal > totalTokens {
+		totalTokens = splitTotal
+	}
+	return saturatingTokenAdd(tokens5m, totalTokens-splitTotal), tokens1h
 }
 
 func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamResponse, info *relaycommon.RelayInfo) []*dto.ClaudeResponse {

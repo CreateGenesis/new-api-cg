@@ -68,19 +68,6 @@ func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	return summary.CacheCreationTokens
 }
 
-func isLegacyClaudeDerivedOpenAIUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) bool {
-	if relayInfo == nil || usage == nil {
-		return false
-	}
-	if relayInfo.GetFinalRequestRelayFormat() == types.RelayFormatClaude {
-		return false
-	}
-	if usage.UsageSource != "" || usage.UsageSemantic != "" {
-		return false
-	}
-	return usage.ClaudeCacheCreation5mTokens > 0 || usage.ClaudeCacheCreation1hTokens > 0
-}
-
 func calculateTextToolCallSurcharge(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, summary *textQuotaSummary) decimal.Decimal {
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
@@ -200,31 +187,30 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			TotalTokens:      relayInfo.GetEstimatePromptTokens(),
 		}
 	}
+	normalizedUsage := NormalizeUsageForSemantic(usage, summary.UsageSemantic)
 
-	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = usage.PromptTokensDetails.CachedCreationTokens
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
-	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
+	summary.PromptTokens = normalizedUsage.PromptTokens
+	summary.CompletionTokens = normalizedUsage.CompletionTokens
+	summary.TotalTokens = normalizedUsage.TotalTokens
+	summary.CacheTokens = normalizedUsage.PromptTokensDetails.CachedTokens
+	summary.CacheCreationTokens = normalizedUsage.PromptTokensDetails.CachedCreationTokens
+	summary.CacheCreationTokens5m = normalizedUsage.ClaudeCacheCreation5mTokens
+	summary.CacheCreationTokens1h = normalizedUsage.ClaudeCacheCreation1hTokens
+	summary.ImageTokens = normalizedUsage.PromptTokensDetails.ImageTokens
+	summary.AudioTokens = normalizedUsage.PromptTokensDetails.AudioTokens
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic
 
 	if isOpenRouterClaudeBilling {
-		summary.PromptTokens -= summary.CacheTokens
 		isUsingCustomSettings := relayInfo.PriceData.UsePrice || hasCustomModelRatio(summary.ModelName, relayInfo.PriceData.ModelRatio)
 		if summary.CacheCreationTokens == 0 && relayInfo.PriceData.CacheCreationRatio != 1 && usage.Cost != 0 && !isUsingCustomSettings {
-			maybeCacheCreationTokens := CalcOpenRouterCacheCreateTokens(*usage, relayInfo.PriceData)
-			if maybeCacheCreationTokens >= 0 && summary.PromptTokens >= maybeCacheCreationTokens {
+			openAIUsage := NormalizeUsageForSemantic(usage, UsageSemanticOpenAI)
+			maybeCacheCreationTokens := CalcOpenRouterCacheCreateTokens(openAIUsage, relayInfo.PriceData)
+			if maybeCacheCreationTokens >= 0 && openAIUsage.PromptTokens >= maybeCacheCreationTokens {
 				summary.CacheCreationTokens = maybeCacheCreationTokens
 			}
 		}
-		summary.PromptTokens -= summary.CacheCreationTokens
 	}
 
 	dPromptTokens := decimal.NewFromInt(int64(summary.PromptTokens))
@@ -253,7 +239,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 		var cachedTokensWithRatio decimal.Decimal
 		if !dCacheTokens.IsZero() {
-			if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
+			if !summary.IsClaudeUsageSemantic {
 				baseTokens = baseTokens.Sub(dCacheTokens)
 			}
 			cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio)
@@ -262,18 +248,19 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		var cachedCreationTokensWithRatio decimal.Decimal
 		hasSplitCacheCreationTokens := summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0
 		if !dCachedCreationTokens.IsZero() || hasSplitCacheCreationTokens {
-			if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
+			if !summary.IsClaudeUsageSemantic {
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
-				cachedCreationTokensWithRatio = dCachedCreationTokens.Mul(dCacheCreationRatio)
-			} else {
-				remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
-				if remaining < 0 {
-					remaining = 0
-				}
-				cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
 			}
+			remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
+			if remaining < 0 {
+				remaining = 0
+			}
+			cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
+			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
+			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
+		}
+		if baseTokens.IsNegative() {
+			baseTokens = decimal.Zero
 		}
 
 		var imageTokensWithRatio decimal.Decimal
@@ -289,6 +276,9 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 				audioInputQuota = decimal.NewFromFloat(summary.AudioInputPrice).
 					Div(decimal.NewFromInt(1000000)).Mul(dAudioTokens).Mul(dGroupRatio).Mul(dQuotaPerUnit)
 			}
+		}
+		if baseTokens.IsNegative() {
+			baseTokens = decimal.Zero
 		}
 
 		promptQuota := baseTokens.Add(cachedTokensWithRatio).Add(imageTokensWithRatio).Add(cachedCreationTokensWithRatio)

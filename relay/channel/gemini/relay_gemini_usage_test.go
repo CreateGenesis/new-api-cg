@@ -67,6 +67,21 @@ func TestGeminiChatHandlerCompletionTokensExcludeToolUsePromptTokens(t *testing.
 	require.Equal(t, 1120, usage.CompletionTokenDetails.ReasoningTokens)
 }
 
+func TestBuildUsageFromGeminiMetadataKeepsCachedTokensAsInputSubset(t *testing.T) {
+	usage := buildUsageFromGeminiMetadata(dto.GeminiUsageMetadata{
+		PromptTokenCount:        1026,
+		CandidatesTokenCount:    220,
+		TotalTokenCount:         1246,
+		CachedContentTokenCount: 1026,
+	}, 0)
+
+	require.Equal(t, 1026, usage.PromptTokens)
+	require.Equal(t, 220, usage.CompletionTokens)
+	require.Equal(t, 1246, usage.TotalTokens)
+	require.Equal(t, 1026, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, "openai", usage.UsageSemantic)
+}
+
 func TestGeminiStreamHandlerCompletionTokensExcludeToolUsePromptTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -222,7 +237,7 @@ func TestGeminiChatHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *tes
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }
 
 func TestGeminiStreamHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *testing.T) {
@@ -279,7 +294,7 @@ func TestGeminiStreamHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *t
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }
 
 func TestGeminiTextGenerationHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *testing.T) {
@@ -329,5 +344,5 @@ func TestGeminiTextGenerationHandlerUsesEstimatedPromptTokensWhenUsagePromptMiss
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }

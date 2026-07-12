@@ -86,6 +86,27 @@ func TestResponsesResponseToChatCompletionsPreservesTextAndToolCalls(t *testing.
 	assert.Equal(t, 7, usage.TotalTokens)
 }
 
+func TestResponsesAndChatUsageKeepOpenAICacheSubset(t *testing.T) {
+	responses := &dto.Usage{
+		InputTokens: 1026, OutputTokens: 220, TotalTokens: 1246,
+		InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 1026},
+	}
+
+	chat := UsageFromResponsesUsage(responses)
+	require.Equal(t, 1026, chat.PromptTokens)
+	assert.Equal(t, 220, chat.CompletionTokens)
+	assert.Equal(t, 1246, chat.TotalTokens)
+	assert.Equal(t, 1026, chat.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, "openai", chat.UsageSemantic)
+
+	roundTrip := UsageFromChatUsage(chat)
+	assert.Equal(t, 1026, roundTrip.InputTokens)
+	assert.Equal(t, 220, roundTrip.OutputTokens)
+	assert.Equal(t, 1246, roundTrip.TotalTokens)
+	require.NotNil(t, roundTrip.InputTokensDetails)
+	assert.Equal(t, 1026, roundTrip.InputTokensDetails.CachedTokens)
+}
+
 func TestResponsesResponseToChatCompletionsPreservesReasoningSummary(t *testing.T) {
 	resp := &dto.OpenAIResponsesResponse{
 		ID:     "resp_1",

@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,6 +26,7 @@ func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     1000,
 		CompletionTokens: 200,
+		UsageSemantic:    UsageSemanticAnthropic,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedTokens:         100,
 			CachedCreationTokens: 50,
@@ -96,6 +98,7 @@ func TestCalculateTextQuotaSummaryUsesSplitClaudeCacheCreationRatios(t *testing.
 	usage := &dto.Usage{
 		PromptTokens:     100,
 		CompletionTokens: 0,
+		UsageSemantic:    UsageSemanticAnthropic,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedCreationTokens: 10,
 		},
@@ -166,11 +169,6 @@ func TestSimulatedAnthropicCacheResponseDoesNotIncreaseBilling(t *testing.T) {
 	})
 	require.NotNil(t, marker)
 
-	responseUsage := *usage
-	responseUsage.PromptTokens = marker.OriginalPromptTokens
-	responseUsage.InputTokens = marker.OriginalPromptTokens
-	responseUsage.TotalTokens = marker.OriginalPromptTokens + usage.CompletionTokens
-	require.Equal(t, 100, responseUsage.PromptTokens)
 	require.Equal(t, 75, usage.PromptTokens)
 	require.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
 
@@ -194,6 +192,35 @@ func TestSimulatedAnthropicCacheResponseDoesNotIncreaseBilling(t *testing.T) {
 	require.Equal(t, float64(75), tiered.P)
 	require.Equal(t, float64(25), tiered.CR)
 	require.Equal(t, float64(100), tiered.Len)
+}
+
+func TestProductionCachedUsageAlignsRatioAndTieredInputs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	usage := &dto.Usage{
+		PromptTokens: 0, CompletionTokens: 220, UsageSemantic: UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 1026},
+	}
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "production-cache-regression",
+		PriceData: types.PriceData{
+			ModelRatio: 1, CompletionRatio: 2, CacheRatio: 0.2,
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	assert.Equal(t, 0, summary.PromptTokens)
+	assert.Equal(t, 1026, summary.CacheTokens)
+	assert.Equal(t, 1246, summary.TotalTokens)
+	assert.Equal(t, 645, summary.Quota)
+
+	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true})
+	assert.Equal(t, float64(0), tiered.P)
+	assert.Equal(t, float64(1026), tiered.CR)
+	assert.Equal(t, float64(220), tiered.C)
+	assert.Equal(t, float64(1026), tiered.Len)
 }
 
 func TestCacheWriteTokensTotal(t *testing.T) {
@@ -220,7 +247,7 @@ func TestCacheWriteTokensTotal(t *testing.T) {
 	})
 }
 
-func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testing.T) {
+func TestCalculateTextQuotaSummaryClampsInvalidOpenAICachedInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(w)
@@ -251,8 +278,10 @@ func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testi
 
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 
-	// 62 + 3544*0.1 + 586*1.25 + 95*5 = 1624.9 => 1624
-	require.Equal(t, 1624, summary.Quota)
+	// The unmarked usage follows OpenAI semantics: cached input exceeds the
+	// reported total, so uncached input is clamped to zero instead of negative.
+	require.Equal(t, 62, summary.PromptTokens)
+	require.Equal(t, 1562, summary.Quota)
 }
 
 func TestCalculateTextQuotaSummarySeparatesOpenRouterCacheReadFromPromptBilling(t *testing.T) {

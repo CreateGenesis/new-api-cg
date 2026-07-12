@@ -509,6 +509,7 @@ func TestBuildTieredTokenParams_Claude_WithCache(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     800,
 		CompletionTokens: 500,
+		UsageSemantic:    UsageSemanticAnthropic,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedTokens: 200,
 			TextTokens:   800,

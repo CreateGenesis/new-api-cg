@@ -1021,6 +1021,7 @@ func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata, fallbackProm
 		PromptTokens:     promptTokens,
 		CompletionTokens: metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount,
 		TotalTokens:      metadata.TotalTokenCount,
+		UsageSemantic:    service.UsageSemanticOpenAI,
 	}
 	usage.CompletionTokenDetails.ReasoningTokens = metadata.ThoughtsTokenCount
 	usage.PromptTokensDetails.CachedTokens = metadata.CachedContentTokenCount
@@ -1058,7 +1059,7 @@ func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata, fallbackProm
 		usage.PromptTokensDetails.TextTokens = usage.PromptTokens
 	}
 
-	return usage
+	return service.NormalizeUsageForSemantic(&usage, service.UsageSemanticOpenAI)
 }
 
 func responseGeminiChat2OpenAI(c *gin.Context, response *dto.GeminiChatResponse) *dto.OpenAITextResponse {

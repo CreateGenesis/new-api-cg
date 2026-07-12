@@ -5,6 +5,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 )
 
 func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, responseBody []byte) {
@@ -48,6 +49,8 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 			}
 		}
 	}
+	normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
+	*usage = normalized
 }
 
 func extractCachedTokensFromBody(body []byte) (int, bool) {

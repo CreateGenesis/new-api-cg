@@ -422,7 +422,6 @@ func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []
 		return event, false
 	}
 	usageMap, _ := payload["usage"].(map[string]any)
-	cachedTokens := usage.PromptTokensDetails.CachedTokens
 	switch format {
 	case types.RelayFormatClaude:
 		if payload["type"] != "message_delta" {
@@ -432,39 +431,27 @@ func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []
 			usageMap = map[string]any{}
 			payload["usage"] = usageMap
 		}
-		inputTokens := usage.PromptTokens
-		if usage.UsageSemantic != "anthropic" {
-			inputTokens -= cachedTokens + simulatedModelCacheCacheCreationTokens(usage)
-			if inputTokens < 0 {
-				inputTokens = 0
-			}
-		}
-		usageMap["input_tokens"] = inputTokens
-		usageMap["cache_read_input_tokens"] = cachedTokens
-		usageMap["output_tokens"] = usage.CompletionTokens
-		if _, ok := usageMap["cache_creation_input_tokens"]; !ok {
-			usageMap["cache_creation_input_tokens"] = usage.PromptTokensDetails.CachedCreationTokens
-		}
-		if _, ok := usageMap["claude_cache_creation_5_m_tokens"]; !ok {
-			usageMap["claude_cache_creation_5_m_tokens"] = usage.ClaudeCacheCreation5mTokens
-		}
-		if _, ok := usageMap["claude_cache_creation_1_h_tokens"]; !ok {
-			usageMap["claude_cache_creation_1_h_tokens"] = usage.ClaudeCacheCreation1hTokens
-		}
+		normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticAnthropic)
+		usageMap["input_tokens"] = normalized.InputTokens
+		usageMap["cache_read_input_tokens"] = normalized.PromptTokensDetails.CachedTokens
+		usageMap["cache_creation_input_tokens"] = normalized.PromptTokensDetails.CachedCreationTokens
+		usageMap["claude_cache_creation_5_m_tokens"] = normalized.ClaudeCacheCreation5mTokens
+		usageMap["claude_cache_creation_1_h_tokens"] = normalized.ClaudeCacheCreation1hTokens
+		usageMap["output_tokens"] = normalized.OutputTokens
 	case types.RelayFormatOpenAI:
 		if usageMap == nil {
 			return event, false
 		}
-		promptTokens := simulatedModelCacheOpenAIPromptTokens(usage)
-		usageMap["prompt_tokens"] = promptTokens
-		usageMap["completion_tokens"] = usage.CompletionTokens
-		usageMap["total_tokens"] = promptTokens + usage.CompletionTokens
+		normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
+		usageMap["prompt_tokens"] = normalized.PromptTokens
+		usageMap["completion_tokens"] = normalized.CompletionTokens
+		usageMap["total_tokens"] = normalized.TotalTokens
 		promptDetails, _ := usageMap["prompt_tokens_details"].(map[string]any)
 		if promptDetails == nil {
 			promptDetails = map[string]any{}
 			usageMap["prompt_tokens_details"] = promptDetails
 		}
-		promptDetails["cached_tokens"] = cachedTokens
+		promptDetails["cached_tokens"] = normalized.PromptTokensDetails.CachedTokens
 	default:
 		return event, false
 	}
@@ -473,29 +460,6 @@ func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []
 		return event, false
 	}
 	return replaceSimulatedModelCacheSSEData(event, patchedData), true
-}
-
-func simulatedModelCacheCacheCreationTokens(usage *dto.Usage) int {
-	if usage == nil {
-		return 0
-	}
-	cacheCreationTokens := usage.PromptTokensDetails.CachedCreationTokens
-	splitCacheCreationTokens := usage.ClaudeCacheCreation5mTokens + usage.ClaudeCacheCreation1hTokens
-	if splitCacheCreationTokens > cacheCreationTokens {
-		return splitCacheCreationTokens
-	}
-	return cacheCreationTokens
-}
-
-func simulatedModelCacheOpenAIPromptTokens(usage *dto.Usage) int {
-	if usage == nil {
-		return 0
-	}
-	promptTokens := usage.PromptTokens
-	if usage.UsageSemantic == "anthropic" {
-		promptTokens += usage.PromptTokensDetails.CachedTokens + simulatedModelCacheCacheCreationTokens(usage)
-	}
-	return promptTokens
 }
 
 func replaceSimulatedModelCacheSSEData(event []byte, data []byte) []byte {
@@ -528,15 +492,15 @@ func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]
 	if usage == nil {
 		return nil, fmt.Errorf("simulated model cache stream usage is nil")
 	}
-	promptTokens := simulatedModelCacheOpenAIPromptTokens(usage)
+	normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
 	payload := map[string]any{
 		"choices": []any{},
 		"usage": map[string]any{
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": usage.CompletionTokens,
-			"total_tokens":      promptTokens + usage.CompletionTokens,
+			"prompt_tokens":     normalized.PromptTokens,
+			"completion_tokens": normalized.CompletionTokens,
+			"total_tokens":      normalized.TotalTokens,
 			"prompt_tokens_details": map[string]any{
-				"cached_tokens": usage.PromptTokensDetails.CachedTokens,
+				"cached_tokens": normalized.PromptTokensDetails.CachedTokens,
 			},
 		},
 	}
@@ -705,18 +669,9 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			})
 		}
 	}
-	responseUsage := usage
-	if matchFound && info.RelayFormat == types.RelayFormatClaude && info.SimulatedModelCacheInfo != nil {
-		responseUsageClone := *usage
-		responseUsageClone.PromptTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens
-		responseUsageClone.InputTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens
-		responseUsageClone.TotalTokens = info.SimulatedModelCacheInfo.OriginalPromptTokens + usage.CompletionTokens
-		responseUsageClone.UsageSemantic = "anthropic"
-		responseUsage = &responseUsageClone
-	}
 	if matchFound {
 		if recorder.stream {
-			injected, targetFound, writeErr := recorder.writePatchedStreamTail(responseUsage)
+			injected, targetFound, writeErr := recorder.writePatchedStreamTail(usage)
 			info.SimulatedModelCacheInfo.StreamUsageInjected = &injected
 			if usage.PromptTokensDetails.CachedTokens > 0 && recorder.includeStreamUsage && !targetFound {
 				logger.LogWarn(c, fmt.Sprintf("simulated model cache stream usage event not found: request_id=%s format=%s cached_tokens=%d",
@@ -727,7 +682,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 					info.RequestId, info.RelayFormat, writeErr.Error()))
 			}
 		} else if !recorder.passThrough {
-			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, responseUsage, simulatedModelCacheResponseModel(info))
+			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
 		}
 	}
 
@@ -748,17 +703,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func simulatedModelCacheOriginalInputTokens(usage *dto.Usage) int {
-	if usage == nil {
-		return 0
-	}
-	inputTokens := usage.PromptTokens
-	if inputTokens == 0 && usage.InputTokens > 0 {
-		inputTokens = usage.InputTokens
-	}
-	if usage.UsageSemantic == "anthropic" {
-		inputTokens += usage.PromptTokensDetails.CachedTokens + simulatedModelCacheCacheCreationTokens(usage)
-	}
-	return inputTokens
+	return service.NormalizeInputTokens(usage).TotalInputTokens
 }
 
 func simulatedModelCacheModelName(info *relaycommon.RelayInfo) string {

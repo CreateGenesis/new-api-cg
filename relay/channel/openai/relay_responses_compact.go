@@ -33,12 +33,15 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 	usage := dto.Usage{}
 	if compactResp.Usage != nil {
 		usage.PromptTokens = compactResp.Usage.InputTokens
+		usage.InputTokens = compactResp.Usage.InputTokens
 		usage.CompletionTokens = compactResp.Usage.OutputTokens
+		usage.OutputTokens = compactResp.Usage.OutputTokens
 		usage.TotalTokens = compactResp.Usage.TotalTokens
 		if compactResp.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = compactResp.Usage.InputTokensDetails.CachedTokens
+			usage.PromptTokensDetails = *compactResp.Usage.InputTokensDetails
 		}
 	}
+	usage = service.NormalizeUsageForSemantic(&usage, service.UsageSemanticOpenAI)
 
 	return &usage, nil
 }

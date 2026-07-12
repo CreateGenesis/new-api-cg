@@ -119,6 +119,11 @@ func UsageFromChatUsage(src *dto.Usage) *dto.Usage {
 		details := src.PromptTokensDetails
 		usage.InputTokensDetails = &details
 	}
+	usage.PromptTokensDetails = src.PromptTokensDetails
+	usage.ClaudeCacheCreation5mTokens = src.ClaudeCacheCreation5mTokens
+	usage.ClaudeCacheCreation1hTokens = src.ClaudeCacheCreation1hTokens
+	usage.UsageSemantic = "openai"
+	usage.UsageSource = src.UsageSource
 	if src.CompletionTokenDetails.ReasoningTokens != 0 ||
 		src.CompletionTokenDetails.TextTokens != 0 ||
 		src.CompletionTokenDetails.AudioTokens != 0 ||

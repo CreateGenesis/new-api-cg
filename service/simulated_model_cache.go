@@ -123,9 +123,11 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 	}
 	if usageAny, ok := payload["usage"]; ok {
 		if usageMap, ok := usageAny.(map[string]any); ok {
-			patchOpenAIStyleUsageMap(usageMap, usage)
-			if format == types.RelayFormatClaude {
+			switch format {
+			case types.RelayFormatClaude:
 				patchClaudeStyleUsageMap(usageMap, usage)
+			default:
+				patchOpenAIStyleUsageMap(usageMap, usage)
 			}
 			patched = true
 		}
@@ -159,47 +161,44 @@ func simulatedModelCacheResponseModel(format types.RelayFormat, responseModel ..
 }
 
 func patchOpenAIStyleUsageMap(usageMap map[string]any, usage *dto.Usage) {
-	usageMap["prompt_tokens"] = usage.PromptTokens
-	usageMap["completion_tokens"] = usage.CompletionTokens
-	usageMap["total_tokens"] = usage.TotalTokens
-	usageMap["input_tokens"] = usage.InputTokens
-	usageMap["output_tokens"] = usage.OutputTokens
+	normalized := NormalizeUsageForSemantic(usage, UsageSemanticOpenAI)
+	usageMap["prompt_tokens"] = normalized.PromptTokens
+	usageMap["completion_tokens"] = normalized.CompletionTokens
+	usageMap["total_tokens"] = normalized.TotalTokens
+	usageMap["input_tokens"] = normalized.InputTokens
+	usageMap["output_tokens"] = normalized.OutputTokens
 
 	promptDetails, _ := usageMap["prompt_tokens_details"].(map[string]any)
 	if promptDetails == nil {
 		promptDetails = map[string]any{}
 		usageMap["prompt_tokens_details"] = promptDetails
 	}
-	promptDetails["cached_tokens"] = usage.PromptTokensDetails.CachedTokens
+	promptDetails["cached_tokens"] = normalized.PromptTokensDetails.CachedTokens
 
 	inputDetails, _ := usageMap["input_tokens_details"].(map[string]any)
 	if inputDetails == nil {
 		inputDetails = map[string]any{}
 		usageMap["input_tokens_details"] = inputDetails
 	}
-	inputDetails["cached_tokens"] = usage.PromptTokensDetails.CachedTokens
+	inputDetails["cached_tokens"] = normalized.PromptTokensDetails.CachedTokens
 }
 
 func patchClaudeStyleUsageMap(usageMap map[string]any, usage *dto.Usage) {
-	usageMap["input_tokens"] = usage.PromptTokens
-	usageMap["cache_read_input_tokens"] = usage.PromptTokensDetails.CachedTokens
-	usageMap["output_tokens"] = usage.CompletionTokens
-	if _, ok := usageMap["cache_creation_input_tokens"]; !ok {
-		usageMap["cache_creation_input_tokens"] = usage.PromptTokensDetails.CachedCreationTokens
-	}
-	if _, ok := usageMap["claude_cache_creation_5_m_tokens"]; !ok {
-		usageMap["claude_cache_creation_5_m_tokens"] = usage.ClaudeCacheCreation5mTokens
-	}
-	if _, ok := usageMap["claude_cache_creation_1_h_tokens"]; !ok {
-		usageMap["claude_cache_creation_1_h_tokens"] = usage.ClaudeCacheCreation1hTokens
-	}
+	normalized := NormalizeUsageForSemantic(usage, UsageSemanticAnthropic)
+	usageMap["input_tokens"] = normalized.InputTokens
+	usageMap["cache_read_input_tokens"] = normalized.PromptTokensDetails.CachedTokens
+	usageMap["cache_creation_input_tokens"] = normalized.PromptTokensDetails.CachedCreationTokens
+	usageMap["claude_cache_creation_5_m_tokens"] = normalized.ClaudeCacheCreation5mTokens
+	usageMap["claude_cache_creation_1_h_tokens"] = normalized.ClaudeCacheCreation1hTokens
+	usageMap["output_tokens"] = normalized.OutputTokens
 }
 
 func patchGeminiUsageMetadataMap(metadata map[string]any, usage *dto.Usage) {
-	metadata["promptTokenCount"] = usage.PromptTokens
-	metadata["candidatesTokenCount"] = usage.CompletionTokens
-	metadata["totalTokenCount"] = usage.TotalTokens
-	metadata["cachedContentTokenCount"] = usage.PromptTokensDetails.CachedTokens
+	normalized := NormalizeUsageForSemantic(usage, UsageSemanticOpenAI)
+	metadata["promptTokenCount"] = normalized.PromptTokens
+	metadata["candidatesTokenCount"] = normalized.CompletionTokens
+	metadata["totalTokenCount"] = normalized.TotalTokens
+	metadata["cachedContentTokenCount"] = normalized.PromptTokensDetails.CachedTokens
 }
 
 func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedModelCacheUsageRewrite) *relaycommon.SimulatedModelCacheInfo {
@@ -214,11 +213,7 @@ func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedMod
 		ratio = 1
 	}
 
-	originalPromptTokens := usage.PromptTokens
-	if originalPromptTokens == 0 && usage.InputTokens > 0 {
-		originalPromptTokens = usage.InputTokens
-		usage.PromptTokens = usage.InputTokens
-	}
+	originalPromptTokens := NormalizeInputTokens(usage).TotalInputTokens
 	cachedTokens := int(math.Ceil(float64(originalPromptTokens) * ratio))
 	if cachedTokens > originalPromptTokens {
 		cachedTokens = originalPromptTokens
@@ -232,14 +227,16 @@ func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedMod
 	if usage.InputTokensDetails == nil {
 		usage.InputTokensDetails = &dto.InputTokenDetails{}
 	}
-	if usage.UsageSemantic == "anthropic" {
+	if usage.UsageSemantic == UsageSemanticAnthropic {
 		usage.PromptTokens = simulatedPromptTokens
 		usage.InputTokens = simulatedPromptTokens
 	} else {
+		usage.UsageSemantic = UsageSemanticOpenAI
+		usage.PromptTokens = originalPromptTokens
 		usage.InputTokens = originalPromptTokens
 	}
 	usage.InputTokensDetails.CachedTokens = cachedTokens
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	usage.TotalTokens = saturatingTokenAdd(originalPromptTokens, usage.CompletionTokens)
 	if usage.OutputTokens == 0 && usage.CompletionTokens > 0 {
 		usage.OutputTokens = usage.CompletionTokens
 	}

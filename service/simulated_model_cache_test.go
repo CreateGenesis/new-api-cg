@@ -288,7 +288,7 @@ func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *test
 	require.NotNil(t, marker)
 	assert.Equal(t, 75, usage.PromptTokens)
 	assert.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
-	assert.Equal(t, 82, usage.TotalTokens)
+	assert.Equal(t, 107, usage.TotalTokens)
 	assert.Equal(t, 100, marker.OriginalPromptTokens)
 	assert.Equal(t, 75, marker.SimulatedPromptTokens)
 	assert.Equal(t, 25, marker.SimulatedCachedTokens)
@@ -607,6 +607,44 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIUsage(t *testing.T) {
 	assert.Equal(t, float64(25), details["cached_tokens"])
 }
 
+func TestPatchSimulatedModelCacheResponseBodyProductionUsageContracts(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens: 1026, CompletionTokens: 220, UsageSemantic: UsageSemanticAnthropic,
+	}
+	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{MatchRatio: 1})
+	require.NotNil(t, marker)
+
+	claudeBody := PatchSimulatedModelCacheResponseBody(
+		types.RelayFormatClaude,
+		"application/json",
+		[]byte(`{"usage":{}}`),
+		usage,
+	)
+	var claudePayload struct {
+		Usage dto.ClaudeUsage `json:"usage"`
+	}
+	require.NoError(t, common.Unmarshal(claudeBody, &claudePayload))
+	assert.Equal(t, 0, claudePayload.Usage.InputTokens)
+	assert.Equal(t, 1026, claudePayload.Usage.CacheReadInputTokens)
+	assert.Equal(t, 0, claudePayload.Usage.CacheCreationInputTokens)
+	assert.Equal(t, 220, claudePayload.Usage.OutputTokens)
+
+	openAIBody := PatchSimulatedModelCacheResponseBody(
+		types.RelayFormatOpenAI,
+		"application/json",
+		[]byte(`{"usage":{}}`),
+		usage,
+	)
+	var openAIPayload struct {
+		Usage dto.Usage `json:"usage"`
+	}
+	require.NoError(t, common.Unmarshal(openAIBody, &openAIPayload))
+	assert.Equal(t, 1026, openAIPayload.Usage.PromptTokens)
+	assert.Equal(t, 220, openAIPayload.Usage.CompletionTokens)
+	assert.Equal(t, 1246, openAIPayload.Usage.TotalTokens)
+	assert.Equal(t, 1026, openAIPayload.Usage.PromptTokensDetails.CachedTokens)
+}
+
 func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIModelInSSE(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     2,
@@ -661,19 +699,14 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 		MatchRatio: 0.25,
 	})
 	require.NotNil(t, marker)
-	responseUsage := *usage
-	responseUsage.PromptTokens = marker.OriginalPromptTokens
-	responseUsage.InputTokens = marker.OriginalPromptTokens
-	responseUsage.TotalTokens = marker.OriginalPromptTokens + usage.CompletionTokens
-
 	body := []byte(`{"usage":{"input_tokens":100,"output_tokens":8}}`)
-	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatClaude, "application/json", body, &responseUsage)
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatClaude, "application/json", body, usage)
 
 	var payload map[string]any
 	require.NoError(t, common.Unmarshal(patched, &payload))
 	usageMap, ok := payload["usage"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, float64(100), usageMap["input_tokens"])
+	assert.Equal(t, float64(75), usageMap["input_tokens"])
 	assert.Equal(t, float64(25), usageMap["cache_read_input_tokens"])
 	assert.Equal(t, float64(8), usageMap["output_tokens"])
 	assert.Equal(t, float64(0), usageMap["cache_creation_input_tokens"])
@@ -683,16 +716,19 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 	assert.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
 }
 
-func TestPatchSimulatedModelCacheResponseBodyPreservesClaudeCacheCreationFields(t *testing.T) {
+func TestPatchSimulatedModelCacheResponseBodyUsesNormalizedClaudeCacheCreationFields(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     100,
 		CompletionTokens: 8,
 		UsageSemantic:    "anthropic",
 		PromptTokensDetails: dto.InputTokenDetails{
-			CachedTokens: 25,
+			CachedTokens:         25,
+			CachedCreationTokens: 11,
 		},
+		ClaudeCacheCreation5mTokens: 4,
+		ClaudeCacheCreation1hTokens: 7,
 	}
-	body := []byte(`{"usage":{"input_tokens":100,"output_tokens":8,"cache_creation_input_tokens":11,"claude_cache_creation_5_m_tokens":4,"claude_cache_creation_1_h_tokens":7}}`)
+	body := []byte(`{"usage":{"input_tokens":100,"output_tokens":8,"cache_creation_input_tokens":99,"claude_cache_creation_5_m_tokens":98,"claude_cache_creation_1_h_tokens":97}}`)
 
 	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatClaude, "application/json", body, usage)
 

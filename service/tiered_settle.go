@@ -19,31 +19,38 @@ type TieredResultWrapper = billingexpr.TieredResult
 // report them as text-only. This function normalizes to text-only when
 // sub-categories are separately priced.
 func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
-	p := float64(usage.PromptTokens)
-	c := float64(usage.CompletionTokens)
-	cr := float64(usage.PromptTokensDetails.CachedTokens)
-	cc5m := float64(usage.PromptTokensDetails.CachedCreationTokens)
-	cc1h := float64(0)
-
-	if usage.UsageSemantic == "anthropic" {
-		cc1h = float64(usage.ClaudeCacheCreation1hTokens)
-		cc5m = float64(usage.ClaudeCacheCreation5mTokens)
+	semantic := UsageSemanticOpenAI
+	if usage != nil {
+		if usage.UsageSemantic == UsageSemanticAnthropic ||
+			usage.UsageSemantic == "" && isClaudeUsageSemantic {
+			semantic = UsageSemanticAnthropic
+		}
 	}
+	normalized := NormalizeUsageForSemantic(usage, semantic)
+	input := NormalizeInputTokens(&normalized)
+	cacheCreation5m, cacheCreation1h := NormalizeCacheCreationSplit(
+		input.CacheCreationInputTokens,
+		input.CacheCreation5mInputTokens,
+		input.CacheCreation1hInputTokens,
+	)
 
-	img := float64(usage.PromptTokensDetails.ImageTokens)
-	ai := float64(usage.PromptTokensDetails.AudioTokens)
-	imgO := float64(usage.CompletionTokenDetails.ImageTokens)
-	ao := float64(usage.CompletionTokenDetails.AudioTokens)
+	p := float64(normalized.PromptTokens)
+	c := float64(normalized.CompletionTokens)
+	cr := float64(input.CacheReadInputTokens)
+	cc5m := float64(cacheCreation5m)
+	cc1h := float64(cacheCreation1h)
+
+	img := float64(normalized.PromptTokensDetails.ImageTokens)
+	ai := float64(normalized.PromptTokensDetails.AudioTokens)
+	imgO := float64(normalized.CompletionTokenDetails.ImageTokens)
+	ao := float64(normalized.CompletionTokenDetails.AudioTokens)
 
 	// len = total input context length for tier condition evaluation.
 	// Non-Claude: prompt_tokens already includes everything.
 	// Claude: input_tokens is text-only, so add cache read + cache creation.
-	inputLen := p
-	if isClaudeUsageSemantic {
-		inputLen = p + cr + cc5m + cc1h
-	}
+	inputLen := float64(input.TotalInputTokens)
 
-	if !isClaudeUsageSemantic {
+	if semantic != UsageSemanticAnthropic {
 		if usedVars["cr"] {
 			p -= cr
 		}

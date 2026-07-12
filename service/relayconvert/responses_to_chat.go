@@ -149,10 +149,12 @@ func UsageFromResponsesUsage(src *dto.Usage) *dto.Usage {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	if src.InputTokensDetails != nil {
-		usage.PromptTokensDetails.CachedTokens = src.InputTokensDetails.CachedTokens
-		usage.PromptTokensDetails.ImageTokens = src.InputTokensDetails.ImageTokens
-		usage.PromptTokensDetails.AudioTokens = src.InputTokensDetails.AudioTokens
+		usage.PromptTokensDetails = *src.InputTokensDetails
 	}
+	usage.ClaudeCacheCreation5mTokens = src.ClaudeCacheCreation5mTokens
+	usage.ClaudeCacheCreation1hTokens = src.ClaudeCacheCreation1hTokens
+	usage.UsageSemantic = "openai"
+	usage.UsageSource = src.UsageSource
 	if src.CompletionTokenDetails.ReasoningTokens != 0 {
 		usage.CompletionTokenDetails.ReasoningTokens = src.CompletionTokenDetails.ReasoningTokens
 	}
