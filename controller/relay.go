@@ -98,6 +98,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 		}
 	}()
+	defer func() {
+		recordFinalRelayError(c, newAPIError)
+	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
 	if err != nil {
@@ -705,26 +708,6 @@ func recordInternalRetryOverloadBlocked(c *gin.Context, channel *model.Channel, 
 	}
 	c.Set("internal_retry_overload_blocked", marker)
 	logger.LogWarn(c, fmt.Sprintf("same-channel retry blocked by overload: channel=%d reason=%s inter_retry=%d/%d", channel.Id, reason, currentRetry, policy.retryTimes))
-	if !constant.ErrorLogEnabled || !types.IsRecordErrorLog(lastUpstreamErr) {
-		return
-	}
-	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-	if startTime.IsZero() {
-		startTime = time.Now()
-	}
-	model.RecordErrorLog(
-		c,
-		c.GetInt("id"),
-		channel.Id,
-		c.GetString("original_model"),
-		c.GetString("token_name"),
-		lastUpstreamErr.MaskSensitiveError(),
-		c.GetInt("token_id"),
-		int(time.Since(startTime).Seconds()),
-		common.GetContextKeyBool(c, constant.ContextKeyIsStream),
-		c.GetString("group"),
-		buildRelayErrorLogDetails(c, lastUpstreamErr, channel.Id),
-	)
 }
 
 func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) {
@@ -753,24 +736,31 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
 	}
+}
 
-	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
-		// 保存错误日志到mysql中
-		userId := c.GetInt("id")
-		tokenName := c.GetString("token_name")
-		modelName := c.GetString("original_model")
-		tokenId := c.GetInt("token_id")
-		userGroup := c.GetString("group")
-		channelId := c.GetInt("channel_id")
-		other := buildRelayErrorLogDetails(c, err, channelId)
-		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-		if startTime.IsZero() {
-			startTime = time.Now()
-		}
-		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveError(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+func recordFinalRelayError(c *gin.Context, err *types.NewAPIError) {
+	if c == nil || !constant.ErrorLogEnabled || !types.IsRecordErrorLog(err) {
+		return
 	}
 
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	channelId := c.GetInt("channel_id")
+	model.RecordErrorLog(
+		c,
+		c.GetInt("id"),
+		channelId,
+		c.GetString("original_model"),
+		c.GetString("token_name"),
+		err.MaskSensitiveError(),
+		c.GetInt("token_id"),
+		int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+		c.GetString("group"),
+		buildRelayErrorLogDetails(c, err, channelId),
+	)
 }
 
 func buildRelayErrorLogDetails(c *gin.Context, err *types.NewAPIError, channelId int) map[string]interface{} {
@@ -1077,6 +1067,11 @@ func RelayTask(c *gin.Context) {
 	}
 
 	if taskErr != nil {
+		finalErr := taskErr.Error
+		if finalErr == nil {
+			finalErr = errors.New(taskErr.Message)
+		}
+		recordFinalRelayError(c, types.NewOpenAIError(finalErr, types.ErrorCode(taskErr.Code), taskErr.StatusCode))
 		respondTaskError(c, taskErr)
 	}
 }

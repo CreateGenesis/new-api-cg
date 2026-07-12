@@ -26,14 +26,21 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var (
-		attemptsMu sync.Mutex
-		attempts   []string
+		attemptsMu       sync.Mutex
+		attempts         []string
+		succeedOnAttempt int
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptsMu.Lock()
 		attempts = append(attempts, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		attemptNumber := len(attempts)
+		shouldSucceed := succeedOnAttempt > 0 && attemptNumber == succeedOnAttempt
 		attemptsMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if shouldSucceed {
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-retry-success","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"message":"busy","type":"api_error","code":"busy"}}`))
 	}))
@@ -42,6 +49,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	originalDB := model.DB
 	originalLogDB := model.LOG_DB
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	originalRedisEnabled := common.RedisEnabled
 	originalSQLitePath := common.SQLitePath
 	originalIsMasterNode := common.IsMasterNode
 	originalMainDatabaseType := common.MainDatabaseType()
@@ -49,9 +57,11 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	t.Setenv("SQL_DSN", "")
 	common.SQLitePath = fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	common.IsMasterNode = false
+	common.RedisEnabled = false
 	require.NoError(t, model.InitDB())
 	db := model.DB
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	model.LOG_DB = db
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}, &model.User{}))
 	common.MemoryCacheEnabled = false
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -60,6 +70,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 		model.DB = originalDB
 		model.LOG_DB = originalLogDB
 		common.MemoryCacheEnabled = originalMemoryCacheEnabled
+		common.RedisEnabled = originalRedisEnabled
 		common.SQLitePath = originalSQLitePath
 		common.IsMasterNode = originalIsMasterNode
 		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
@@ -107,7 +118,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 	originalModelRatios := ratio_setting.ModelRatio2JSONString()
 	originalFreeModelPreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
 	common.RetryTimes = 10
-	constant.ErrorLogEnabled = false
+	constant.ErrorLogEnabled = true
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 503, End: 503}}
 	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{"%s":0}`, modelName)))
@@ -157,4 +168,37 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAreExhausted(t *testing.T) {
 		assert.Lenf(t, run, 4, "channel round %d must contain one request plus three channel-internal retries", interChannelRound)
 	}
 	assert.Equal(t, []string{"channel-1", "channel-2", "channel-3"}, []string{runs[0][0], runs[1][0], runs[2][0]})
+
+	var errorLogCount int64
+	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
+	assert.Equal(t, int64(1), errorLogCount, "all failed upstream attempts must produce one final request error log")
+
+	attemptsMu.Lock()
+	attempts = nil
+	succeedOnAttempt = 3
+	attemptsMu.Unlock()
+
+	successRecorder := httptest.NewRecorder()
+	successCtx, _ := gin.CreateTestContext(successRecorder)
+	successCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	successCtx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(successCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(successCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(successCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(successCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(successCtx, &channels[0], modelName))
+
+	Relay(successCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	successAttempts := append([]string(nil), attempts...)
+	attemptsMu.Unlock()
+	assert.Equal(t, http.StatusOK, successRecorder.Code)
+	require.Len(t, successAttempts, 3)
+	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
+	assert.Equal(t, int64(1), errorLogCount, "a successful retry must not persist intermediate upstream errors")
 }
