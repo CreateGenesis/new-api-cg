@@ -382,14 +382,19 @@ func SimulatedModelCacheMatchRatio(cachedPrompt string, currentPrompt string) fl
 }
 
 func FindSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest) (SimulatedModelCachePartialMatch, error) {
-	return findSimulatedModelCachePartialMatch(ctx, req, false)
+	result, err := findSimulatedModelCachePartialMatch(ctx, req)
+	result.prepared = nil
+	return result, err
 }
 
-func runSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest) (SimulatedModelCachePartialMatch, error) {
-	return findSimulatedModelCachePartialMatch(ctx, req, true)
+func runSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest) (SimulatedModelCachePartialMatch, *SimulatedModelCachePreparedFingerprint, error) {
+	result, err := findSimulatedModelCachePartialMatch(ctx, req)
+	prepared := result.prepared
+	result.prepared = nil
+	return result, prepared, err
 }
 
-func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest, storeCurrent bool) (result SimulatedModelCachePartialMatch, resultErr error) {
+func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest) (result SimulatedModelCachePartialMatch, resultErr error) {
 	startedAt := time.Now()
 	result = SimulatedModelCachePartialMatch{FingerprintVersion: SimulatedModelCacheFingerprintVersion}
 	defer func() {
@@ -433,16 +438,9 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		result.MatchDuration = time.Since(startedAt)
 		return result, err
 	}
-	if storeCurrent {
-		defer func() {
-			if ctx.Err() != nil {
-				return
-			}
-			if err := storeSimulatedModelCachePromptFingerprint(ctx, req, current, ttlFromSeconds(req.TTLSeconds)); err != nil && resultErr == nil && !result.Found && result.BypassReason == "" {
-				result.BypassReason = SimulatedModelCacheBypassRedisError
-				resultErr = err
-			}
-		}()
+	result.prepared = &SimulatedModelCachePreparedFingerprint{
+		request:     req,
+		fingerprint: current,
 	}
 	matcher := newSimulatedModelCacheFingerprintMatcher(current)
 
@@ -526,6 +524,9 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 }
 
 func StoreSimulatedModelCachePromptFingerprint(ctx context.Context, req SimulatedModelCachePartialMatchRequest) error {
+	if !common.RedisEnabled || common.RDB == nil {
+		return ErrSimulatedModelCacheRedisDisabled
+	}
 	if strings.TrimSpace(req.PromptText) == "" {
 		return nil
 	}
@@ -539,6 +540,24 @@ func StoreSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 		return err
 	}
 	return storeSimulatedModelCachePromptFingerprint(ctx, req, fingerprint, ttlFromSeconds(req.TTLSeconds))
+}
+
+type SimulatedModelCachePreparedFingerprint struct {
+	request     SimulatedModelCachePartialMatchRequest
+	fingerprint simulatedModelCachePromptFingerprint
+}
+
+func (p *SimulatedModelCachePreparedFingerprint) Store(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if !common.RedisEnabled || common.RDB == nil {
+		return ErrSimulatedModelCacheRedisDisabled
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return storeSimulatedModelCachePromptFingerprint(ctx, p.request, p.fingerprint, ttlFromSeconds(p.request.TTLSeconds))
 }
 
 func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req SimulatedModelCachePartialMatchRequest, fingerprint simulatedModelCachePromptFingerprint, ttl time.Duration) error {

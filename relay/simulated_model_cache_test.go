@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -14,7 +15,9 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,6 +43,8 @@ func (t *simulatedModelCacheTestMatchTask) TryResult() (service.SimulatedModelCa
 func (t *simulatedModelCacheTestMatchTask) Cancel() {
 	t.canceled = true
 }
+
+func (t *simulatedModelCacheTestMatchTask) StoreWhenReady(context.Context) {}
 
 func (w *simulatedModelCacheFailingWriter) Header() http.Header {
 	return w.header
@@ -204,15 +209,15 @@ func TestSimulatedModelCacheClaudeStreamRewritesFinalUsageForDownstreamParser(t 
 	require.NoError(t, err)
 	assert.Equal(t, content, w.Body.String(), "content events must not wait for cache matching")
 
-	usage := &dto.Usage{PromptTokens: 70, CompletionTokens: 20, TotalTokens: 90, UsageSemantic: "anthropic"}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 20, TotalTokens: 532, UsageSemantic: "anthropic"}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	deltaData := findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatClaude, simulatedModelCacheStreamEventClaudeDelta)
 	var delta dto.ClaudeResponse
 	require.NoError(t, common.Unmarshal(deltaData, &delta))
 	require.NotNil(t, delta.Usage)
-	assert.Equal(t, 70, delta.Usage.InputTokens)
-	assert.Equal(t, 35, delta.Usage.CacheReadInputTokens)
+	assert.Equal(t, 512, delta.Usage.InputTokens)
+	assert.Equal(t, 256, delta.Usage.CacheReadInputTokens)
 	assert.Equal(t, 20, delta.Usage.OutputTokens)
 	var deltaPayload map[string]any
 	require.NoError(t, common.Unmarshal(deltaData, &deltaPayload))
@@ -224,13 +229,13 @@ func TestSimulatedModelCacheClaudeStreamRewritesFinalUsageForDownstreamParser(t 
 	assert.Contains(t, w.Body.String(), `"vendor":"kept"`)
 	assert.True(t, bytes.HasSuffix(w.Body.Bytes(), []byte("data: {\"type\":\"message_stop\"}\n\n")))
 	require.NotNil(t, info.SimulatedModelCacheInfo)
-	assert.Equal(t, 70, info.SimulatedModelCacheInfo.OriginalPromptTokens)
-	assert.Equal(t, 35, info.SimulatedModelCacheInfo.SimulatedCachedTokens)
+	assert.Equal(t, 512, info.SimulatedModelCacheInfo.OriginalPromptTokens)
+	assert.Equal(t, 256, info.SimulatedModelCacheInfo.SimulatedCachedTokens)
 	require.NotNil(t, info.SimulatedModelCacheInfo.StreamUsageInjected)
 	assert.True(t, *info.SimulatedModelCacheInfo.StreamUsageInjected)
-	assert.Equal(t, 35, usage.PromptTokens, "billing usage keeps only the uncached Anthropic input")
-	assert.Equal(t, 35, usage.InputTokens)
-	assert.Equal(t, 35, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 256, usage.PromptTokens, "billing usage keeps only the uncached Anthropic input")
+	assert.Equal(t, 256, usage.InputTokens)
+	assert.Equal(t, 256, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestPatchSimulatedModelCacheClaudeStreamPreservesCacheCreationFields(t *testing.T) {
@@ -282,7 +287,7 @@ func TestSimulatedModelCacheClaudeNonStreamKeepsFullInputOnlyInResponse(t *testi
 	require.NotNil(t, recorder)
 	_, err := c.Writer.Write([]byte(`{"usage":{"input_tokens":70,"output_tokens":20}}`))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 70, CompletionTokens: 20, TotalTokens: 90, UsageSemantic: "anthropic"}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 20, TotalTokens: 532, UsageSemantic: "anthropic"}
 
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
@@ -290,13 +295,13 @@ func TestSimulatedModelCacheClaudeNonStreamKeepsFullInputOnlyInResponse(t *testi
 	require.NoError(t, common.Unmarshal(w.Body.Bytes(), &payload))
 	usageMap, ok := payload["usage"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, float64(70), usageMap["input_tokens"])
-	assert.Equal(t, float64(35), usageMap["cache_read_input_tokens"])
+	assert.Equal(t, float64(512), usageMap["input_tokens"])
+	assert.Equal(t, float64(256), usageMap["cache_read_input_tokens"])
 	assert.Equal(t, float64(0), usageMap["cache_creation_input_tokens"])
 	assert.Equal(t, float64(0), usageMap["claude_cache_creation_5_m_tokens"])
 	assert.Equal(t, float64(0), usageMap["claude_cache_creation_1_h_tokens"])
-	assert.Equal(t, 35, usage.PromptTokens)
-	assert.Equal(t, 35, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 256, usage.PromptTokens)
+	assert.Equal(t, 256, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestSimulatedModelCacheOpenAIStreamRewritesUsageBeforeDone(t *testing.T) {
@@ -312,19 +317,19 @@ func TestSimulatedModelCacheOpenAIStreamRewritesUsageBeforeDone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, content, w.Body.String())
 
-	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 20, TotalTokens: 532}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	var final dto.ChatCompletionsStreamResponse
 	require.NoError(t, common.Unmarshal(findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatOpenAI, simulatedModelCacheStreamEventOpenAIUsage), &final))
 	require.NotNil(t, final.Usage)
-	assert.Equal(t, 100, final.Usage.PromptTokens)
+	assert.Equal(t, 512, final.Usage.PromptTokens)
 	assert.Equal(t, 20, final.Usage.CompletionTokens)
-	assert.Equal(t, 120, final.Usage.TotalTokens)
-	assert.Equal(t, 40, final.Usage.PromptTokensDetails.CachedTokens)
-	assert.Less(t, bytes.Index(w.Body.Bytes(), []byte(`"cached_tokens":40`)), bytes.Index(w.Body.Bytes(), []byte("data: [DONE]")))
-	assert.Equal(t, 40, info.SimulatedModelCacheInfo.SimulatedCachedTokens)
-	assert.Equal(t, 40, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 532, final.Usage.TotalTokens)
+	assert.Equal(t, 205, final.Usage.PromptTokensDetails.CachedTokens)
+	assert.Less(t, bytes.Index(w.Body.Bytes(), []byte(`"cached_tokens":205`)), bytes.Index(w.Body.Bytes(), []byte("data: [DONE]")))
+	assert.Equal(t, 205, info.SimulatedModelCacheInfo.SimulatedCachedTokens)
+	assert.Equal(t, 205, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestSimulatedModelCacheOpenAIStreamInjectsMissingUsageBeforeDone(t *testing.T) {
@@ -338,15 +343,15 @@ func TestSimulatedModelCacheOpenAIStreamInjectsMissingUsageBeforeDone(t *testing
 	require.NoError(t, err)
 	_, err = c.Writer.Write([]byte(original[37:]))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 80, CompletionTokens: 10, TotalTokens: 90, UsageSemantic: "anthropic"}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 10, TotalTokens: 522, UsageSemantic: "anthropic"}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	var final dto.ChatCompletionsStreamResponse
 	require.NoError(t, common.Unmarshal(findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatOpenAI, simulatedModelCacheStreamEventOpenAIUsage), &final))
 	require.NotNil(t, final.Usage)
-	assert.Equal(t, 80, final.Usage.PromptTokens, "OpenAI prompt tokens include cached input after Claude conversion")
-	assert.Equal(t, 90, final.Usage.TotalTokens)
-	assert.Equal(t, 20, final.Usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 512, final.Usage.PromptTokens, "OpenAI prompt tokens include cached input after Claude conversion")
+	assert.Equal(t, 522, final.Usage.TotalTokens)
+	assert.Equal(t, 128, final.Usage.PromptTokensDetails.CachedTokens)
 	assert.Contains(t, w.Body.String(), "\r\n\r\ndata: [DONE]\r\n\r\n")
 }
 
@@ -359,16 +364,16 @@ func TestSimulatedModelCacheStreamUsesDownstreamClaudeFormatAfterOpenAIConversio
 
 	_, err := c.Writer.Write([]byte(original))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 60, CompletionTokens: 5, TotalTokens: 65}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 5, TotalTokens: 517}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	var delta dto.ClaudeResponse
 	require.NoError(t, common.Unmarshal(findSimulatedModelCacheStreamEvent(t, w.Body.Bytes(), types.RelayFormatClaude, simulatedModelCacheStreamEventClaudeDelta), &delta))
 	require.NotNil(t, delta.Usage)
-	assert.Equal(t, 60, delta.Usage.InputTokens, "Claude response keeps the full input while billing tracks cache separately")
-	assert.Equal(t, 30, delta.Usage.CacheReadInputTokens)
-	assert.Equal(t, 60, usage.PromptTokens)
-	assert.Equal(t, 30, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 512, delta.Usage.InputTokens, "Claude response keeps the full input while billing tracks cache separately")
+	assert.Equal(t, 256, delta.Usage.CacheReadInputTokens)
+	assert.Equal(t, 512, usage.PromptTokens)
+	assert.Equal(t, 256, usage.PromptTokensDetails.CachedTokens)
 	assert.NotContains(t, w.Body.String(), "data: [DONE]")
 }
 
@@ -381,23 +386,153 @@ func TestSimulatedModelCacheOpenAIStreamExplicitUsageFalsePreservesResponse(t *t
 
 	_, err := c.Writer.Write([]byte(original))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 40, CompletionTokens: 4, TotalTokens: 44}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 4, TotalTokens: 516}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	assert.Equal(t, original, w.Body.String())
 	assert.NotContains(t, w.Body.String(), `"usage"`)
 	require.NotNil(t, info.SimulatedModelCacheInfo.StreamUsageInjected)
 	assert.False(t, *info.SimulatedModelCacheInfo.StreamUsageInjected)
-	assert.Equal(t, 20, usage.PromptTokensDetails.CachedTokens, "local billing still uses the simulated cache match")
+	assert.Equal(t, 256, usage.PromptTokensDetails.CachedTokens, "local billing still uses the simulated cache match")
+}
+
+func TestSimulatedModelCacheBelowMinimumInputTokensIgnoresMatchAndDoesNotStore(t *testing.T) {
+	ctx := withSimulatedModelCacheRelayTestRedis(t)
+	const userID = 10
+	const model = "gpt-test"
+	require.NoError(t, service.StoreSimulatedModelCachePromptFingerprint(ctx, service.SimulatedModelCachePartialMatchRequest{
+		UserID:     userID,
+		Model:      model,
+		PromptText: "hello AA",
+		TTLSeconds: 60,
+	}))
+
+	match, err := service.FindSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+		UserID:        userID,
+		Model:         model,
+		PromptText:    "hello B",
+		MinMatchRatio: 0.8,
+	})
+	require.NoError(t, err)
+	require.True(t, match.Found)
+
+	for range 2 {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		c.Writer.Header().Set("Content-Type", "application/json")
+		attempt := &simulatedModelCacheAttempt{
+			settings:       dto.SimulatedModelCacheSettings{Enabled: true, TTLSeconds: 60},
+			promptText:     "hello B",
+			cacheModelName: model,
+			partialMatch: &simulatedModelCacheTestMatchTask{
+				result: service.SimulatedModelCachePartialMatchResult{Match: match},
+				ready:  true,
+			},
+		}
+		info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, UserId: userID, ChannelMeta: &relaycommon.ChannelMeta{}}
+		recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+		require.NotNil(t, recorder)
+		_, err = c.Writer.Write([]byte(`{"usage":{"prompt_tokens":511,"completion_tokens":1,"total_tokens":512}}`))
+		require.NoError(t, err)
+		usage := &dto.Usage{PromptTokens: 511, CompletionTokens: 1, TotalTokens: 512}
+
+		finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+		assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+		require.NotNil(t, info.SimulatedModelCacheInfo)
+		assert.Equal(t, service.SimulatedModelCacheBypassInputTokensLow, info.SimulatedModelCacheInfo.BypassReason)
+	}
+
+	result, err := service.FindSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+		UserID:     userID,
+		Model:      model,
+		PromptText: "unrelated prompt",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.CandidateCount, "the 511-token prompt must not add a fingerprint")
+}
+
+func TestSimulatedModelCacheMinimumInputTokensStoresAndAllowsNextMatch(t *testing.T) {
+	ctx := withSimulatedModelCacheRelayTestRedis(t)
+	const userID = 10
+	const model = "gpt-test"
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Writer.Header().Set("Content-Type", "application/json")
+	attempt := &simulatedModelCacheAttempt{
+		settings:       dto.SimulatedModelCacheSettings{Enabled: true, TTLSeconds: 60},
+		promptText:     "hello AA",
+		cacheModelName: model,
+	}
+	handle, bypassReason := service.SubmitSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+		UserID:        userID,
+		Model:         model,
+		PromptText:    attempt.promptText,
+		MinMatchRatio: 0.8,
+		TTLSeconds:    attempt.settings.TTLSeconds,
+	})
+	require.Empty(t, bypassReason)
+	require.NotNil(t, handle)
+	attempt.partialMatch = handle
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, UserId: userID, ChannelMeta: &relaycommon.ChannelMeta{}}
+	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, recorder)
+	_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":512,"completion_tokens":1,"total_tokens":513}}`))
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 1, TotalTokens: 513}
+
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+	if info.SimulatedModelCacheInfo != nil {
+		assert.Equal(t, service.SimulatedModelCacheBypassMatchNotReady, info.SimulatedModelCacheInfo.BypassReason)
+	}
+	require.Eventually(t, func() bool {
+		match, findErr := service.FindSimulatedModelCachePartialMatch(ctx, service.SimulatedModelCachePartialMatchRequest{
+			UserID:        userID,
+			Model:         model,
+			PromptText:    "hello B",
+			MinMatchRatio: 0.8,
+		})
+		return findErr == nil && match.Found && match.CandidateCount == 1
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestSimulatedModelCacheOriginalInputTokensUsesNormalizedFullInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage *dto.Usage
+	}{
+		{name: "OpenAI prompt tokens", usage: &dto.Usage{PromptTokens: 512}},
+		{name: "Responses input token fallback", usage: &dto.Usage{InputTokens: 512}},
+		{name: "Claude uncached read and creation tokens", usage: &dto.Usage{
+			PromptTokens:  400,
+			UsageSemantic: "anthropic",
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens:         100,
+				CachedCreationTokens: 12,
+			},
+		}},
+		{name: "Gemini normalized prompt tokens", usage: &dto.Usage{PromptTokens: 512}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, service.SimulatedModelCacheMinInputTokens, simulatedModelCacheOriginalInputTokens(test.usage))
+		})
+	}
 }
 
 func TestSimulatedModelCacheStreamNoMatchPreservesRealUpstreamUsage(t *testing.T) {
+	withSimulatedModelCacheRelayTestRedis(t)
 	c, w, info, attempt, recorder := newSimulatedModelCacheStreamTest(t, types.RelayFormatOpenAI, types.RelayFormatOpenAI, true, service.SimulatedModelCachePartialMatch{})
 	original := "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":4,\"total_tokens\":44,\"prompt_tokens_details\":{\"cached_tokens\":9}}}\n\ndata: [DONE]\n\n"
 
 	_, err := c.Writer.Write([]byte(original))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 40, CompletionTokens: 4, TotalTokens: 44, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 9}}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 4, TotalTokens: 516, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 9}}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	assert.Equal(t, original, w.Body.String())
@@ -420,7 +555,7 @@ func TestSimulatedModelCacheMatchNotReadyPreservesRealUsage(t *testing.T) {
 	require.NotNil(t, recorder)
 	_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 2, TotalTokens: 514}
 
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
@@ -450,7 +585,7 @@ func TestSimulatedModelCacheOverloadBypassPreservesRealUsage(t *testing.T) {
 			require.NotNil(t, recorder)
 			_, err := c.Writer.Write([]byte(`{"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`))
 			require.NoError(t, err)
-			usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+			usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 2, TotalTokens: 514}
 
 			finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
@@ -487,7 +622,7 @@ func TestSimulatedModelCacheNonStreamResponseOverLimitSwitchesToPassThrough(t *t
 	assert.True(t, recorder.passThrough)
 	assert.Empty(t, recorder.body.Bytes())
 
-	usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 2, TotalTokens: 514}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 	require.NotNil(t, info.SimulatedModelCacheInfo)
 	assert.Equal(t, service.SimulatedModelCacheBypassResponseTooLarge, info.SimulatedModelCacheInfo.BypassReason)
@@ -506,7 +641,7 @@ func TestSimulatedModelCacheStreamCancellationPreservesTail(t *testing.T) {
 	_, err := c.Writer.Write([]byte(original))
 	require.NoError(t, err)
 	cancel()
-	usage := &dto.Usage{PromptTokens: 40, CompletionTokens: 4, TotalTokens: 44, UsageSemantic: "anthropic"}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 4, TotalTokens: 516, UsageSemantic: "anthropic"}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	assert.Equal(t, original, w.Body.String())
@@ -541,7 +676,7 @@ func TestSimulatedModelCacheStreamPreservesMalformedEventsAndComments(t *testing
 	require.NoError(t, err)
 	_, err = c.Writer.Write([]byte(original[19:]))
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 30, CompletionTokens: 3, TotalTokens: 33, UsageSemantic: "anthropic"}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 3, TotalTokens: 515, UsageSemantic: "anthropic"}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	assert.Equal(t, original, w.Body.String())
@@ -574,7 +709,7 @@ func TestSimulatedModelCacheStreamMarksFailedTailWrite(t *testing.T) {
 	_, err := c.Writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"))
 	require.NoError(t, err)
 
-	usage := &dto.Usage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+	usage := &dto.Usage{PromptTokens: 512, CompletionTokens: 2, TotalTokens: 514}
 	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
 
 	require.NotNil(t, info.SimulatedModelCacheInfo.StreamUsageInjected)
@@ -605,6 +740,25 @@ func TestSimulatedModelCacheRecorderNormalizesInvalidStatus(t *testing.T) {
 	c.Writer.WriteHeader(-1)
 
 	assert.Equal(t, http.StatusOK, recorder.Status())
+}
+
+func withSimulatedModelCacheRelayTestRedis(t *testing.T) context.Context {
+	t.Helper()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	ctx := context.Background()
+	require.NoError(t, client.Ping(ctx).Err())
+
+	oldRedisEnabled := common.RedisEnabled
+	oldRDB := common.RDB
+	common.RedisEnabled = true
+	common.RDB = client
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = oldRedisEnabled
+		common.RDB = oldRDB
+	})
+	return ctx
 }
 
 func TestFlushSimulatedModelCacheRecorderRewritesContentLength(t *testing.T) {

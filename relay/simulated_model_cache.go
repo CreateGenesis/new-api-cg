@@ -2,6 +2,8 @@ package relay
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +32,7 @@ type simulatedModelCacheAttempt struct {
 type simulatedModelCachePartialMatchTask interface {
 	TryResult() (service.SimulatedModelCachePartialMatchResult, bool)
 	Cancel()
+	StoreWhenReady(context.Context)
 }
 
 type simulatedModelCacheRecorder struct {
@@ -627,30 +630,57 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		}
 		return
 	}
+	originalInputTokens := simulatedModelCacheOriginalInputTokens(usage)
+	inputTokensEligible := originalInputTokens >= service.SimulatedModelCacheMinInputTokens
+	if !inputTokensEligible {
+		attempt.bypassReason = service.SimulatedModelCacheBypassInputTokensLow
+	}
 	matchFound := false
 	match := service.SimulatedModelCachePartialMatch{}
+	var preparedFingerprint *service.SimulatedModelCachePreparedFingerprint
 	if attempt.partialMatch != nil {
-		if c.Request.Context().Err() != nil {
-			attempt.setBypassReason(service.SimulatedModelCacheBypassRequestCanceled)
-		} else if result, ready := attempt.partialMatch.TryResult(); ready {
-			attempt.matchDiagnostics = result.Match
-			if result.Err != nil {
-				if result.Match.BypassReason != "" {
+		if inputTokensEligible {
+			if c.Request.Context().Err() != nil {
+				attempt.setBypassReason(service.SimulatedModelCacheBypassRequestCanceled)
+			} else if result, ready := attempt.partialMatch.TryResult(); ready {
+				attempt.matchDiagnostics = result.Match
+				preparedFingerprint = result.Prepared
+				if result.Err != nil {
+					if result.Match.BypassReason != "" {
+						attempt.setBypassReason(result.Match.BypassReason)
+					} else {
+						attempt.setBypassReason(service.SimulatedModelCacheBypassRedisError)
+					}
+				} else if result.Match.BypassReason != "" {
 					attempt.setBypassReason(result.Match.BypassReason)
-				} else {
-					attempt.setBypassReason(service.SimulatedModelCacheBypassRedisError)
+				} else if result.Match.Found {
+					matchFound = true
+					match = result.Match
 				}
-			} else if result.Match.BypassReason != "" {
-				attempt.setBypassReason(result.Match.BypassReason)
-			} else if result.Match.Found {
-				matchFound = true
-				match = result.Match
+			} else {
+				attempt.setBypassReason(service.SimulatedModelCacheBypassMatchNotReady)
+				attempt.partialMatch.StoreWhenReady(c.Request.Context())
+				attempt.partialMatch = nil
 			}
-		} else {
-			attempt.setBypassReason(service.SimulatedModelCacheBypassMatchNotReady)
 		}
-		attempt.partialMatch.Cancel()
-		attempt.partialMatch = nil
+		if attempt.partialMatch != nil {
+			attempt.partialMatch.Cancel()
+			attempt.partialMatch = nil
+		}
+	}
+	if inputTokensEligible && c.Request.Context().Err() == nil && preparedFingerprint != nil {
+		err := preparedFingerprint.Store(c.Request.Context())
+		if err != nil && !matchFound {
+			if errors.Is(err, service.ErrSimulatedModelCacheMemoryBudget) {
+				attempt.setBypassReason(service.SimulatedModelCacheBypassMemoryBudget)
+			} else if errors.Is(err, service.ErrSimulatedModelCacheRedisDisabled) {
+				attempt.setBypassReason(service.SimulatedModelCacheBypassRedisUnavailable)
+			} else {
+				attempt.setBypassReason(service.SimulatedModelCacheBypassRedisError)
+			}
+		} else if err != nil {
+			logger.LogWarn(c, fmt.Sprintf("simulated model cache fingerprint store failed: request_id=%s error=%s", info.RequestId, err.Error()))
+		}
 	}
 
 	body := recorder.body.Bytes()
@@ -715,6 +745,20 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			BypassReason:       attempt.bypassReason,
 		}
 	}
+}
+
+func simulatedModelCacheOriginalInputTokens(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	inputTokens := usage.PromptTokens
+	if inputTokens == 0 && usage.InputTokens > 0 {
+		inputTokens = usage.InputTokens
+	}
+	if usage.UsageSemantic == "anthropic" {
+		inputTokens += usage.PromptTokensDetails.CachedTokens + simulatedModelCacheCacheCreationTokens(usage)
+	}
+	return inputTokens
 }
 
 func simulatedModelCacheModelName(info *relaycommon.RelayInfo) string {

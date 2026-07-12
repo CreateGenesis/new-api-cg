@@ -523,9 +523,9 @@ func TestSimulatedModelCachePartialMatchPrunesInvalidFineFingerprint(t *testing.
 	assert.Zero(t, count)
 }
 
-func TestSimulatedModelCacheWorkerStoresCurrentFingerprintBeforeReturning(t *testing.T) {
+func TestSimulatedModelCacheWorkerReturnsPreparedFingerprintWithoutStoring(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
-	prompt := strings.Repeat("worker stored prompt ", 20)
+	prompt := strings.Repeat("worker query only prompt ", 20)
 	handle, bypassReason := SubmitSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
 		UserID:     10,
 		Model:      "gpt-test",
@@ -536,7 +536,16 @@ func TestSimulatedModelCacheWorkerStoresCurrentFingerprintBeforeReturning(t *tes
 
 	result := <-handle.result
 	require.NoError(t, result.Err)
+	require.NotNil(t, result.Prepared)
 	exists, err := common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(sha256Hex([]byte(prompt)))).Result()
+	require.NoError(t, err)
+	assert.Zero(t, exists)
+
+	reservation := ReserveSimulatedModelCacheMemory(common.GetSimulatedModelCacheMemoryBudgetBytes())
+	require.NotNil(t, reservation)
+	defer reservation.Release()
+	require.NoError(t, result.Prepared.Store(ctx), "prepared storage must not reserve or rebuild the fingerprint")
+	exists, err = common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(sha256Hex([]byte(prompt)))).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists)
 }

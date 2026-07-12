@@ -3,21 +3,27 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 )
 
-var ErrSimulatedModelCacheMemoryBudget = errors.New("simulated model cache memory budget is exhausted")
+var (
+	ErrSimulatedModelCacheMemoryBudget  = errors.New("simulated model cache memory budget is exhausted")
+	ErrSimulatedModelCacheRedisDisabled = errors.New("simulated model cache Redis is unavailable")
+)
 
 const (
 	simulatedModelCacheDefaultResponseBufferMB = 8
 	simulatedModelCacheMaxMatchWorkers         = 64
 	simulatedModelCacheMaxResponseBufferMB     = 1024
 	simulatedModelCacheFineMatchBytesPerWindow = 1536
+	simulatedModelCacheAsyncTaskTimeout        = 5 * time.Second
 )
 
 const (
@@ -28,6 +34,7 @@ const (
 	SimulatedModelCacheBypassRedisUnavailable = "redis_unavailable"
 	SimulatedModelCacheBypassPromptTooLarge   = "prompt_too_large"
 	SimulatedModelCacheBypassMatchNotReady    = "match_not_ready"
+	SimulatedModelCacheBypassInputTokensLow   = "input_tokens_below_minimum"
 	SimulatedModelCacheBypassResponseTooLarge = "response_too_large"
 	SimulatedModelCacheBypassResponseBuffer   = "response_buffer_unavailable"
 )
@@ -121,8 +128,9 @@ func SimulatedModelCacheResponseBufferBytes() int64 {
 }
 
 type SimulatedModelCachePartialMatchResult struct {
-	Match SimulatedModelCachePartialMatch
-	Err   error
+	Match    SimulatedModelCachePartialMatch
+	Prepared *SimulatedModelCachePreparedFingerprint
+	Err      error
 }
 
 type SimulatedModelCachePartialMatchHandle struct {
@@ -146,6 +154,35 @@ func (h *SimulatedModelCachePartialMatchHandle) Cancel() {
 	if h != nil && h.cancel != nil {
 		h.cancel()
 	}
+}
+
+func (h *SimulatedModelCachePartialMatchHandle) StoreWhenReady(ctx context.Context) {
+	if h == nil || h.result == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simulatedModelCacheAsyncTaskTimeout)
+	go func() {
+		defer cancel()
+		select {
+		case result := <-h.result:
+			if result.Prepared == nil {
+				return
+			}
+			if err := result.Prepared.Store(storeCtx); err != nil {
+				common.SysError(fmt.Sprintf(
+					"deferred simulated model cache fingerprint store failed: user_id=%d model=%s error=%s",
+					result.Prepared.request.UserID,
+					result.Prepared.request.Model,
+					err.Error(),
+				))
+			}
+		case <-storeCtx.Done():
+			h.Cancel()
+		}
+	}()
 }
 
 type simulatedModelCacheMatchJob struct {
@@ -188,7 +225,7 @@ func (p *simulatedModelCacheMatchPool) worker() {
 			result.Match.BypassReason = SimulatedModelCacheBypassRequestCanceled
 			result.Err = err
 		} else {
-			result.Match, result.Err = runSimulatedModelCachePartialMatch(job.ctx, job.req)
+			result.Match, result.Prepared, result.Err = runSimulatedModelCachePartialMatch(job.ctx, job.req)
 		}
 		job.reservation.Release()
 		select {
@@ -215,7 +252,7 @@ func SubmitSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedMod
 	runtimeConfig.poolOnce.Do(func() {
 		runtimeConfig.pool = newSimulatedModelCacheMatchPool(runtimeConfig.workers)
 	})
-	matchCtx, cancel := context.WithCancel(ctx)
+	matchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simulatedModelCacheAsyncTaskTimeout)
 	result := make(chan SimulatedModelCachePartialMatchResult, 1)
 	job := simulatedModelCacheMatchJob{
 		ctx:         matchCtx,
