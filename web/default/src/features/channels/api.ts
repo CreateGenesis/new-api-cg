@@ -34,6 +34,7 @@ import type {
   GetChannelsParams,
   GetChannelsResponse,
   MultiKeyManageParams,
+  MultiKeyKeyResponse,
   MultiKeyStatusResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
@@ -386,6 +387,21 @@ export async function getMultiKeyStatus(
     page_size: pageSize,
     status,
   }) as Promise<MultiKeyStatusResponse>
+}
+
+/**
+ * Get one complete key from a multi-key channel (super administrator only)
+ */
+export async function getMultiKeyChannelKey(
+  channelId: number,
+  keyIndex: number
+): Promise<MultiKeyKeyResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/multi_key/${keyIndex}/key`,
+    {},
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
 }
 
 /**

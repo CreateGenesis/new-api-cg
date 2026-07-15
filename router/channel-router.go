@@ -26,6 +26,12 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		middleware.DisableCache(),
 		controller.GetChannelKey,
 	)
+	channelRoute.POST("/:id/multi_key/:key_index/key",
+		middleware.RootAuth(),
+		middleware.CriticalRateLimit(),
+		middleware.DisableCache(),
+		controller.GetMultiKeyChannelKey,
+	)
 
 	for _, route := range channelPermissionRoutes {
 		channelRoute.Handle(route.method, route.path,

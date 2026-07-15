@@ -16,9 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import {
+  Copy01Icon,
+  Loading03Icon,
+  Tick02Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
+} from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw, Trash2, Power, PowerOff } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -37,10 +45,17 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { copyToClipboard } from '@/lib/copy-to-clipboard'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -51,6 +66,7 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
+  getMultiKeyChannelKey,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_MODES } from '../../constants'
 import {
@@ -83,10 +99,12 @@ export function MultiKeyManageDialog({
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
+  const canRevealKeys = currentUser?.role === ROLE.SUPER_ADMIN
 
   // Data state
   const [isLoading, setIsLoading] = useState(false)
   const [keys, setKeys] = useState<KeyStatus[]>([])
+  const [keysChannelId, setKeysChannelId] = useState<number | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
@@ -101,8 +119,58 @@ export function MultiKeyManageDialog({
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
 
+  // Complete keys are scoped to the current dialog/channel and fetched on demand.
+  const [loadedKeys, setLoadedKeys] = useState<Record<number, string>>({})
+  const [loadedKeysChannelId, setLoadedKeysChannelId] = useState<number | null>(
+    null
+  )
+  const [revealedKeyIndexes, setRevealedKeyIndexes] = useState<Set<number>>(
+    new Set()
+  )
+  const [loadingKeyIndexes, setLoadingKeyIndexes] = useState<Set<number>>(
+    new Set()
+  )
+  const [copyingKeyIndexes, setCopyingKeyIndexes] = useState<Set<number>>(
+    new Set()
+  )
+  const [copiedKeyIndexes, setCopiedKeyIndexes] = useState<Set<number>>(
+    new Set()
+  )
+  const loadedKeysRef = useRef<Record<number, string>>({})
+  const loadedKeysChannelIdRef = useRef<number | null>(null)
+  const keyRequestsRef = useRef<Map<number, Promise<string | null>>>(new Map())
+  const copiedTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(
+    new Map()
+  )
+  const secretGenerationRef = useRef(0)
+  const statusGenerationRef = useRef(0)
+  const secretScopeRef = useRef<number | null>(null)
+  secretScopeRef.current = open && currentRow ? currentRow.id : null
+
+  const clearLoadedSecrets = () => {
+    secretGenerationRef.current += 1
+    loadedKeysRef.current = {}
+    loadedKeysChannelIdRef.current = null
+    keyRequestsRef.current.clear()
+    for (const timer of copiedTimersRef.current.values()) {
+      clearTimeout(timer)
+    }
+    copiedTimersRef.current.clear()
+    setLoadedKeys({})
+    setLoadedKeysChannelId(null)
+    setRevealedKeyIndexes(new Set())
+    setLoadingKeyIndexes(new Set())
+    setCopyingKeyIndexes(new Set())
+    setCopiedKeyIndexes(new Set())
+  }
+
   // Reset and load data when dialog opens
   useEffect(() => {
+    statusGenerationRef.current += 1
+    clearLoadedSecrets()
+    setKeys([])
+    setKeysChannelId(null)
+    setIsLoading(false)
     if (open && currentRow) {
       setCurrentPage(1)
       setStatusFilter(null)
@@ -118,17 +186,29 @@ export function MultiKeyManageDialog({
   ) => {
     if (!currentRow) return
 
+    const channelId = currentRow.id
+    const generation = statusGenerationRef.current + 1
+    statusGenerationRef.current = generation
+    clearLoadedSecrets()
     setIsLoading(true)
     try {
       const response = await getMultiKeyStatus(
-        currentRow.id,
+        channelId,
         page,
         size,
         status === null ? undefined : status
       )
 
+      if (
+        generation !== statusGenerationRef.current ||
+        secretScopeRef.current !== channelId
+      ) {
+        return
+      }
+
       if (response.success && response.data) {
         setKeys(response.data.keys || [])
+        setKeysChannelId(channelId)
         setTotal(response.data.total || 0)
         setCurrentPage(response.data.page || 1)
         setPageSize(response.data.page_size || 10)
@@ -140,11 +220,136 @@ export function MultiKeyManageDialog({
         toast.error(response.message || t('Failed to load key status'))
       }
     } catch (error: unknown) {
-      toast.error(
-        error instanceof Error ? error.message : t('Failed to load key status')
+      if (
+        generation === statusGenerationRef.current &&
+        secretScopeRef.current === channelId
+      ) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t('Failed to load key status')
+        )
+      }
+    } finally {
+      if (generation === statusGenerationRef.current) {
+        setIsLoading(false)
+      }
+    }
+  }
+
+  const loadFullKey = async (
+    keyIndex: number,
+    failureMessage: string
+  ): Promise<string | null> => {
+    if (!currentRow || !canRevealKeys) return null
+    if (secretScopeRef.current !== currentRow.id) return null
+    if (
+      loadedKeysChannelIdRef.current === currentRow.id &&
+      Object.hasOwn(loadedKeysRef.current, keyIndex)
+    ) {
+      return loadedKeysRef.current[keyIndex]
+    }
+
+    const pendingRequest = keyRequestsRef.current.get(keyIndex)
+    if (pendingRequest) return pendingRequest
+
+    const channelId = currentRow.id
+    const generation = secretGenerationRef.current
+    setLoadingKeyIndexes((previous) => new Set(previous).add(keyIndex))
+
+    const request = (async () => {
+      try {
+        const response = await getMultiKeyChannelKey(channelId, keyIndex)
+        if (
+          generation !== secretGenerationRef.current ||
+          secretScopeRef.current !== channelId
+        ) {
+          return null
+        }
+        if (!response.success || typeof response.data?.key !== 'string') {
+          toast.error(t(failureMessage))
+          return null
+        }
+
+        const fullKey = response.data.key
+        loadedKeysRef.current = {
+          ...loadedKeysRef.current,
+          [keyIndex]: fullKey,
+        }
+        loadedKeysChannelIdRef.current = channelId
+        setLoadedKeys((previous) => ({ ...previous, [keyIndex]: fullKey }))
+        setLoadedKeysChannelId(channelId)
+        return fullKey
+      } catch {
+        if (
+          generation === secretGenerationRef.current &&
+          secretScopeRef.current === channelId
+        ) {
+          toast.error(t(failureMessage))
+        }
+        return null
+      } finally {
+        if (generation === secretGenerationRef.current) {
+          setLoadingKeyIndexes((previous) => {
+            const next = new Set(previous)
+            next.delete(keyIndex)
+            return next
+          })
+          keyRequestsRef.current.delete(keyIndex)
+        }
+      }
+    })()
+
+    keyRequestsRef.current.set(keyIndex, request)
+    return request
+  }
+
+  const handleToggleKeyVisibility = async (keyIndex: number) => {
+    if (revealedKeyIndexes.has(keyIndex)) {
+      setRevealedKeyIndexes((previous) => {
+        const next = new Set(previous)
+        next.delete(keyIndex)
+        return next
+      })
+      return
+    }
+
+    const fullKey = await loadFullKey(keyIndex, 'Failed to fetch channel key')
+    if (fullKey === null) return
+    setRevealedKeyIndexes((previous) => new Set(previous).add(keyIndex))
+  }
+
+  const handleCopyKey = async (keyIndex: number) => {
+    setCopyingKeyIndexes((previous) => new Set(previous).add(keyIndex))
+    try {
+      const fullKey = await loadFullKey(keyIndex, 'Failed to copy')
+      if (fullKey === null) return
+      if (!(await copyToClipboard(fullKey))) {
+        toast.error(t('Failed to copy'))
+        return
+      }
+
+      toast.success(t('Copied!'))
+      setCopiedKeyIndexes((previous) => new Set(previous).add(keyIndex))
+      const previousTimer = copiedTimersRef.current.get(keyIndex)
+      if (previousTimer) clearTimeout(previousTimer)
+      copiedTimersRef.current.set(
+        keyIndex,
+        setTimeout(() => {
+          setCopiedKeyIndexes((previous) => {
+            const next = new Set(previous)
+            next.delete(keyIndex)
+            return next
+          })
+          copiedTimersRef.current.delete(keyIndex)
+        }, 2000)
       )
     } finally {
-      setIsLoading(false)
+      setCopyingKeyIndexes((previous) => {
+        const next = new Set(previous)
+        next.delete(keyIndex)
+        return next
+      })
     }
   }
 
@@ -235,6 +440,7 @@ export function MultiKeyManageDialog({
 
   if (!currentRow) return null
 
+  const visibleKeys = keysChannelId === currentRow.id ? keys : []
   const multiKeyMode = currentRow.channel_info?.multi_key_mode
   const multiKeyModeLabel = MULTI_KEY_MODES.find(
     (mode) => mode.value === multiKeyMode
@@ -382,16 +588,16 @@ export function MultiKeyManageDialog({
                 <Loader2 className='text-muted-foreground h-8 w-8 animate-spin' />
               </div>
             )}
-            {!isLoading && keys.length === 0 && (
+            {!isLoading && visibleKeys.length === 0 && (
               <div className='text-muted-foreground py-12 text-center'>
                 {t('No keys found')}
               </div>
             )}
-            {!isLoading && keys.length > 0 && (
+            {!isLoading && visibleKeys.length > 0 && (
               <StaticDataTable
                 className='rounded-none border-0'
-                tableClassName='min-w-[800px]'
-                data={keys}
+                tableClassName='min-w-[1050px]'
+                data={visibleKeys}
                 getRowKey={(key) => key.index}
                 columns={[
                   {
@@ -400,6 +606,110 @@ export function MultiKeyManageDialog({
                     className: 'w-20',
                     cellClassName: 'font-mono text-sm',
                     cell: (key) => `#${key.index + 1}`,
+                  },
+                  {
+                    id: 'key',
+                    header: t('Channel key'),
+                    className: 'min-w-[280px]',
+                    cell: (key) => {
+                      const isRevealed = revealedKeyIndexes.has(key.index)
+                      const isLoadingKey = loadingKeyIndexes.has(key.index)
+                      const isCopyingKey = copyingKeyIndexes.has(key.index)
+                      const isCopied = copiedKeyIndexes.has(key.index)
+                      let displayedKey = key.masked_key || key.key_preview || ''
+                      if (
+                        open &&
+                        loadedKeysChannelId === currentRow.id &&
+                        isRevealed &&
+                        Object.hasOwn(loadedKeys, key.index)
+                      ) {
+                        displayedKey = loadedKeys[key.index]
+                      }
+
+                      let visibilityIcon = ViewIcon
+                      if (isLoadingKey) {
+                        visibilityIcon = Loading03Icon
+                      } else if (isRevealed) {
+                        visibilityIcon = ViewOffSlashIcon
+                      }
+
+                      let copyIcon = Copy01Icon
+                      let copyLabel = 'Copy secret key'
+                      let copyIconClassName: string | undefined
+                      if (isCopyingKey) {
+                        copyIcon = Loading03Icon
+                        copyLabel = 'Loading...'
+                        copyIconClassName = 'animate-spin'
+                      } else if (isCopied) {
+                        copyIcon = Tick02Icon
+                        copyLabel = 'Copied!'
+                        copyIconClassName = 'text-success'
+                      }
+
+                      return (
+                        <div className='flex min-w-0 items-center gap-1'>
+                          <code className='min-w-0 flex-1 truncate font-mono text-sm'>
+                            {displayedKey}
+                          </code>
+                          {canRevealKeys && (
+                            <>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <Button
+                                      variant='ghost'
+                                      size='icon-xs'
+                                      onClick={() =>
+                                        void handleToggleKeyVisibility(
+                                          key.index
+                                        )
+                                      }
+                                      disabled={isLoadingKey || isCopyingKey}
+                                      aria-label={t(
+                                        isRevealed ? 'Hide' : 'Show'
+                                      )}
+                                    />
+                                  }
+                                >
+                                  <HugeiconsIcon
+                                    icon={visibilityIcon}
+                                    className={
+                                      isLoadingKey ? 'animate-spin' : undefined
+                                    }
+                                    strokeWidth={2}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {t(isRevealed ? 'Hide' : 'Show')}
+                                </TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <Button
+                                      variant='ghost'
+                                      size='icon-xs'
+                                      onClick={() =>
+                                        void handleCopyKey(key.index)
+                                      }
+                                      disabled={isLoadingKey || isCopyingKey}
+                                      aria-label={t(copyLabel)}
+                                    />
+                                  }
+                                >
+                                  <HugeiconsIcon
+                                    icon={copyIcon}
+                                    className={copyIconClassName}
+                                    strokeWidth={2}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent>{t(copyLabel)}</TooltipContent>
+                              </Tooltip>
+                            </>
+                          )}
+                        </div>
+                      )
+                    },
                   },
                   {
                     id: 'status',

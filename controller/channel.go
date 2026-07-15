@@ -1518,7 +1518,47 @@ type KeyStatus struct {
 	Status       int    `json:"status"` // 1: enabled, 2: disabled
 	DisabledTime int64  `json:"disabled_time,omitempty"`
 	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	KeyPreview   string `json:"key_preview"` // retained for compatibility; never contains the complete key
+	MaskedKey    string `json:"masked_key"`
+}
+
+// GetMultiKeyChannelKey returns one complete key from a multi-key channel (root only).
+func GetMultiKeyChannelKey(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiErrorMsg(c, "渠道ID格式错误")
+		return
+	}
+
+	keyIndex, err := strconv.Atoi(c.Param("key_index"))
+	if err != nil || keyIndex < 0 {
+		common.ApiErrorMsg(c, "密钥索引无效")
+		return
+	}
+
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil || channel == nil {
+		common.ApiErrorMsg(c, "渠道不存在")
+		return
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		common.ApiErrorMsg(c, "该渠道不是多密钥模式")
+		return
+	}
+
+	keys := channel.GetKeys()
+	if keyIndex >= len(keys) {
+		common.ApiErrorMsg(c, "密钥索引超出范围")
+		return
+	}
+
+	recordManageAudit(c, "channel.multi_key_view", map[string]interface{}{
+		"id":         channel.Id,
+		"name":       channel.Name,
+		"key_index":  keyIndex,
+		"key_number": keyIndex + 1,
+	})
+	common.ApiSuccess(c, gin.H{"key": keys[keyIndex]})
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1615,8 +1655,9 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 			}
 
-			// Create key preview (first 10 chars)
-			keyPreview := key
+			maskedKey := model.MaskTokenKey(key)
+			// Keep the historical preview field without ever returning a short key in full.
+			keyPreview := maskedKey
 			if len(key) > 10 {
 				keyPreview = key[:10] + "..."
 			}
@@ -1627,6 +1668,7 @@ func ManageMultiKeys(c *gin.Context) {
 				DisabledTime: disabledTime,
 				Reason:       reason,
 				KeyPreview:   keyPreview,
+				MaskedKey:    maskedKey,
 			})
 		}
 
