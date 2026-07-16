@@ -44,13 +44,13 @@ import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
+import { getCacheBillingUsage } from '../../lib/cache-billing'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
   decodeBillingExprB64,
   getTieredBillingSummary,
-  hasAnyCacheTokens,
   isViolationFeeLog,
   getFirstResponseTimeColor,
   getResponseTimeColor,
@@ -163,6 +163,7 @@ function BillingBreakdown(props: {
   const isClaude = other.claude === true
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
+  const cacheBillingUsage = getCacheBillingUsage(other)
 
   const rows: Array<{ label: string; value: string }> = []
   const priceOpts = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
@@ -227,14 +228,19 @@ function BillingBreakdown(props: {
     })
   }
 
-  if (!isTieredExpr && isClaude && hasAnyCacheTokens(other)) {
-    if (other.cache_ratio != null && other.cache_ratio !== 1) {
+  if (!isTieredExpr && isClaude && cacheBillingUsage.hasAny) {
+    if (
+      cacheBillingUsage.read &&
+      other.cache_ratio != null &&
+      other.cache_ratio !== 1
+    ) {
       rows.push({
         label: t('Cache Read'),
         value: `${fmtPrice(baseInputUSD * other.cache_ratio)}/M`,
       })
     }
     if (
+      cacheBillingUsage.creation &&
       other.cache_creation_ratio != null &&
       other.cache_creation_ratio !== 1
     ) {
@@ -244,6 +250,7 @@ function BillingBreakdown(props: {
       })
     }
     if (
+      cacheBillingUsage.creation5m &&
       other.cache_creation_ratio_5m != null &&
       other.cache_creation_ratio_5m !== 0
     ) {
@@ -253,6 +260,7 @@ function BillingBreakdown(props: {
       })
     }
     if (
+      cacheBillingUsage.creation1h &&
       other.cache_creation_ratio_1h != null &&
       other.cache_creation_ratio_1h !== 0
     ) {
@@ -1051,7 +1059,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               compact
               billingExpr={decodeBillingExprB64(other.expr_b64)}
               matchedTierLabel={other.matched_tier}
-              hideCacheColumns={!hasAnyCacheTokens(other)}
+              hideCacheColumns={!getCacheBillingUsage(other).hasAny}
             />
           </DetailSection>
         )}

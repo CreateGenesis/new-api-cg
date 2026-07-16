@@ -297,8 +297,10 @@ func GenerateClaudeOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	modelPrice float64, userGroupRatio float64) map[string]interface{} {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, cacheTokens, cacheRatio, modelPrice, userGroupRatio)
 	info["claude"] = true
-	info["cache_creation_tokens"] = cacheCreationTokens
-	info["cache_creation_ratio"] = cacheCreationRatio
+	if cacheCreationTokens > 0 {
+		info["cache_creation_tokens"] = cacheCreationTokens
+		info["cache_creation_ratio"] = cacheCreationRatio
+	}
 	if cacheCreationTokens5m != 0 {
 		info["cache_creation_tokens_5m"] = cacheCreationTokens5m
 		info["cache_creation_ratio_5m"] = cacheCreationRatio5m

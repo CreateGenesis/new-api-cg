@@ -77,3 +77,58 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 	assert.NotContains(t, cacheInfo, "match_ratio")
 	assert.NotContains(t, cacheInfo, "simulated_cached_tokens")
 }
+
+func TestGenerateClaudeOtherInfoOmitsUnusedCacheCreationPricing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	now := time.Now()
+	info := &relaycommon.RelayInfo{
+		StartTime:         now,
+		FirstResponseTime: now,
+		ChannelMeta:       &relaycommon.ChannelMeta{},
+	}
+
+	other := GenerateClaudeOtherInfo(
+		c,
+		info,
+		1,
+		1,
+		5,
+		100,
+		0.1,
+		0,
+		1.25,
+		0,
+		1.25,
+		0,
+		2,
+		0,
+		1,
+	)
+
+	require.Equal(t, 100, other["cache_tokens"])
+	require.NotContains(t, other, "cache_creation_tokens")
+	require.NotContains(t, other, "cache_creation_ratio")
+
+	other = GenerateClaudeOtherInfo(
+		c,
+		info,
+		1,
+		1,
+		5,
+		0,
+		0.1,
+		20,
+		1.25,
+		0,
+		1.25,
+		0,
+		2,
+		0,
+		1,
+	)
+
+	require.Equal(t, 20, other["cache_creation_tokens"])
+	require.Equal(t, 1.25, other["cache_creation_ratio"])
+}

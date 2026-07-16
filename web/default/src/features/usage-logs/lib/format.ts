@@ -26,8 +26,9 @@ import {
 
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
+import { hasAnyCacheTokens } from './cache-billing'
 
-export { normalizeTierLabel }
+export { hasAnyCacheTokens, normalizeTierLabel }
 
 const PARAM_OVERRIDE_ACTION_MAP: Record<string, string> = {
   set: 'Set',
@@ -231,23 +232,6 @@ export interface TieredBillingSummary {
   tiers: ParsedTier[]
   tier: ParsedTier
   priceEntries: Array<{ field: string; shortLabel: string; price: number }>
-}
-
-/**
- * Whether the request payload reports any cache-related token usage. Used to
- * suppress cache pricing rows from the tiered breakdown when the request did
- * not exercise the cache path (mirrors the classic frontend behaviour).
- */
-export function hasAnyCacheTokens(
-  other: LogOtherData | null | undefined
-): boolean {
-  if (!other) return false
-  return (
-    (other.cache_tokens || 0) > 0 ||
-    (other.cache_creation_tokens || 0) > 0 ||
-    (other.cache_creation_tokens_5m || 0) > 0 ||
-    (other.cache_creation_tokens_1h || 0) > 0
-  )
 }
 
 export function getTieredBillingSummary(
