@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -25,7 +26,12 @@ func Playground(c *gin.Context) {
 
 	useAccessToken := c.GetBool("use_access_token")
 	if useAccessToken {
-		newAPIError = types.NewError(errors.New("暂不支持使用 access token"), types.ErrorCodeAccessDenied, types.ErrOptionWithSkipRetry())
+		newAPIError = types.NewError(
+			errors.New("暂不支持使用 access token"),
+			types.ErrorCodeAccessDenied,
+			types.ErrOptionWithStatusCode(http.StatusForbidden),
+			types.ErrOptionWithSkipRetry(),
+		)
 		return
 	}
 

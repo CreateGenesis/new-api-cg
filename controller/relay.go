@@ -110,7 +110,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
 			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
 		} else {
-			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest)
+			newAPIError = types.NewError(
+				err,
+				types.ErrorCodeInvalidRequest,
+				types.ErrOptionWithStatusCode(http.StatusBadRequest),
+				types.ErrOptionWithSkipRetry(),
+			)
 		}
 		return
 	}
@@ -139,7 +144,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		contains, words := service.CheckSensitiveText(meta.CombineText)
 		if contains {
 			logger.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", ")))
-			newAPIError = types.NewError(err, types.ErrorCodeSensitiveWordsDetected)
+			newAPIError = types.NewError(
+				errors.New("sensitive words detected"),
+				types.ErrorCodeSensitiveWordsDetected,
+				types.ErrOptionWithStatusCode(http.StatusBadRequest),
+				types.ErrOptionWithSkipRetry(),
+			)
 			return
 		}
 	}
