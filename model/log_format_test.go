@@ -34,6 +34,27 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	require.Contains(t, parsed, "model_price")
 }
 
+func TestFormatUserLogsRedactsModelMapping(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"model_ratio":         1.5,
+		"is_model_mapped":     true,
+		"upstream_model_name": "xopglm52",
+	})
+	logs := []*Log{{
+		ModelName: "glm-5.2",
+		Other:     other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, "glm-5.2", logs[0].ModelName)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.NotContains(t, parsed, "is_model_mapped")
+	require.NotContains(t, parsed, "upstream_model_name")
+	require.Contains(t, parsed, "model_ratio")
+}
+
 func TestFormatUserLogsRedactsErrorDiagnostics(t *testing.T) {
 	other := common.MapToJsonStr(map[string]interface{}{
 		"error_type":   "openai_error",
