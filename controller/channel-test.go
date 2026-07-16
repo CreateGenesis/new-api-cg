@@ -72,7 +72,7 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
-func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, keyIndex *int) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -173,7 +173,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	group, _ := model.GetUserGroup(testUserID, false)
 	c.Set("group", group)
 
-	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	var newAPIError *types.NewAPIError
+	if keyIndex == nil {
+		newAPIError = middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	} else {
+		newAPIError = middleware.SetupContextForChannelTestKey(c, channel, testModel, *keyIndex)
+	}
 	if newAPIError != nil {
 		return testResult{
 			context:     c,
@@ -839,6 +844,23 @@ func TestChannel(c *gin.Context) {
 			return
 		}
 	}
+	var keyIndex *int
+	if rawKeyIndex, exists := c.GetQuery("key_index"); exists {
+		parsedKeyIndex, parseErr := strconv.Atoi(rawKeyIndex)
+		if parseErr != nil || parsedKeyIndex < 0 {
+			common.ApiErrorMsg(c, "密钥索引无效")
+			return
+		}
+		if !channel.ChannelInfo.IsMultiKey {
+			common.ApiErrorMsg(c, "该渠道不是多密钥模式")
+			return
+		}
+		if parsedKeyIndex >= len(channel.GetKeys()) {
+			common.ApiErrorMsg(c, "密钥索引超出范围")
+			return
+		}
+		keyIndex = &parsedKeyIndex
+	}
 	//defer func() {
 	//	if channel.ChannelInfo.IsMultiKey {
 	//		go func() { _ = channel.SaveChannelInfo() }()
@@ -857,7 +879,7 @@ func TestChannel(c *gin.Context) {
 	if c.Request != nil {
 		requestCtx = c.Request.Context()
 	}
-	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream, keyIndex)
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
@@ -924,7 +946,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		}
 		isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 		tik := time.Now()
-		result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+		result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel), nil)
 		tok := time.Now()
 		milliseconds := tok.Sub(tik).Milliseconds()
 		if ctx != nil && ctx.Err() != nil {

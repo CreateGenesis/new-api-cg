@@ -441,6 +441,16 @@ func getTaskOriginModelName(c *gin.Context) string {
 }
 
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, nil)
+}
+
+// SetupContextForChannelTestKey prepares a channel test with one exact
+// multi-key entry without advancing any of the channel's selection state.
+func SetupContextForChannelTestKey(c *gin.Context, channel *model.Channel, modelName string, keyIndex int) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, &keyIndex)
+}
+
+func setupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string, fixedKeyIndex *int) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
@@ -465,23 +475,37 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	var excludedIndexes map[int]struct{}
-	if channel.ChannelInfo.IsMultiKey {
-		excludedIndexes = getTriedMultiKeyIndexes(c, channel.Id)
-	}
-	persistAffinity := !common.GetContextKeyBool(c, constant.ContextKeyChannelMultiKeyOverload)
-	key, index, newAPIError := channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes, persistAffinity)
-	if newAPIError != nil && len(excludedIndexes) > 0 && !c.GetBool("overload_key_selection") && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
-		clearTriedMultiKeyIndexes(c, channel.Id)
-		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil, true)
-	}
-	if newAPIError != nil {
-		return newAPIError
+	var key string
+	var index int
+	if fixedKeyIndex != nil {
+		keys := channel.GetKeys()
+		if !channel.ChannelInfo.IsMultiKey || *fixedKeyIndex < 0 || *fixedKeyIndex >= len(keys) {
+			return types.NewError(errors.New("invalid multi-key channel key index"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		key = keys[*fixedKeyIndex]
+		index = *fixedKeyIndex
+	} else {
+		var excludedIndexes map[int]struct{}
+		if channel.ChannelInfo.IsMultiKey {
+			excludedIndexes = getTriedMultiKeyIndexes(c, channel.Id)
+		}
+		persistAffinity := !common.GetContextKeyBool(c, constant.ContextKeyChannelMultiKeyOverload)
+		var newAPIError *types.NewAPIError
+		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes, persistAffinity)
+		if newAPIError != nil && len(excludedIndexes) > 0 && !c.GetBool("overload_key_selection") && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
+			clearTriedMultiKeyIndexes(c, channel.Id)
+			key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil, true)
+		}
+		if newAPIError != nil {
+			return newAPIError
+		}
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
-		rememberTriedMultiKeyIndex(c, channel.Id, index)
+		if fixedKeyIndex == nil {
+			rememberTriedMultiKeyIndex(c, channel.Id, index)
+		}
 	} else {
 		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)

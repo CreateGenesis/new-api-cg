@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Copy01Icon,
+  GaugeIcon,
   Loading03Icon,
   Tick02Icon,
   ViewIcon,
@@ -74,6 +75,7 @@ import {
   formatTimestamp,
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
+  handleTestChannel,
   isDestructiveAction,
 } from '../../lib'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
@@ -118,6 +120,9 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  const [testingKeyIndexes, setTestingKeyIndexes] = useState<Set<number>>(
+    new Set()
+  )
 
   // Complete keys are scoped to the current dialog/channel and fetched on demand.
   const [loadedKeys, setLoadedKeys] = useState<Record<number, string>>({})
@@ -142,6 +147,8 @@ export function MultiKeyManageDialog({
   const copiedTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(
     new Map()
   )
+  const testingKeyIndexesRef = useRef<Set<number>>(new Set())
+  const testGenerationRef = useRef(0)
   const secretGenerationRef = useRef(0)
   const statusGenerationRef = useRef(0)
   const secretScopeRef = useRef<number | null>(null)
@@ -167,6 +174,9 @@ export function MultiKeyManageDialog({
   // Reset and load data when dialog opens
   useEffect(() => {
     statusGenerationRef.current += 1
+    testGenerationRef.current += 1
+    testingKeyIndexesRef.current.clear()
+    setTestingKeyIndexes(new Set())
     clearLoadedSecrets()
     setKeys([])
     setKeysChannelId(null)
@@ -350,6 +360,36 @@ export function MultiKeyManageDialog({
         next.delete(keyIndex)
         return next
       })
+    }
+  }
+
+  const handleTestKey = async (keyIndex: number) => {
+    if (!currentRow || testingKeyIndexesRef.current.has(keyIndex)) return
+
+    const channelId = currentRow.id
+    const generation = testGenerationRef.current
+    testingKeyIndexesRef.current.add(keyIndex)
+    setTestingKeyIndexes((previous) => new Set(previous).add(keyIndex))
+    try {
+      await handleTestChannel(
+        channelId,
+        { channelName: currentRow.name, keyIndex },
+        () => {
+          queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+        }
+      )
+    } finally {
+      if (
+        generation === testGenerationRef.current &&
+        secretScopeRef.current === channelId
+      ) {
+        testingKeyIndexesRef.current.delete(keyIndex)
+        setTestingKeyIndexes((previous) => {
+          const next = new Set(previous)
+          next.delete(keyIndex)
+          return next
+        })
+      }
     }
   }
 
@@ -596,7 +636,7 @@ export function MultiKeyManageDialog({
             {!isLoading && visibleKeys.length > 0 && (
               <StaticDataTable
                 className='rounded-none border-0'
-                tableClassName='min-w-[1050px]'
+                tableClassName='min-w-[1110px]'
                 data={visibleKeys}
                 getRowKey={(key) => key.index}
                 columns={[
@@ -606,6 +646,40 @@ export function MultiKeyManageDialog({
                     className: 'w-20',
                     cellClassName: 'font-mono text-sm',
                     cell: (key) => `#${key.index + 1}`,
+                  },
+                  {
+                    id: 'test',
+                    header: t('Test'),
+                    className: 'w-16 text-center',
+                    cellClassName: 'text-center',
+                    cell: (key) => {
+                      const isTesting = testingKeyIndexes.has(key.index)
+                      const testLabel = t('Test channel key #{{index}}', {
+                        index: key.index + 1,
+                      })
+                      return (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                variant='ghost'
+                                size='icon-xs'
+                                onClick={() => void handleTestKey(key.index)}
+                                disabled={isTesting}
+                                aria-label={testLabel}
+                              />
+                            }
+                          >
+                            <HugeiconsIcon
+                              icon={isTesting ? Loading03Icon : GaugeIcon}
+                              className={isTesting ? 'animate-spin' : undefined}
+                              strokeWidth={2}
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>{testLabel}</TooltipContent>
+                        </Tooltip>
+                      )
+                    },
                   },
                   {
                     id: 'key',
