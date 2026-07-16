@@ -39,6 +39,49 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type SystemConfigChangeCounts = {
+  add: number
+  update: number
+  unchanged: number
+  skipped: number
+}
+
+export type SystemConfigIssue = {
+  code:
+    | 'unknown_option'
+    | 'new_channel_disabled'
+    | 'missing_vendor'
+    | 'ambiguous_channel'
+    | 'duplicate_vendor'
+    | 'duplicate_model'
+    | 'duplicate_channel'
+  item?: string
+}
+
+export type SystemConfigOmitted = {
+  option_groups: string[]
+  channel_fields: string[]
+  data: string[]
+}
+
+export type SystemConfigImportPreview = {
+  hash: string
+  options: SystemConfigChangeCounts
+  vendors: SystemConfigChangeCounts
+  models: SystemConfigChangeCounts
+  channels: SystemConfigChangeCounts
+  warnings: SystemConfigIssue[]
+  conflicts: SystemConfigIssue[]
+  omitted: SystemConfigOmitted
+  reload_needed: boolean
+}
+
+export type SystemConfigImportResponse = {
+  success: boolean
+  message: string
+  data?: SystemConfigImportPreview
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string

@@ -23,6 +23,7 @@ import type {
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
   SystemOptionsResponse,
+  SystemConfigImportResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
   UpdateOptionRequest,
@@ -38,6 +39,43 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function exportSystemConfig() {
+  const res = await api.get<Blob>('/api/option/config/export', {
+    responseType: 'blob',
+    disableDuplicate: true,
+  })
+  const disposition = String(res.headers['content-disposition'] ?? '')
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i)
+  return {
+    blob: res.data,
+    filename: filenameMatch?.[1] ?? 'system-config.json',
+  }
+}
+
+export async function previewSystemConfigImport(content: string) {
+  const res = await api.post<SystemConfigImportResponse>(
+    '/api/option/config/import/preview',
+    content,
+    { headers: { 'Content-Type': 'application/json' } }
+  )
+  return res.data
+}
+
+export async function applySystemConfigImport(
+  content: string,
+  previewHash: string
+) {
+  const res = await api.post<SystemConfigImportResponse>(
+    '/api/option/config/import',
+    content,
+    {
+      params: { preview_hash: previewHash },
+      headers: { 'Content-Type': 'application/json' },
+    }
+  )
   return res.data
 }
 
