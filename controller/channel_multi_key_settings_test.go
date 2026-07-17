@@ -45,6 +45,39 @@ func TestAddChannelRejectsInvalidLeastRequestsWindow(t *testing.T) {
 	assert.Contains(t, response.Message, "multiple of 10")
 }
 
+func TestAddChannelRejectsInvalidCacheAffinityThreshold(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	threshold := 101
+	payload, err := common.Marshal(AddChannelRequest{
+		Mode:                                  "multi_to_single",
+		MultiKeyMode:                          constant.MultiKeyModeCacheAffinityLeastRequests,
+		MultiKeyLeastRequestsWindowSeconds:    60,
+		MultiKeyCacheAffinityThresholdPercent: &threshold,
+		Channel: &model.Channel{
+			Type:   constant.ChannelTypeOpenAI,
+			Name:   "cache-aware",
+			Key:    "key-a\nkey-b",
+			Models: "gpt-4o",
+			Group:  "default",
+		},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	AddChannel(ctx)
+
+	var response struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.False(t, response.Success)
+	assert.Contains(t, response.Message, "between 0 and 100")
+}
+
 func TestMergeChannelOverloadSettingsPreservesOmittedConfig(t *testing.T) {
 	target := model.ChannelInfo{
 		ChannelOverloadProtection:  model.OverloadProtection{Enabled: true, RequestsPerSecond: 2},

@@ -155,6 +155,8 @@ func TestMultiKeyLeastRequestsWindowValidationAndLegacyDefault(t *testing.T) {
 	var info ChannelInfo
 	require.NoError(t, info.Scan([]byte(`{"is_multi_key":true,"multi_key_mode":"least_requests"}`)))
 	assert.Equal(t, DefaultMultiKeyLeastRequestsWindowSeconds, info.MultiKeyLeastRequestsWindowSeconds)
+	require.NotNil(t, info.MultiKeyCacheAffinityThresholdPercent)
+	assert.Equal(t, DefaultMultiKeyCacheAffinityThresholdPercent, *info.MultiKeyCacheAffinityThresholdPercent)
 }
 
 func TestMultiKeyLeastRequestsRedisIsAtomicAcrossClients(t *testing.T) {

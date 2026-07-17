@@ -145,6 +145,7 @@ const CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO: Channel['channel_info'] = {
   multi_key_polling_index: 0,
   multi_key_affinity_ttl_seconds: 3600,
   multi_key_least_requests_window_seconds: 60,
+  multi_key_cache_affinity_threshold_percent: 35,
   multi_key_mode: 'random',
   channel_overload_protection: {
     enabled: false,
@@ -241,10 +242,17 @@ export const channelFormSchema = z
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
     multi_key_type: z
-      .enum(['random', 'polling', 'affinity', 'least_requests'])
+      .enum([
+        'random',
+        'polling',
+        'affinity',
+        'least_requests',
+        'cache_affinity_least_requests',
+      ])
       .optional(),
     multi_key_affinity_ttl_seconds: z.number().optional(),
     multi_key_least_requests_window_seconds: z.number().optional(),
+    multi_key_cache_affinity_threshold_percent: z.number().optional(),
     multi_key_overload_enabled: z.boolean().optional(),
     multi_key_overload_requests_per_second: z.number().optional(),
     multi_key_overload_requests_per_minute: z.number().optional(),
@@ -389,7 +397,10 @@ export const channelFormSchema = z
       }
     }
 
-    if (data.multi_key_type === 'least_requests') {
+    if (
+      data.multi_key_type === 'least_requests' ||
+      data.multi_key_type === 'cache_affinity_least_requests'
+    ) {
       const windowSeconds = Number(data.multi_key_least_requests_window_seconds)
       if (
         !Number.isInteger(windowSeconds) ||
@@ -402,6 +413,18 @@ export const channelFormSchema = z
           'multi_key_least_requests_window_seconds',
           'Least requests window must be between 10 and 3600 seconds and a multiple of 10.'
         )
+      }
+      if (data.multi_key_type === 'cache_affinity_least_requests') {
+        const threshold = Number(
+          data.multi_key_cache_affinity_threshold_percent
+        )
+        if (!Number.isInteger(threshold) || threshold < 0 || threshold > 100) {
+          addRequiredIssue(
+            ctx,
+            'multi_key_cache_affinity_threshold_percent',
+            'Cache affinity threshold must be an integer between 0 and 100.'
+          )
+        }
       }
     }
 
@@ -472,7 +495,10 @@ export const channelFormSchema = z
       }
     }
 
-    if (data.simulated_model_cache_enabled) {
+    const simulatedModelCacheRuntimeActive =
+      data.simulated_model_cache_enabled ||
+      data.multi_key_type === 'cache_affinity_least_requests'
+    if (simulatedModelCacheRuntimeActive) {
       if (
         !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
         Number(data.simulated_model_cache_ttl_seconds) < 1
@@ -484,7 +510,7 @@ export const channelFormSchema = z
         )
       }
     }
-    if (data.simulated_model_cache_enabled) {
+    if (simulatedModelCacheRuntimeActive) {
       const minMatchRatio = Number(data.simulated_model_cache_min_match_ratio)
       if (
         !Number.isFinite(minMatchRatio) ||
@@ -576,6 +602,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   multi_key_type: 'random',
   multi_key_affinity_ttl_seconds: 3600,
   multi_key_least_requests_window_seconds: 60,
+  multi_key_cache_affinity_threshold_percent: 35,
   multi_key_overload_enabled: false,
   multi_key_overload_requests_per_second: 0,
   multi_key_overload_requests_per_minute: 0,
@@ -857,6 +884,8 @@ export function transformChannelToFormDefaults(
       channel.channel_info.multi_key_affinity_ttl_seconds || 3600,
     multi_key_least_requests_window_seconds:
       channel.channel_info.multi_key_least_requests_window_seconds || 60,
+    multi_key_cache_affinity_threshold_percent:
+      channel.channel_info.multi_key_cache_affinity_threshold_percent ?? 35,
     multi_key_overload_enabled:
       channel.channel_info.multi_key_overload_protection?.enabled === true,
     multi_key_overload_requests_per_second:
@@ -1030,7 +1059,10 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   const simulatedModelCacheEnabled =
     formData.simulated_model_cache_enabled === true
-  if (simulatedModelCacheEnabled) {
+  const simulatedModelCacheRuntimeActive =
+    simulatedModelCacheEnabled ||
+    formData.multi_key_type === 'cache_affinity_least_requests'
+  if (simulatedModelCacheRuntimeActive) {
     const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
     const simulatedModelCache: Record<string, unknown> = {
       enabled: simulatedModelCacheEnabled,
@@ -1143,9 +1175,15 @@ function normalizeBaseUrl(value: string | undefined): string {
  */
 export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   mode: 'single' | 'batch' | 'multi_to_single'
-  multi_key_mode?: 'random' | 'polling' | 'affinity' | 'least_requests'
+  multi_key_mode?:
+    | 'random'
+    | 'polling'
+    | 'affinity'
+    | 'least_requests'
+    | 'cache_affinity_least_requests'
   multi_key_affinity_ttl_seconds?: number
   multi_key_least_requests_window_seconds?: number
+  multi_key_cache_affinity_threshold_percent?: number
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
 } {
@@ -1201,8 +1239,15 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
           )
         : undefined,
     multi_key_least_requests_window_seconds:
-      mode === 'multi_to_single' && formData.multi_key_type === 'least_requests'
+      mode === 'multi_to_single' &&
+      (formData.multi_key_type === 'least_requests' ||
+        formData.multi_key_type === 'cache_affinity_least_requests')
         ? Number(formData.multi_key_least_requests_window_seconds) || 60
+        : undefined,
+    multi_key_cache_affinity_threshold_percent:
+      mode === 'multi_to_single' &&
+      formData.multi_key_type === 'cache_affinity_least_requests'
+        ? Number(formData.multi_key_cache_affinity_threshold_percent) || 0
         : undefined,
     batch_add_set_key_prefix_2_name:
       mode === 'batch' ? formData.batch_add_set_key_prefix_2_name : undefined,

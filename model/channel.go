@@ -68,17 +68,18 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey                         bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize                       int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList                 map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason             map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime               map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex               int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyAffinityTTLSeconds         int                   `json:"multi_key_affinity_ttl_seconds,omitempty"`
-	MultiKeyLeastRequestsWindowSeconds int                   `json:"multi_key_least_requests_window_seconds"`
-	MultiKeyMode                       constant.MultiKeyMode `json:"multi_key_mode"`
-	ChannelOverloadProtection          OverloadProtection    `json:"channel_overload_protection"`
-	MultiKeyOverloadProtection         OverloadProtection    `json:"multi_key_overload_protection"`
+	IsMultiKey                            bool                  `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize                          int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList                    map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason                map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime                  map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex                  int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
+	MultiKeyAffinityTTLSeconds            int                   `json:"multi_key_affinity_ttl_seconds,omitempty"`
+	MultiKeyLeastRequestsWindowSeconds    int                   `json:"multi_key_least_requests_window_seconds"`
+	MultiKeyCacheAffinityThresholdPercent *int                  `json:"multi_key_cache_affinity_threshold_percent,omitempty"`
+	MultiKeyMode                          constant.MultiKeyMode `json:"multi_key_mode"`
+	ChannelOverloadProtection             OverloadProtection    `json:"channel_overload_protection"`
+	MultiKeyOverloadProtection            OverloadProtection    `json:"multi_key_overload_protection"`
 }
 
 type OverloadProtection struct {
@@ -255,6 +256,10 @@ func (c *ChannelInfo) Scan(value interface{}) error {
 	} else {
 		c.MultiKeyLeastRequestsWindowSeconds = DefaultMultiKeyLeastRequestsWindowSeconds
 	}
+	if c.MultiKeyCacheAffinityThresholdPercent == nil || *c.MultiKeyCacheAffinityThresholdPercent < 0 || *c.MultiKeyCacheAffinityThresholdPercent > 100 {
+		defaultThreshold := DefaultMultiKeyCacheAffinityThresholdPercent
+		c.MultiKeyCacheAffinityThresholdPercent = &defaultThreshold
+	}
 	c.ChannelOverloadProtection.normalize(false)
 	c.MultiKeyOverloadProtection.normalize(true)
 	return nil
@@ -324,6 +329,14 @@ func (channel *Channel) GetNextEnabledKeyWithAffinity(affinityValue string) (str
 }
 
 func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, excludedIndexes map[int]struct{}, persistAffinity bool) (string, int, *types.NewAPIError) {
+	return channel.getNextEnabledKeyWithSelection(affinityValue, excludedIndexes, persistAffinity, nil)
+}
+
+func (channel *Channel) GetNextEnabledKeyWithCacheAffinity(preferredDigests []string, excludedIndexes map[int]struct{}) (string, int, *types.NewAPIError) {
+	return channel.getNextEnabledKeyWithSelection("", excludedIndexes, true, preferredDigests)
+}
+
+func (channel *Channel) getNextEnabledKeyWithSelection(affinityValue string, excludedIndexes map[int]struct{}, persistAffinity bool, preferredDigests []string) (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
@@ -379,6 +392,9 @@ func (channel *Channel) GetNextEnabledKeyWithSelection(affinityValue string, exc
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModeLeastRequests:
 		selectedIdx := channel.selectMultiKeyLeastRequestsIndex(enabledIdx)
+		return keys[selectedIdx], selectedIdx, nil
+	case constant.MultiKeyModeCacheAffinityLeastRequests:
+		selectedIdx := channel.selectMultiKeyCacheAffinityIndex(keys, enabledIdx, preferredDigests)
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModePolling:
 		// Use channel-specific lock to ensure thread-safe polling

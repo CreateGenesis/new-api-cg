@@ -65,6 +65,7 @@ function testChannel(settings: string): Channel {
       multi_key_mode: 'random',
       multi_key_affinity_ttl_seconds: 3600,
       multi_key_least_requests_window_seconds: 60,
+      multi_key_cache_affinity_threshold_percent: 35,
       channel_overload_protection: {
         enabled: false,
         requests_per_second: 0,
@@ -233,6 +234,29 @@ describe('channel form simulated model cache settings', () => {
     assert.equal(settings.simulated_model_cache.exact_replay_enabled, undefined)
     assert.equal(settings.simulated_model_cache.reuse_limit, undefined)
   })
+
+  test('keeps hidden simulated cache settings for cache-aware routing', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_mode: 'multi_to_single',
+      multi_key_type: 'cache_affinity_least_requests',
+      simulated_model_cache_enabled: false,
+      simulated_model_cache_ttl_seconds: 120,
+      simulated_model_cache_min_match_ratio: 0.25,
+    })
+
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.simulated_model_cache.enabled, false)
+    assert.equal(settings.simulated_model_cache.ttl_seconds, 120)
+    assert.equal(settings.simulated_model_cache.min_match_ratio, 0.25)
+  })
 })
 
 describe('channel form multi-key affinity settings', () => {
@@ -315,6 +339,50 @@ describe('channel form least requests settings', () => {
           parsed.error.issues.some(
             (issue) =>
               issue.path[0] === 'multi_key_least_requests_window_seconds'
+          ),
+          true
+        )
+      }
+    }
+  })
+
+  test('saves cache-aware strategy, window, and threshold', () => {
+    const form = {
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'key-a\nkey-b',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      multi_key_mode: 'multi_to_single' as const,
+      multi_key_type: 'cache_affinity_least_requests' as const,
+      multi_key_least_requests_window_seconds: 120,
+      multi_key_cache_affinity_threshold_percent: 35,
+    }
+
+    const parsed = channelFormSchema.safeParse(form)
+    assert.equal(parsed.success, true)
+    const payload = transformFormDataToCreatePayload(form)
+    assert.equal(payload.multi_key_mode, 'cache_affinity_least_requests')
+    assert.equal(payload.multi_key_least_requests_window_seconds, 120)
+    assert.equal(payload.multi_key_cache_affinity_threshold_percent, 35)
+  })
+
+  test('rejects invalid cache-aware thresholds', () => {
+    for (const threshold of [-1, 1.5, 101]) {
+      const parsed = channelFormSchema.safeParse({
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        multi_key_type: 'cache_affinity_least_requests',
+        multi_key_cache_affinity_threshold_percent: threshold,
+      })
+
+      assert.equal(parsed.success, false)
+      if (!parsed.success) {
+        assert.equal(
+          parsed.error.issues.some(
+            (issue) =>
+              issue.path[0] === 'multi_key_cache_affinity_threshold_percent'
           ),
           true
         )

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 )
 
 var (
@@ -26,6 +27,8 @@ const (
 	simulatedModelCacheAsyncTaskTimeout        = 5 * time.Second
 )
 
+const SimulatedModelCacheRoutingPreparationContextKey = "simulated_model_cache_routing_preparation"
+
 const (
 	SimulatedModelCacheBypassMemoryBudget     = "memory_budget"
 	SimulatedModelCacheBypassWorkerQueueFull  = "worker_queue_full"
@@ -37,6 +40,7 @@ const (
 	SimulatedModelCacheBypassInputTokensLow   = "input_tokens_below_minimum"
 	SimulatedModelCacheBypassResponseTooLarge = "response_too_large"
 	SimulatedModelCacheBypassResponseBuffer   = "response_buffer_unavailable"
+	SimulatedModelCacheBypassRoutingTimeout   = "routing_match_timeout"
 )
 
 type simulatedModelCacheMemoryBudget struct {
@@ -131,6 +135,19 @@ type SimulatedModelCachePartialMatchResult struct {
 	Match    SimulatedModelCachePartialMatch
 	Prepared *SimulatedModelCachePreparedFingerprint
 	Err      error
+}
+
+type SimulatedModelCacheRoutingPreparation struct {
+	ChannelID  int
+	Model      string
+	PromptText string
+	Settings   dto.SimulatedModelCacheSettings
+	Result     SimulatedModelCachePartialMatchResult
+}
+
+func MatchSimulatedModelCacheSynchronously(ctx context.Context, req SimulatedModelCachePartialMatchRequest) SimulatedModelCachePartialMatchResult {
+	match, prepared, err := runSimulatedModelCachePartialMatch(ctx, req)
+	return SimulatedModelCachePartialMatchResult{Match: match, Prepared: prepared, Err: err}
 }
 
 type SimulatedModelCachePartialMatchHandle struct {

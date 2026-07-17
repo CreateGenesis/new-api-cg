@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	DefaultMultiKeyLeastRequestsWindowSeconds = 60
-	MinMultiKeyLeastRequestsWindowSeconds     = 10
-	MaxMultiKeyLeastRequestsWindowSeconds     = 3600
-	MultiKeyLeastRequestsBucketSeconds        = 10
+	DefaultMultiKeyLeastRequestsWindowSeconds    = 60
+	MinMultiKeyLeastRequestsWindowSeconds        = 10
+	MaxMultiKeyLeastRequestsWindowSeconds        = 3600
+	MultiKeyLeastRequestsBucketSeconds           = 10
+	DefaultMultiKeyCacheAffinityThresholdPercent = 35
 )
 
 const multiKeyLeastRequestsRedisNamespace = "new-api:multi_key_least_requests:v1"
@@ -81,7 +82,7 @@ func ValidateAndNormalizeMultiKeySettings(info *ChannelInfo) error {
 		return nil
 	}
 	switch info.MultiKeyMode {
-	case "", constant.MultiKeyModeRandom, constant.MultiKeyModePolling, constant.MultiKeyModeAffinity, constant.MultiKeyModeLeastRequests:
+	case "", constant.MultiKeyModeRandom, constant.MultiKeyModePolling, constant.MultiKeyModeAffinity, constant.MultiKeyModeLeastRequests, constant.MultiKeyModeCacheAffinityLeastRequests:
 	default:
 		return fmt.Errorf("unsupported multi-key mode: %s", info.MultiKeyMode)
 	}
@@ -91,6 +92,13 @@ func ValidateAndNormalizeMultiKeySettings(info *ChannelInfo) error {
 		return err
 	}
 	info.MultiKeyLeastRequestsWindowSeconds = windowSeconds
+	if info.MultiKeyCacheAffinityThresholdPercent == nil {
+		defaultThreshold := DefaultMultiKeyCacheAffinityThresholdPercent
+		info.MultiKeyCacheAffinityThresholdPercent = &defaultThreshold
+	}
+	if *info.MultiKeyCacheAffinityThresholdPercent < 0 || *info.MultiKeyCacheAffinityThresholdPercent > 100 {
+		return fmt.Errorf("multi-key cache affinity threshold must be between 0 and 100 percent")
+	}
 	return nil
 }
 

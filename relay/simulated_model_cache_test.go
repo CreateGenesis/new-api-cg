@@ -136,6 +136,33 @@ func TestSimulatedModelCacheModelNameFallsBackToUpstreamModel(t *testing.T) {
 	assert.Empty(t, simulatedModelCacheModelName(nil))
 }
 
+func TestHiddenSimulatedModelCacheMatchDoesNotRewriteResponseOrLogInfo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	attempt := &simulatedModelCacheAttempt{
+		settings:       dto.SimulatedModelCacheSettings{Enabled: false},
+		visible:        false,
+		promptText:     "hidden cache",
+		cacheModelName: "gpt-test",
+		precomputed:    &service.SimulatedModelCachePartialMatchResult{Match: service.SimulatedModelCachePartialMatch{Found: true, MatchRatio: 1}},
+	}
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 1}}
+	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, recorder)
+	original := []byte(`{"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}}`)
+	_, err := recorder.Write(original)
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 5, TotalTokens: 105}
+
+	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
+
+	assert.JSONEq(t, string(original), w.Body.String())
+	assert.Nil(t, info.SimulatedModelCacheInfo)
+	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+}
+
 func TestSimulatedModelCacheModelNameKeepsRequestedCompactionModel(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		OriginModelName: "provider-compact-model",

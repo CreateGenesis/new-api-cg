@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -491,13 +492,34 @@ func setupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 		persistAffinity := !common.GetContextKeyBool(c, constant.ContextKeyChannelMultiKeyOverload)
 		var newAPIError *types.NewAPIError
-		key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes, persistAffinity)
+		var routingPreparation *service.SimulatedModelCacheRoutingPreparation
+		if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModeCacheAffinityLeastRequests {
+			routingPreparation = prepareSimulatedModelCacheRouting(c, channel, modelName, excludedIndexes)
+			preferredDigests := []string(nil)
+			if routingPreparation != nil && routingPreparation.Result.Match.Found {
+				preferredDigests = routingPreparation.Result.Match.PreferredKeyDigests
+			}
+			key, index, newAPIError = channel.GetNextEnabledKeyWithCacheAffinity(preferredDigests, excludedIndexes)
+		} else {
+			key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), excludedIndexes, persistAffinity)
+		}
 		if newAPIError != nil && len(excludedIndexes) > 0 && !c.GetBool("overload_key_selection") && newAPIError.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
 			clearTriedMultiKeyIndexes(c, channel.Id)
-			key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil, true)
+			if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModeCacheAffinityLeastRequests {
+				preferredDigests := []string(nil)
+				if routingPreparation != nil && routingPreparation.Result.Match.Found {
+					preferredDigests = routingPreparation.Result.Match.PreferredKeyDigests
+				}
+				key, index, newAPIError = channel.GetNextEnabledKeyWithCacheAffinity(preferredDigests, nil)
+			} else {
+				key, index, newAPIError = channel.GetNextEnabledKeyWithSelection(multiKeyAffinityValue(c), nil, true)
+			}
 		}
 		if newAPIError != nil {
 			return newAPIError
+		}
+		if routingPreparation != nil && routingPreparation.Result.Prepared != nil {
+			routingPreparation.Result.Prepared.BindKey(channel.Id, model.MultiKeyKeyDigest(key))
 		}
 	}
 	if channel.ChannelInfo.IsMultiKey {
@@ -537,6 +559,100 @@ func setupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set("bot_id", channel.Other)
 	}
 	return nil
+}
+
+func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, modelName string, excludedIndexes map[int]struct{}) *service.SimulatedModelCacheRoutingPreparation {
+	if c == nil || channel == nil {
+		return nil
+	}
+	if existing, ok := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey); ok {
+		if preparation, valid := existing.(*service.SimulatedModelCacheRoutingPreparation); valid && preparation.ChannelID == channel.Id && preparation.Model == modelName {
+			return preparation
+		}
+	}
+	format := simulatedModelCacheRequestFormat(c.Request.URL.Path)
+	if format == "" {
+		return nil
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return nil
+	}
+	promptText := service.ExtractSimulatedModelCachePromptText(format, body)
+	if strings.TrimSpace(promptText) == "" {
+		return nil
+	}
+	minimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	if minimumInputTokens > 0 && service.EstimateTokenByModel(modelName, promptText) < minimumInputTokens {
+		return nil
+	}
+	keys := channel.GetKeys()
+	allowed := make(map[string]struct{}, len(keys))
+	for index, key := range keys {
+		if _, excluded := excludedIndexes[index]; excluded {
+			continue
+		}
+		status := common.ChannelStatusEnabled
+		if channel.ChannelInfo.MultiKeyStatusList != nil {
+			if configured, exists := channel.ChannelInfo.MultiKeyStatusList[index]; exists {
+				status = configured
+			}
+		}
+		if status == common.ChannelStatusEnabled {
+			allowed[model.MultiKeyKeyDigest(key)] = struct{}{}
+		}
+	}
+	settings := dto.SimulatedModelCacheSettings{}
+	if configured := channel.GetOtherSettings().SimulatedModelCache; configured != nil {
+		settings = configured.Normalize()
+	} else {
+		settings = settings.Normalize()
+	}
+	matchCtx, cancel := context.WithTimeout(c.Request.Context(), 500*time.Millisecond)
+	result := service.MatchSimulatedModelCacheSynchronously(matchCtx, service.SimulatedModelCachePartialMatchRequest{
+		ChannelID:         channel.Id,
+		UserID:            common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		Model:             modelName,
+		PromptText:        promptText,
+		MinMatchRatio:     settings.MinMatchRatio,
+		TTLSeconds:        settings.TTLSeconds,
+		AllowedKeyDigests: allowed,
+	})
+	if errors.Is(result.Err, context.DeadlineExceeded) {
+		result.Match.BypassReason = service.SimulatedModelCacheBypassRoutingTimeout
+	}
+	cancel()
+	preparation := &service.SimulatedModelCacheRoutingPreparation{
+		ChannelID:  channel.Id,
+		Model:      modelName,
+		PromptText: promptText,
+		Settings:   settings,
+		Result:     result,
+	}
+	c.Set(service.SimulatedModelCacheRoutingPreparationContextKey, preparation)
+	return preparation
+}
+
+func simulatedModelCacheRequestFormat(path string) types.RelayFormat {
+	path = strings.TrimPrefix(path, "/pg")
+	switch {
+	case strings.HasSuffix(path, "/messages"):
+		return types.RelayFormatClaude
+	case strings.HasSuffix(path, "/responses/compact"):
+		return types.RelayFormatOpenAIResponsesCompaction
+	case strings.HasSuffix(path, "/responses"):
+		return types.RelayFormatOpenAIResponses
+	case strings.Contains(path, "/v1beta/models/"):
+		return types.RelayFormatGemini
+	case strings.HasSuffix(path, "/chat/completions"), strings.HasSuffix(path, "/completions"):
+		return types.RelayFormatOpenAI
+	default:
+		return ""
+	}
 }
 
 type triedMultiKeyIndexes map[int]map[int]struct{}

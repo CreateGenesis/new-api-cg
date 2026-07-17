@@ -62,6 +62,7 @@ type simulatedModelCachePromptFingerprint struct {
 	TotalRunes int                                   `json:"t"`
 	Chunks     []simulatedModelCacheFingerprintChunk `json:"c"`
 	FineHashes []byte                                `json:"s,omitempty"`
+	KeyDigest  string                                `json:"k,omitempty"`
 }
 
 func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt string) (simulatedModelCachePromptFingerprint, error) {
@@ -186,11 +187,18 @@ func newSimulatedModelCacheFingerprintMatcher(current simulatedModelCachePromptF
 }
 
 func (m *simulatedModelCacheFingerprintMatcher) match(ctx context.Context, candidate simulatedModelCachePromptFingerprint) float64 {
+	if m == nil || m.totalRunes == 0 {
+		return 0
+	}
+	return float64(m.matchedRunes(ctx, candidate)) / float64(m.totalRunes)
+}
+
+func (m *simulatedModelCacheFingerprintMatcher) matchedRunes(ctx context.Context, candidate simulatedModelCachePromptFingerprint) int {
 	if m == nil || m.totalRunes == 0 || len(m.states) == 0 {
 		return 0
 	}
 	if m.fine != nil && candidate.hasUsableFineHashes() {
-		return m.fine.match(ctx, candidate.FineHashes)
+		return m.fine.matchedRunes(ctx, candidate.FineHashes)
 	}
 	state := 0
 	length := 0
@@ -213,11 +221,11 @@ func (m *simulatedModelCacheFingerprintMatcher) match(ctx context.Context, candi
 		if matchedRunes > bestRunes {
 			bestRunes = matchedRunes
 			if bestRunes >= m.totalRunes {
-				return 1
+				return m.totalRunes
 			}
 		}
 	}
-	return float64(bestRunes) / float64(m.totalRunes)
+	return bestRunes
 }
 
 func appendSimulatedModelCacheFingerprintState(states []simulatedModelCacheFingerprintSuffixState, last int, symbol simulatedModelCacheFingerprintSymbol, firstPos int) ([]simulatedModelCacheFingerprintSuffixState, int) {
@@ -312,6 +320,13 @@ func newSimulatedModelCacheFineFingerprintMatcher(current simulatedModelCachePro
 }
 
 func (m *simulatedModelCacheFineFingerprintMatcher) match(ctx context.Context, candidateHashes []byte) float64 {
+	if m == nil || m.totalRunes == 0 {
+		return 0
+	}
+	return float64(m.matchedRunes(ctx, candidateHashes)) / float64(m.totalRunes)
+}
+
+func (m *simulatedModelCacheFineFingerprintMatcher) matchedRunes(ctx context.Context, candidateHashes []byte) int {
 	if m == nil || m.totalRunes == 0 || len(m.states) == 0 {
 		return 0
 	}
@@ -336,11 +351,11 @@ func (m *simulatedModelCacheFineFingerprintMatcher) match(ctx context.Context, c
 		if matchedRunes > bestRunes {
 			bestRunes = matchedRunes
 			if bestRunes >= m.totalRunes {
-				return 1
+				return m.totalRunes
 			}
 		}
 	}
-	return float64(bestRunes) / float64(m.totalRunes)
+	return bestRunes
 }
 
 func simulatedModelCacheFineFingerprintSymbolAt(hashes []byte, index int) simulatedModelCacheFingerprintSymbol {
@@ -444,7 +459,7 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 	}
 	matcher := newSimulatedModelCacheFingerprintMatcher(current)
 
-	indexKey := simulatedModelCacheScopeIndexKey(req.UserID, req.Model)
+	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model)
 	maxEntries := common.GetSimulatedModelCacheEntriesPerScope()
 	promptIDs, err := common.RDB.ZRevRange(ctx, indexKey, 0, int64(maxEntries-1)).Result()
 	if err != nil {
@@ -467,7 +482,7 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 	defer candidateReservation.Release()
 	keys := make([]string, len(promptIDs))
 	for index, promptID := range promptIDs {
-		keys[index] = simulatedModelCacheFingerprintKey(promptID)
+		keys[index] = simulatedModelCacheFingerprintKey(req.ChannelID, req.UserID, req.Model, promptID)
 	}
 	rawFingerprints, err := common.RDB.MGet(ctx, keys...).Result()
 	if err != nil {
@@ -484,6 +499,8 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		minRatio = 1
 	}
 	stalePromptIDs := make([]interface{}, 0)
+	bestMatchedRunes := 0
+	preferredSet := make(map[string]struct{})
 	for index, raw := range rawFingerprints {
 		if index&7 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -502,18 +519,36 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 			stalePromptIDs = append(stalePromptIDs, promptIDs[index])
 			continue
 		}
-		ratio := matcher.match(ctx, candidate)
+		if len(req.AllowedKeyDigests) > 0 {
+			if _, allowed := req.AllowedKeyDigests[candidate.KeyDigest]; !allowed {
+				continue
+			}
+		}
+		matchedRunes := matcher.matchedRunes(ctx, candidate)
 		if err := ctx.Err(); err != nil {
 			result.BypassReason = SimulatedModelCacheBypassRequestCanceled
 			result.MatchDuration = time.Since(startedAt)
 			return result, err
 		}
-		if ratio >= minRatio && (!result.Found || ratio > result.MatchRatio) {
-			result.Found = true
-			result.MatchRatio = ratio
-			if ratio >= 1 {
-				break
+		ratio := float64(matchedRunes) / float64(current.TotalRunes)
+		if ratio < minRatio {
+			continue
+		}
+		if matchedRunes > bestMatchedRunes {
+			bestMatchedRunes = matchedRunes
+			preferredSet = make(map[string]struct{})
+			if candidate.KeyDigest != "" {
+				preferredSet[candidate.KeyDigest] = struct{}{}
 			}
+		} else if matchedRunes == bestMatchedRunes && candidate.KeyDigest != "" {
+			preferredSet[candidate.KeyDigest] = struct{}{}
+		}
+	}
+	if bestMatchedRunes > 0 {
+		result.Found = true
+		result.MatchRatio = float64(bestMatchedRunes) / float64(current.TotalRunes)
+		for digest := range preferredSet {
+			result.PreferredKeyDigests = append(result.PreferredKeyDigests, digest)
 		}
 	}
 	if len(stalePromptIDs) > 0 && ctx.Err() == nil {
@@ -547,6 +582,14 @@ type SimulatedModelCachePreparedFingerprint struct {
 	fingerprint simulatedModelCachePromptFingerprint
 }
 
+func (p *SimulatedModelCachePreparedFingerprint) BindKey(channelID int, keyDigest string) {
+	if p == nil {
+		return
+	}
+	p.request.ChannelID = channelID
+	p.request.KeyDigest = keyDigest
+}
+
 func (p *SimulatedModelCachePreparedFingerprint) Store(ctx context.Context) error {
 	if p == nil {
 		return nil
@@ -565,6 +608,7 @@ func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 	if fingerprint.Version != SimulatedModelCacheFingerprintVersion || !fingerprint.hasValidFineHashes() {
 		return fmt.Errorf("invalid simulated model cache %s fingerprint", SimulatedModelCacheFingerprintVersion)
 	}
+	fingerprint.KeyDigest = req.KeyDigest
 	raw, err := common.Marshal(fingerprint)
 	if err != nil {
 		return err
@@ -573,18 +617,12 @@ func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 		return fmt.Errorf("simulated model cache fingerprint exceeds %d bytes", simulatedModelCacheMaxFingerprintEncodedBytes)
 	}
 	promptID := sha256Hex([]byte(req.PromptText))
-	fingerprintKey := simulatedModelCacheFingerprintKey(promptID)
-	stored, err := common.RDB.SetNX(ctx, fingerprintKey, string(raw), ttl).Result()
-	if err != nil {
+	fingerprintKey := simulatedModelCacheFingerprintKey(req.ChannelID, req.UserID, req.Model, promptID)
+	if err := common.RDB.Set(ctx, fingerprintKey, string(raw), ttl).Err(); err != nil {
 		return err
 	}
-	if !stored {
-		if err := extendSimulatedModelCacheTTL(ctx, fingerprintKey, ttl); err != nil {
-			return err
-		}
-	}
 
-	indexKey := simulatedModelCacheScopeIndexKey(req.UserID, req.Model)
+	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model)
 	now := time.Now()
 	if err := common.RDB.ZAdd(ctx, indexKey, &redis.Z{Score: float64(now.UnixNano()), Member: promptID}).Err(); err != nil {
 		return err
@@ -613,6 +651,6 @@ func evictSimulatedModelCacheOldestPromptIDs(ctx context.Context, indexKey strin
 	return common.RDB.ZRemRangeByRank(ctx, indexKey, 0, count-int64(limit)-1).Err()
 }
 
-func simulatedModelCacheFingerprintKey(promptID string) string {
-	return fmt.Sprintf("%s:fingerprint:%s", simulatedModelCacheKeyPrefix, promptID)
+func simulatedModelCacheFingerprintKey(channelID int, userID int, model string, promptID string) string {
+	return fmt.Sprintf("%s:fingerprint:%d:%d:%s:%s", simulatedModelCacheKeyPrefix, channelID, userID, sha256Hex([]byte(model)), promptID)
 }

@@ -330,22 +330,22 @@ func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndMo
 		TTLSeconds: 86400,
 	}))
 
-	indexKey := simulatedModelCacheScopeIndexKey(userID, model)
+	indexKey := simulatedModelCacheScopeIndexKey(0, userID, model)
 	promptIDs, err := common.RDB.ZRange(ctx, indexKey, 0, -1).Result()
 	require.NoError(t, err)
 	require.Len(t, promptIDs, 3)
 	assert.NotContains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 0, strings.Repeat("content ", 20)))))
 	assert.Contains(t, promptIDs, sha256Hex([]byte(fmt.Sprintf("prompt %03d %s", 3, strings.Repeat("content ", 20)))))
 
-	otherUserCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(otherUserID, model)).Result()
+	otherUserCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(0, otherUserID, model)).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), otherUserCount)
-	otherModelCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(userID, otherModel)).Result()
+	otherModelCount, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(0, userID, otherModel)).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), otherModelCount)
 }
 
-func TestSimulatedModelCacheV3StoresOneFingerprintPerPromptAndKeepsOlderVersionsUntouched(t *testing.T) {
+func TestSimulatedModelCacheV4StoresOneFingerprintPerPromptAndKeepsOlderVersionsUntouched(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const prompt = "shared prompt "
 	promptText := strings.Repeat(prompt, 20)
@@ -363,11 +363,11 @@ func TestSimulatedModelCacheV3StoresOneFingerprintPerPromptAndKeepsOlderVersions
 		}))
 	}
 
-	indexKey := simulatedModelCacheScopeIndexKey(1, "gpt-test")
+	indexKey := simulatedModelCacheScopeIndexKey(0, 1, "gpt-test")
 	indexCount, err := common.RDB.ZCard(ctx, indexKey).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), indexCount)
-	fingerprintKey := simulatedModelCacheFingerprintKey(sha256Hex([]byte(promptText)))
+	fingerprintKey := simulatedModelCacheFingerprintKey(0, 1, "gpt-test", sha256Hex([]byte(promptText)))
 	raw, err := common.RDB.Get(ctx, fingerprintKey).Result()
 	require.NoError(t, err)
 	assert.NotContains(t, raw, promptText)
@@ -448,6 +448,51 @@ func TestSimulatedModelCachePartialFingerprintMatchIsScopedByUserAndModel(t *tes
 	}
 }
 
+func TestSimulatedModelCacheSelectsMaximumSimilarityAcrossKeyBindings(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	const channelID = 77
+	const userID = 10
+	const modelName = "gpt-test"
+	keyA := "digest-a"
+	keyB := "digest-b"
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		ChannelID: channelID, UserID: userID, Model: modelName, PromptText: "abcdefghXX", TTLSeconds: 60, KeyDigest: keyA,
+	}))
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		ChannelID: channelID, UserID: userID, Model: modelName, PromptText: "abcdefghijYY", TTLSeconds: 60, KeyDigest: keyB,
+	}))
+
+	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		ChannelID:         channelID,
+		UserID:            userID,
+		Model:             modelName,
+		PromptText:        "abcdefghij",
+		MinMatchRatio:     0.1,
+		AllowedKeyDigests: map[string]struct{}{keyA: {}, keyB: {}},
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.Found)
+	assert.Equal(t, []string{keyB}, result.PreferredKeyDigests)
+	assert.InDelta(t, 1, result.MatchRatio, 0.000001)
+}
+
+func TestSimulatedModelCacheScopeIncludesChannel(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	prompt := strings.Repeat("channel scoped prompt ", 10)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		ChannelID: 1, UserID: 10, Model: "gpt-test", PromptText: prompt, TTLSeconds: 60, KeyDigest: "digest-a",
+	}))
+
+	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		ChannelID: 2, UserID: 10, Model: "gpt-test", PromptText: prompt,
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Found)
+	assert.Zero(t, result.CandidateCount)
+}
+
 func TestSimulatedModelCacheSharedScopeTTLIsNotShortenedByAnotherChannelSetting(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const userID = 10
@@ -466,7 +511,7 @@ func TestSimulatedModelCacheSharedScopeTTLIsNotShortenedByAnotherChannelSetting(
 		TTLSeconds: 60,
 	}))
 
-	ttl, err := common.RDB.TTL(ctx, simulatedModelCacheScopeIndexKey(userID, model)).Result()
+	ttl, err := common.RDB.TTL(ctx, simulatedModelCacheScopeIndexKey(0, userID, model)).Result()
 	require.NoError(t, err)
 	assert.Greater(t, ttl, 30*time.Minute)
 }
@@ -482,7 +527,7 @@ func TestSimulatedModelCachePartialMatchPrunesMissingFingerprintMembers(t *testi
 	}))
 
 	promptID := sha256Hex([]byte(prompt))
-	require.NoError(t, common.RDB.Del(ctx, simulatedModelCacheFingerprintKey(promptID)).Err())
+	require.NoError(t, common.RDB.Del(ctx, simulatedModelCacheFingerprintKey(0, 10, "gpt-test", promptID)).Err())
 	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
 		UserID:     10,
 		Model:      "gpt-test",
@@ -491,7 +536,7 @@ func TestSimulatedModelCachePartialMatchPrunesMissingFingerprintMembers(t *testi
 	require.NoError(t, err)
 	assert.False(t, result.Found)
 
-	count, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(10, "gpt-test")).Result()
+	count, err := common.RDB.ZCard(ctx, simulatedModelCacheScopeIndexKey(0, 10, "gpt-test")).Result()
 	require.NoError(t, err)
 	assert.Zero(t, count)
 }
@@ -506,8 +551,8 @@ func TestSimulatedModelCachePartialMatchPrunesInvalidFineFingerprint(t *testing.
 	raw, err := common.Marshal(fingerprint)
 	require.NoError(t, err)
 	promptID := sha256Hex([]byte(prompt))
-	require.NoError(t, common.RDB.Set(ctx, simulatedModelCacheFingerprintKey(promptID), raw, time.Minute).Err())
-	indexKey := simulatedModelCacheScopeIndexKey(10, "gpt-test")
+	require.NoError(t, common.RDB.Set(ctx, simulatedModelCacheFingerprintKey(0, 10, "gpt-test", promptID), raw, time.Minute).Err())
+	indexKey := simulatedModelCacheScopeIndexKey(0, 10, "gpt-test")
 	require.NoError(t, common.RDB.ZAdd(ctx, indexKey, &redis.Z{Score: 1, Member: promptID}).Err())
 
 	result, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
@@ -537,7 +582,7 @@ func TestSimulatedModelCacheWorkerReturnsPreparedFingerprintWithoutStoring(t *te
 	result := <-handle.result
 	require.NoError(t, result.Err)
 	require.NotNil(t, result.Prepared)
-	exists, err := common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(sha256Hex([]byte(prompt)))).Result()
+	exists, err := common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(0, 10, "gpt-test", sha256Hex([]byte(prompt)))).Result()
 	require.NoError(t, err)
 	assert.Zero(t, exists)
 
@@ -545,7 +590,7 @@ func TestSimulatedModelCacheWorkerReturnsPreparedFingerprintWithoutStoring(t *te
 	require.NotNil(t, reservation)
 	defer reservation.Release()
 	require.NoError(t, result.Prepared.Store(ctx), "prepared storage must not reserve or rebuild the fingerprint")
-	exists, err = common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(sha256Hex([]byte(prompt)))).Result()
+	exists, err = common.RDB.Exists(ctx, simulatedModelCacheFingerprintKey(0, 10, "gpt-test", sha256Hex([]byte(prompt)))).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists)
 }

@@ -728,6 +728,9 @@ export function useChannelsColumns(
           } else if (multiKeyMode === 'least_requests') {
             MultiKeyModeIcon = Gauge
             multiKeyTooltip = t('Multi-key: Least requests')
+          } else if (multiKeyMode === 'cache_affinity_least_requests') {
+            MultiKeyModeIcon = Gauge
+            multiKeyTooltip = t('Multi-key: Cache-aware least requests')
           }
 
           const ionetMeta = parseIonetMeta(channel.other_info)

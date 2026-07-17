@@ -353,6 +353,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.system_prompt_override ||
     values.claude_beta_query ||
     values.simulated_model_cache_enabled ||
+    values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
     values.input_token_routing_glm_5_2_mode ||
@@ -726,6 +727,10 @@ export function ChannelMutateDrawer({
     multiKeyTypeDescription = t(
       'Select the upstream key with the fewest requests in the recent window.'
     )
+  } else if (multiKeyType === 'cache_affinity_least_requests') {
+    multiKeyTypeDescription = t(
+      'Prefer the key with the most similar simulated cache, but fall back to the least-requested key when load differs beyond the threshold.'
+    )
   }
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
@@ -772,6 +777,9 @@ export function ChannelMutateDrawer({
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
+  const simulatedModelCacheRuntimeActive =
+    currentSimulatedModelCacheEnabled ||
+    multiKeyType === 'cache_affinity_least_requests'
   const currentStatusCodeRetryEnabled = form.watch('status_code_retry_enabled')
   const currentInputTokenRoutingEnabled = form.watch(
     'input_token_routing_enabled'
@@ -1066,7 +1074,8 @@ export function ChannelMutateDrawer({
     currentUpstreamModelUpdateIgnoredModels?.trim()
   )
   const simulatedModelCacheConfigured = Boolean(
-    currentSimulatedModelCacheEnabled
+    currentSimulatedModelCacheEnabled ||
+    multiKeyType === 'cache_affinity_least_requests'
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
   const inputTokenRoutingConfigured = Boolean(
@@ -3220,6 +3229,13 @@ export function ChannelMutateDrawer({
                                             value: 'least_requests',
                                             label: t('Least requests'),
                                           },
+                                          {
+                                            value:
+                                              'cache_affinity_least_requests',
+                                            label: t(
+                                              'Cache-aware least requests'
+                                            ),
+                                          },
                                         ]}
                                         onValueChange={field.onChange}
                                         value={field.value}
@@ -3244,6 +3260,9 @@ export function ChannelMutateDrawer({
                                             </SelectItem>
                                             <SelectItem value='least_requests'>
                                               {t('Least requests')}
+                                            </SelectItem>
+                                            <SelectItem value='cache_affinity_least_requests'>
+                                              {t('Cache-aware least requests')}
                                             </SelectItem>
                                           </SelectGroup>
                                         </SelectContent>
@@ -3296,7 +3315,9 @@ export function ChannelMutateDrawer({
                               {((isEditing && isMultiKeyChannel) ||
                                 (!isEditing &&
                                   multiKeyMode === 'multi_to_single')) &&
-                                multiKeyType === 'least_requests' && (
+                                (multiKeyType === 'least_requests' ||
+                                  multiKeyType ===
+                                    'cache_affinity_least_requests') && (
                                   <FormField
                                     control={form.control}
                                     name='multi_key_least_requests_window_seconds'
@@ -3322,6 +3343,44 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'Count requests in 10-second buckets within this recent window.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
+
+                              {((isEditing && isMultiKeyChannel) ||
+                                (!isEditing &&
+                                  multiKeyMode === 'multi_to_single')) &&
+                                multiKeyType ===
+                                  'cache_affinity_least_requests' && (
+                                  <FormField
+                                    control={form.control}
+                                    name='multi_key_cache_affinity_threshold_percent'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Load difference threshold (%)')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            type='number'
+                                            min={0}
+                                            max={100}
+                                            step={1}
+                                            {...field}
+                                            onChange={(e) =>
+                                              field.onChange(
+                                                Number(e.target.value)
+                                              )
+                                            }
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Use the least-requested key when its request-share difference from the best cache key exceeds this value.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />
@@ -4834,11 +4893,11 @@ export function ChannelMutateDrawer({
                                   <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
                                     <div className='space-y-0.5'>
                                       <FormLabel className='text-sm'>
-                                        {t('Enable simulated model cache')}
+                                        {t('Show simulated cache fields')}
                                       </FormLabel>
                                       <FormDescription>
                                         {t(
-                                          'Rewrite partial prompt matches as cached input after the upstream response succeeds'
+                                          'Controls whether simulated cache fields are shown in responses and logs. Cache-aware key routing continues in the background when disabled.'
                                         )}
                                       </FormDescription>
                                     </div>
@@ -4866,7 +4925,7 @@ export function ChannelMutateDrawer({
                                         min={1}
                                         step={1}
                                         disabled={
-                                          !currentSimulatedModelCacheEnabled
+                                          !simulatedModelCacheRuntimeActive
                                         }
                                         {...field}
                                         onChange={(e) =>
@@ -4899,7 +4958,7 @@ export function ChannelMutateDrawer({
                                         max={1}
                                         step={0.01}
                                         disabled={
-                                          !currentSimulatedModelCacheEnabled
+                                          !simulatedModelCacheRuntimeActive
                                         }
                                         {...field}
                                         onChange={(e) =>

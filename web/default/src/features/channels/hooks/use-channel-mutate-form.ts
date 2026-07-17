@@ -123,8 +123,13 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
                 Math.trunc(Number(data.multi_key_affinity_ttl_seconds) || 3600)
               ),
               multi_key_least_requests_window_seconds:
-                data.multi_key_type === 'least_requests'
+                data.multi_key_type === 'least_requests' ||
+                data.multi_key_type === 'cache_affinity_least_requests'
                   ? Number(data.multi_key_least_requests_window_seconds) || 60
+                  : undefined,
+              multi_key_cache_affinity_threshold_percent:
+                data.multi_key_type === 'cache_affinity_least_requests'
+                  ? Number(data.multi_key_cache_affinity_threshold_percent) || 0
                   : undefined,
               channel_info: payload.channel_info
                 ? {

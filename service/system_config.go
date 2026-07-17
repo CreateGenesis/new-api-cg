@@ -63,12 +63,13 @@ type SystemConfigModel struct {
 }
 
 type SystemConfigChannelInfo struct {
-	IsMultiKey                         bool                     `json:"is_multi_key"`
-	MultiKeyAffinityTTLSeconds         int                      `json:"multi_key_affinity_ttl_seconds,omitempty"`
-	MultiKeyLeastRequestsWindowSeconds int                      `json:"multi_key_least_requests_window_seconds,omitempty"`
-	MultiKeyMode                       string                   `json:"multi_key_mode,omitempty"`
-	ChannelOverloadProtection          model.OverloadProtection `json:"channel_overload_protection"`
-	MultiKeyOverloadProtection         model.OverloadProtection `json:"multi_key_overload_protection"`
+	IsMultiKey                            bool                     `json:"is_multi_key"`
+	MultiKeyAffinityTTLSeconds            int                      `json:"multi_key_affinity_ttl_seconds,omitempty"`
+	MultiKeyLeastRequestsWindowSeconds    int                      `json:"multi_key_least_requests_window_seconds,omitempty"`
+	MultiKeyCacheAffinityThresholdPercent *int                     `json:"multi_key_cache_affinity_threshold_percent,omitempty"`
+	MultiKeyMode                          string                   `json:"multi_key_mode,omitempty"`
+	ChannelOverloadProtection             model.OverloadProtection `json:"channel_overload_protection"`
+	MultiKeyOverloadProtection            model.OverloadProtection `json:"multi_key_overload_protection"`
 }
 
 type SystemConfigChannel struct {
@@ -772,12 +773,13 @@ func systemConfigChannelFromModel(channel model.Channel) SystemConfigChannel {
 		Tag: channel.Tag, Setting: channel.Setting, ParamOverride: channel.ParamOverride,
 		HeaderOverride: channel.HeaderOverride, Remark: channel.Remark, OtherSettings: channel.OtherSettings,
 		ChannelInfo: SystemConfigChannelInfo{
-			IsMultiKey:                         channel.ChannelInfo.IsMultiKey,
-			MultiKeyAffinityTTLSeconds:         channel.ChannelInfo.MultiKeyAffinityTTLSeconds,
-			MultiKeyLeastRequestsWindowSeconds: channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds,
-			MultiKeyMode:                       string(channel.ChannelInfo.MultiKeyMode),
-			ChannelOverloadProtection:          channel.ChannelInfo.ChannelOverloadProtection,
-			MultiKeyOverloadProtection:         channel.ChannelInfo.MultiKeyOverloadProtection,
+			IsMultiKey:                            channel.ChannelInfo.IsMultiKey,
+			MultiKeyAffinityTTLSeconds:            channel.ChannelInfo.MultiKeyAffinityTTLSeconds,
+			MultiKeyLeastRequestsWindowSeconds:    channel.ChannelInfo.MultiKeyLeastRequestsWindowSeconds,
+			MultiKeyCacheAffinityThresholdPercent: channel.ChannelInfo.MultiKeyCacheAffinityThresholdPercent,
+			MultiKeyMode:                          string(channel.ChannelInfo.MultiKeyMode),
+			ChannelOverloadProtection:             channel.ChannelInfo.ChannelOverloadProtection,
+			MultiKeyOverloadProtection:            channel.ChannelInfo.MultiKeyOverloadProtection,
 		},
 	}
 }
@@ -791,12 +793,13 @@ func systemConfigChannelToModel(item SystemConfigChannel) model.Channel {
 		Tag: item.Tag, Setting: item.Setting, ParamOverride: item.ParamOverride,
 		HeaderOverride: item.HeaderOverride, Remark: item.Remark, OtherSettings: item.OtherSettings,
 		ChannelInfo: model.ChannelInfo{
-			IsMultiKey:                         item.ChannelInfo.IsMultiKey,
-			MultiKeyAffinityTTLSeconds:         item.ChannelInfo.MultiKeyAffinityTTLSeconds,
-			MultiKeyLeastRequestsWindowSeconds: item.ChannelInfo.MultiKeyLeastRequestsWindowSeconds,
-			MultiKeyMode:                       constant.MultiKeyMode(item.ChannelInfo.MultiKeyMode),
-			ChannelOverloadProtection:          item.ChannelInfo.ChannelOverloadProtection,
-			MultiKeyOverloadProtection:         item.ChannelInfo.MultiKeyOverloadProtection,
+			IsMultiKey:                            item.ChannelInfo.IsMultiKey,
+			MultiKeyAffinityTTLSeconds:            item.ChannelInfo.MultiKeyAffinityTTLSeconds,
+			MultiKeyLeastRequestsWindowSeconds:    item.ChannelInfo.MultiKeyLeastRequestsWindowSeconds,
+			MultiKeyCacheAffinityThresholdPercent: item.ChannelInfo.MultiKeyCacheAffinityThresholdPercent,
+			MultiKeyMode:                          constant.MultiKeyMode(item.ChannelInfo.MultiKeyMode),
+			ChannelOverloadProtection:             item.ChannelInfo.ChannelOverloadProtection,
+			MultiKeyOverloadProtection:            item.ChannelInfo.MultiKeyOverloadProtection,
 		},
 	}
 }

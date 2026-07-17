@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v3"
-	SimulatedModelCacheFingerprintVersion = "v3"
+	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v4"
+	SimulatedModelCacheFingerprintVersion = "v4"
 	legacySimulatedModelCacheReplayDir    = "simulated-model-cache"
 )
 
@@ -34,22 +34,26 @@ type SimulatedModelCacheUsageRewrite struct {
 }
 
 type SimulatedModelCachePartialMatchRequest struct {
+	ChannelID             int
 	UserID                int
 	Model                 string
 	PromptText            string
 	MinMatchRatio         float64
 	TTLSeconds            int
+	KeyDigest             string
+	AllowedKeyDigests     map[string]struct{}
 	currentMemoryReserved bool
 }
 
 type SimulatedModelCachePartialMatch struct {
-	Found              bool
-	MatchRatio         float64
-	FingerprintVersion string
-	CandidateCount     int
-	MatchDuration      time.Duration
-	BypassReason       string
-	prepared           *SimulatedModelCachePreparedFingerprint
+	Found               bool
+	MatchRatio          float64
+	FingerprintVersion  string
+	CandidateCount      int
+	MatchDuration       time.Duration
+	BypassReason        string
+	PreferredKeyDigests []string
+	prepared            *SimulatedModelCachePreparedFingerprint
 }
 
 func cleanupLegacySimulatedModelCacheReplayFiles() {
@@ -353,9 +357,10 @@ func ttlFromSeconds(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func simulatedModelCacheScopeIndexKey(userID int, model string) string {
-	return fmt.Sprintf("%s:scope_index:%d:%s",
+func simulatedModelCacheScopeIndexKey(channelID int, userID int, model string) string {
+	return fmt.Sprintf("%s:scope_index:%d:%d:%s",
 		simulatedModelCacheKeyPrefix,
+		channelID,
 		userID,
 		sha256Hex([]byte(model)),
 	)

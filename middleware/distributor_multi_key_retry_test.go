@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,10 +10,101 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSimulatedModelCacheRequestFormat(t *testing.T) {
+	tests := map[string]types.RelayFormat{
+		"/v1/chat/completions":                  types.RelayFormatOpenAI,
+		"/v1/responses":                         types.RelayFormatOpenAIResponses,
+		"/v1/responses/compact":                 types.RelayFormatOpenAIResponsesCompaction,
+		"/v1/messages":                          types.RelayFormatClaude,
+		"/v1beta/models/gemini:generateContent": types.RelayFormatGemini,
+	}
+	for path, expected := range tests {
+		assert.Equal(t, expected, simulatedModelCacheRequestFormat(path))
+	}
+	assert.Empty(t, simulatedModelCacheRequestFormat("/v1/images/generations"))
+}
+
+func TestSetupContextCacheAwareStrategyPrefersBestMatchingKeyWhenFieldsHidden(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	originalRedisEnabled := common.RedisEnabled
+	originalRDB := common.RDB
+	originalMinimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	common.RedisEnabled = true
+	common.RDB = client
+	common.SetSimulatedModelCacheMinInputTokens(0)
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = originalRedisEnabled
+		common.RDB = originalRDB
+		common.SetSimulatedModelCacheMinInputTokens(originalMinimumInputTokens)
+	})
+
+	const channelID = 950100
+	const userID = 42
+	const modelName = "gpt-test"
+	prompt := "the shared prompt that should prefer key b"
+	keyA := "key-a"
+	keyB := "key-b"
+	require.NoError(t, service.StoreSimulatedModelCachePromptFingerprint(context.Background(), service.SimulatedModelCachePartialMatchRequest{
+		ChannelID:  channelID,
+		UserID:     userID,
+		Model:      modelName,
+		PromptText: prompt,
+		TTLSeconds: 60,
+		KeyDigest:  model.MultiKeyKeyDigest(keyB),
+	}))
+	threshold := 35
+	channel := &model.Channel{
+		Id:            channelID,
+		Key:           keyA + "\n" + keyB,
+		OtherSettings: `{"simulated_model_cache":{"enabled":false,"ttl_seconds":60,"min_match_ratio":0.5}}`,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:                            true,
+			MultiKeyMode:                          constant.MultiKeyModeCacheAffinityLeastRequests,
+			MultiKeyLeastRequestsWindowSeconds:    60,
+			MultiKeyCacheAffinityThresholdPercent: &threshold,
+		},
+	}
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"the shared prompt that should prefer key b"}]}`)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(ctx, constant.ContextKeyUserId, userID)
+
+	newAPIError := SetupContextForSelectedChannel(ctx, channel, modelName)
+
+	require.Nil(t, newAPIError)
+	assert.Equal(t, 1, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
+	assert.Equal(t, keyB, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey))
+}
+
+func TestPrepareSimulatedModelCacheRoutingRespectsMinimumInputTokens(t *testing.T) {
+	originalMinimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	common.SetSimulatedModelCacheMinInputTokens(1000000)
+	t.Cleanup(func() { common.SetSimulatedModelCacheMinInputTokens(originalMinimumInputTokens) })
+	channel := &model.Channel{
+		Id:          950101,
+		Key:         "key-a\nkey-b",
+		ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeyMode: constant.MultiKeyModeCacheAffinityLeastRequests},
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test","messages":[{"role":"user","content":"short"}]}`)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	preparation := prepareSimulatedModelCacheRouting(ctx, channel, "gpt-test", nil)
+
+	assert.Nil(t, preparation)
+}
 
 func TestSetupContextForSelectedChannelExcludesTriedKeysUntilNextRound(t *testing.T) {
 	gin.SetMode(gin.TestMode)

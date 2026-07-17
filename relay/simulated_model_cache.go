@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
@@ -22,9 +23,11 @@ import (
 
 type simulatedModelCacheAttempt struct {
 	settings         dto.SimulatedModelCacheSettings
+	visible          bool
 	promptText       string
 	cacheModelName   string
 	partialMatch     simulatedModelCachePartialMatchTask
+	precomputed      *service.SimulatedModelCachePartialMatchResult
 	bypassReason     string
 	matchDiagnostics service.SimulatedModelCachePartialMatch
 }
@@ -225,7 +228,7 @@ func (w *simulatedModelCacheRecorder) processStreamWrite(data []byte) error {
 		eventEnd := boundaryIndex + boundaryLength
 		event := w.streamPending.Next(eventEnd)
 
-		shouldHoldTail := w.attempt != nil && w.attempt.partialMatch != nil
+		shouldHoldTail := w.attempt != nil && w.attempt.visible && (w.attempt.partialMatch != nil || w.attempt.precomputed != nil)
 		if shouldHoldTail && (w.holdingStreamTail || isSimulatedModelCacheStreamTailEvent(w.responseFormat, event)) {
 			w.holdingStreamTail = true
 			_, _ = w.streamTail.Write(event)
@@ -516,8 +519,11 @@ func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]
 }
 
 func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) *simulatedModelCacheAttempt {
-	settings, ok := simulatedModelCacheSettings(info)
-	if !ok || len(requestBody) == 0 {
+	settings, configured := simulatedModelCacheSettings(info)
+	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
+	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)
+	routingActive := routingPreparation != nil && info != nil && info.ChannelMeta != nil && routingPreparation.ChannelID == info.ChannelMeta.ChannelId
+	if ((!configured || !settings.Enabled) && !routingActive) || len(requestBody) == 0 {
 		return nil
 	}
 	format := info.GetFinalRequestRelayFormat()
@@ -527,10 +533,19 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 
 	attempt := &simulatedModelCacheAttempt{
 		settings:       settings,
+		visible:        settings.Enabled,
 		cacheModelName: simulatedModelCacheModelName(info),
 		promptText:     service.ExtractSimulatedModelCachePromptText(format, requestBody),
 	}
-	startSimulatedModelCachePartialMatch(c, info, attempt)
+	if routingActive && routingPreparation.Model == attempt.cacheModelName && strings.TrimSpace(routingPreparation.PromptText) != "" {
+		attempt.settings = routingPreparation.Settings
+		attempt.visible = settings.Enabled
+		attempt.promptText = routingPreparation.PromptText
+		attempt.precomputed = &routingPreparation.Result
+	}
+	if attempt.precomputed == nil || attempt.precomputed.Prepared == nil {
+		startSimulatedModelCachePartialMatch(c, info, attempt)
+	}
 	return attempt
 }
 
@@ -539,11 +554,13 @@ func startSimulatedModelCachePartialMatch(c *gin.Context, info *relaycommon.Rela
 		return
 	}
 	handle, bypassReason := service.SubmitSimulatedModelCachePartialMatch(c.Request.Context(), service.SimulatedModelCachePartialMatchRequest{
+		ChannelID:     info.ChannelMeta.ChannelId,
 		UserID:        info.UserId,
 		Model:         attempt.cacheModelName,
 		PromptText:    attempt.promptText,
 		MinMatchRatio: attempt.settings.MinMatchRatio,
 		TTLSeconds:    attempt.settings.TTLSeconds,
+		KeyDigest:     model.MultiKeyKeyDigest(info.ChannelMeta.ApiKey),
 	})
 	attempt.partialMatch = handle
 	attempt.setBypassReason(bypassReason)
@@ -552,6 +569,9 @@ func startSimulatedModelCachePartialMatch(c *gin.Context, info *relaycommon.Rela
 func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt) *simulatedModelCacheRecorder {
 	if attempt == nil {
 		return nil
+	}
+	if attempt.settings.Enabled {
+		attempt.visible = true
 	}
 	responseFormat := types.RelayFormat("")
 	includeStreamUsage := true
@@ -565,13 +585,13 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	recorder := &simulatedModelCacheRecorder{
 		ResponseWriter:      c.Writer,
 		attempt:             attempt,
-		passThrough:         stream || attempt.partialMatch == nil,
+		passThrough:         !attempt.visible || stream || (attempt.partialMatch == nil && attempt.precomputed == nil),
 		stream:              stream,
 		responseFormat:      responseFormat,
 		includeStreamUsage:  includeStreamUsage,
 		responseBufferLimit: int(bufferLimit),
 	}
-	if stream && attempt.partialMatch == nil {
+	if stream && (!attempt.visible || (attempt.partialMatch == nil && attempt.precomputed == nil)) {
 		recorder.streamInspectionDisabled = true
 	}
 	c.Writer = recorder
@@ -602,6 +622,18 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	matchFound := false
 	match := service.SimulatedModelCachePartialMatch{}
 	var preparedFingerprint *service.SimulatedModelCachePreparedFingerprint
+	if attempt.precomputed != nil {
+		attempt.matchDiagnostics = attempt.precomputed.Match
+		preparedFingerprint = attempt.precomputed.Prepared
+		if attempt.precomputed.Err != nil {
+			attempt.setBypassReason(attempt.precomputed.Match.BypassReason)
+		} else if attempt.precomputed.Match.BypassReason != "" {
+			attempt.setBypassReason(attempt.precomputed.Match.BypassReason)
+		} else if attempt.precomputed.Match.Found {
+			matchFound = true
+			match = attempt.precomputed.Match
+		}
+	}
 	if attempt.partialMatch != nil {
 		if inputTokensEligible {
 			if c.Request.Context().Err() != nil {
@@ -633,6 +665,9 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 	if inputTokensEligible && c.Request.Context().Err() == nil && preparedFingerprint != nil {
+		if info != nil && info.ChannelMeta != nil {
+			preparedFingerprint.BindKey(info.ChannelMeta.ChannelId, model.MultiKeyKeyDigest(info.ChannelMeta.ApiKey))
+		}
 		err := preparedFingerprint.Store(c.Request.Context())
 		if err != nil && !matchFound {
 			if errors.Is(err, service.ErrSimulatedModelCacheMemoryBudget) {
@@ -649,7 +684,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 
 	body := recorder.body.Bytes()
 	var patchReservation *service.SimulatedModelCacheMemoryReservation
-	if matchFound {
+	if matchFound && attempt.visible {
 		patchBytes := int64(len(body))
 		if recorder.stream {
 			patchBytes = int64(recorder.streamTail.Len() + recorder.streamPending.Len())
@@ -669,7 +704,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			})
 		}
 	}
-	if matchFound {
+	if matchFound && attempt.visible {
 		if recorder.stream {
 			injected, targetFound, writeErr := recorder.writePatchedStreamTail(usage)
 			info.SimulatedModelCacheInfo.StreamUsageInjected = &injected
@@ -692,7 +727,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		flushSimulatedModelCacheRecorder(recorder, body)
 	}
 
-	if info.SimulatedModelCacheInfo == nil && attempt.bypassReason != "" {
+	if attempt.visible && info.SimulatedModelCacheInfo == nil && attempt.bypassReason != "" {
 		info.SimulatedModelCacheInfo = &relaycommon.SimulatedModelCacheInfo{
 			FingerprintVersion: service.SimulatedModelCacheFingerprintVersion,
 			CandidateCount:     attempt.matchDiagnostics.CandidateCount,
@@ -743,9 +778,6 @@ func simulatedModelCacheSettings(info *relaycommon.RelayInfo) (dto.SimulatedMode
 		return dto.SimulatedModelCacheSettings{}, false
 	}
 	settings := info.ChannelOtherSettings.SimulatedModelCache.Normalize()
-	if !settings.IsActive() {
-		return dto.SimulatedModelCacheSettings{}, false
-	}
 	return settings, true
 }
 
