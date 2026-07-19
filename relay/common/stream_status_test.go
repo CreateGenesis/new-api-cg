@@ -136,7 +136,7 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 	}{
 		{StreamEndReasonDone, true},
 		{StreamEndReasonEOF, true},
-		{StreamEndReasonHandlerStop, true},
+		{StreamEndReasonHandlerStop, false},
 		{StreamEndReasonTimeout, false},
 		{StreamEndReasonClientGone, false},
 		{StreamEndReasonScannerErr, false},
@@ -148,6 +148,44 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 		s := NewStreamStatus()
 		s.SetEndReason(tt.reason, nil)
 		assert.Equal(t, tt.normal, s.IsNormalEnd(), "reason=%s", tt.reason)
+	}
+}
+
+func TestStreamStatus_RequiredProtocolEnd(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		reason      StreamEndReason
+		terminal    string
+		withError   bool
+		interrupted bool
+	}{
+		{name: "eof before terminal", reason: StreamEndReasonEOF, interrupted: true},
+		{name: "terminal then eof", reason: StreamEndReasonEOF, terminal: "message_stop", interrupted: false},
+		{name: "terminal then client disconnect", reason: StreamEndReasonClientGone, terminal: "response.completed", interrupted: false},
+		{name: "client disconnect before terminal", reason: StreamEndReasonClientGone, interrupted: true},
+		{name: "parse error despite terminal", reason: StreamEndReasonDone, terminal: "[DONE]", withError: true, interrupted: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewStreamStatus()
+			s.RequireProtocolEnd()
+			if tt.terminal != "" {
+				s.MarkProtocolEnd(tt.terminal)
+			}
+			if tt.withError {
+				s.RecordError("invalid stream event")
+			}
+			s.SetEndReason(tt.reason, nil)
+
+			assert.Equal(t, tt.interrupted, s.IsInterrupted())
+			snapshot := s.Snapshot()
+			assert.True(t, snapshot.ProtocolEndRequired)
+			assert.Equal(t, tt.terminal != "", snapshot.ProtocolEndReceived)
+			assert.Equal(t, tt.terminal, snapshot.ProtocolEndEvent)
+		})
 	}
 }
 

@@ -29,13 +29,26 @@ type StreamErrorEntry struct {
 }
 
 type StreamStatus struct {
-	EndReason  StreamEndReason
-	EndError   error
-	endOnce    sync.Once
+	EndReason StreamEndReason
+	EndError  error
+	endOnce   sync.Once
 
-	mu         sync.Mutex
-	Errors     []StreamErrorEntry
-	ErrorCount int
+	mu                  sync.Mutex
+	Errors              []StreamErrorEntry
+	ErrorCount          int
+	ProtocolEndRequired bool
+	ProtocolEndReceived bool
+	ProtocolEndEvent    string
+}
+
+type StreamStatusSnapshot struct {
+	EndReason           StreamEndReason
+	EndError            error
+	Errors              []StreamErrorEntry
+	ErrorCount          int
+	ProtocolEndRequired bool
+	ProtocolEndReceived bool
+	ProtocolEndEvent    string
 }
 
 func NewStreamStatus() *StreamStatus {
@@ -47,9 +60,33 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 		return
 	}
 	s.endOnce.Do(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.EndReason = reason
 		s.EndError = err
 	})
+}
+
+func (s *StreamStatus) RequireProtocolEnd() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ProtocolEndRequired = true
+	s.mu.Unlock()
+}
+
+func (s *StreamStatus) MarkProtocolEnd(event string) {
+	if s == nil || strings.TrimSpace(event) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ProtocolEndReceived && s.ProtocolEndEvent != "[DONE]" {
+		return
+	}
+	s.ProtocolEndReceived = true
+	s.ProtocolEndEvent = event
 }
 
 func (s *StreamStatus) RecordError(msg string) {
@@ -89,24 +126,63 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	snapshot := s.Snapshot()
+	if snapshot.ProtocolEndRequired && !snapshot.ProtocolEndReceived {
+		return false
+	}
+	switch snapshot.EndReason {
+	case StreamEndReasonDone, StreamEndReasonEOF:
+		return true
+	case StreamEndReasonClientGone:
+		return snapshot.ProtocolEndRequired && snapshot.ProtocolEndReceived
+	default:
+		return false
+	}
+}
+
+func (s *StreamStatus) IsInterrupted() bool {
+	if s == nil {
+		return false
+	}
+	return !s.IsNormalEnd() || s.HasErrors()
+}
+
+func (s *StreamStatus) Snapshot() StreamStatusSnapshot {
+	if s == nil {
+		return StreamStatusSnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := StreamStatusSnapshot{
+		EndReason:           s.EndReason,
+		EndError:            s.EndError,
+		ErrorCount:          s.ErrorCount,
+		ProtocolEndRequired: s.ProtocolEndRequired,
+		ProtocolEndReceived: s.ProtocolEndReceived,
+		ProtocolEndEvent:    s.ProtocolEndEvent,
+	}
+	snapshot.Errors = append([]StreamErrorEntry(nil), s.Errors...)
+	return snapshot
 }
 
 func (s *StreamStatus) Summary() string {
 	if s == nil {
 		return "StreamStatus<nil>"
 	}
+	snapshot := s.Snapshot()
 	b := &strings.Builder{}
-	fmt.Fprintf(b, "reason=%s", s.EndReason)
-	if s.EndError != nil {
-		fmt.Fprintf(b, " end_error=%q", s.EndError.Error())
+	fmt.Fprintf(b, "reason=%s", snapshot.EndReason)
+	if snapshot.EndError != nil {
+		fmt.Fprintf(b, " end_error=%q", snapshot.EndError.Error())
 	}
-	s.mu.Lock()
-	if s.ErrorCount > 0 {
-		fmt.Fprintf(b, " soft_errors=%d", s.ErrorCount)
+	if snapshot.ProtocolEndRequired {
+		fmt.Fprintf(b, " protocol_end_received=%t", snapshot.ProtocolEndReceived)
+		if snapshot.ProtocolEndEvent != "" {
+			fmt.Fprintf(b, " protocol_end_event=%q", snapshot.ProtocolEndEvent)
+		}
 	}
-	s.mu.Unlock()
+	if snapshot.ErrorCount > 0 {
+		fmt.Fprintf(b, " soft_errors=%d", snapshot.ErrorCount)
+	}
 	return b.String()
 }

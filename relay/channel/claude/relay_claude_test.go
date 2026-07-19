@@ -1,14 +1,41 @@
 package claude
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHandleStreamResponseDataMarksClaudeMessageStop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	status := relaycommon.NewStreamStatus()
+	status.RequireProtocolEnd()
+	info := &relaycommon.RelayInfo{
+		RelayFormat:  types.RelayFormatClaude,
+		StreamStatus: status,
+		ChannelMeta:  &relaycommon.ChannelMeta{},
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+
+	err := HandleStreamResponseData(c, info, claudeInfo, `{"type":"message_stop"}`)
+
+	require.Nil(t, err)
+	snapshot := status.Snapshot()
+	assert.True(t, snapshot.ProtocolEndReceived)
+	assert.Equal(t, "message_stop", snapshot.ProtocolEndEvent)
+}
 
 func commonPointer[T any](value T) *T {
 	return &value

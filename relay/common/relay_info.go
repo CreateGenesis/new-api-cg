@@ -185,7 +185,8 @@ type RelayInfo struct {
 	// 若为空，调用 GetFinalRequestRelayFormat 会回退到 RequestConversionChain 的最后一项或 RelayFormat。
 	FinalRequestRelayFormat types.RelayFormat
 
-	StreamStatus *StreamStatus
+	StreamStatus              *StreamStatus
+	StreamProtocolEndRequired bool
 
 	ThinkingContentInfo
 	TokenCountMeta
@@ -662,6 +663,21 @@ func (info *RelayInfo) GetFinalRequestRelayFormat() types.RelayFormat {
 		return info.RequestConversionChain[n-1]
 	}
 	return info.RelayFormat
+}
+
+func (info *RelayInfo) ConsumeStreamProtocolEndRequirement() bool {
+	if info == nil {
+		return false
+	}
+	required := info.IsStream && info.StreamProtocolEndRequired
+	info.StreamProtocolEndRequired = false
+	return required
+}
+
+func (info *RelayInfo) RequireStreamProtocolEnd() {
+	if info != nil {
+		info.StreamProtocolEndRequired = true
+	}
 }
 
 func GenRelayInfoResponsesCompaction(c *gin.Context, request *dto.OpenAIResponsesCompactionRequest) *RelayInfo {

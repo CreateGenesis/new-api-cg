@@ -27,6 +27,26 @@ func TestChannelValidateSettingsRejectsInvalidStatusCodeRetryRules(t *testing.T)
 	assert.Contains(t, err.Error(), "status_code_retry.status_codes")
 }
 
+func TestChannelValidateSettingsRejectsUnknownStreamInterruptionBillingMode(t *testing.T) {
+	channel := &Channel{
+		OtherSettings: `{"stream_interruption_billing":{"mode":"unknown"}}`,
+	}
+
+	err := channel.ValidateSettings()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stream_interruption_billing.mode")
+}
+
+func TestChannelValidateSettingsAcceptsStreamInterruptionBillingModes(t *testing.T) {
+	for _, mode := range []string{"", "input_only_free", "all_interrupted_free"} {
+		channel := &Channel{
+			OtherSettings: `{"stream_interruption_billing":{"mode":"` + mode + `"}}`,
+		}
+		require.NoError(t, channel.ValidateSettings(), "mode=%q", mode)
+	}
+}
+
 func TestChannelMatchesInputTokenRouting(t *testing.T) {
 	tests := []struct {
 		name      string

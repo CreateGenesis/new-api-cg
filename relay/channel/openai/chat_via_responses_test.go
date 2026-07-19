@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,11 +10,40 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOaiResponsesToChatStreamClientDisconnectUsesBillingPolicy(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n"
+	c, _, resp, info := newResponsesChatTestContext(t, body, true)
+	info.ChannelOtherSettings.StreamInterruptionBilling = &dto.StreamInterruptionBillingSettings{
+		Mode: dto.StreamInterruptionBillingModeAllInterruptedFree,
+	}
+	requestContext, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestContext)
+	cancel()
+
+	usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.True(t, info.StreamStatus.IsInterrupted())
+	decision := service.EvaluateStreamInterruptionBilling(info, usage.CompletionTokens, 123)
+	require.True(t, decision.Applied)
+	require.Zero(t, decision.FinalQuota)
+}
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
@@ -75,6 +105,8 @@ func TestOaiResponsesToChatStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Contains(t, got, `"finish_reason":"tool_calls"`)
 	require.Contains(t, got, `"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5`)
 	require.Contains(t, got, `data: [DONE]`)
+	require.False(t, info.StreamStatus.IsInterrupted())
+	require.Equal(t, "response.completed", info.StreamStatus.Snapshot().ProtocolEndEvent)
 	requireOrderedSubstrings(t, got,
 		`"role":"assistant"`,
 		`"content":"hello"`,
@@ -156,6 +188,8 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Contains(t, got, `event: response.completed`)
 	require.Contains(t, got, `"input_tokens":2`)
 	require.Contains(t, got, `"output_tokens":3`)
+	require.False(t, info.StreamStatus.IsInterrupted())
+	require.Equal(t, "finish_reason", info.StreamStatus.Snapshot().ProtocolEndEvent)
 	requireOrderedSubstrings(t, got,
 		`event: response.created`,
 		`event: response.output_item.added`,

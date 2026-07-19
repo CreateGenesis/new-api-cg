@@ -38,3 +38,11 @@ func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
 }
+
+func TestRelayInfoConsumesStreamProtocolEndRequirementPerHandler(t *testing.T) {
+	info := &RelayInfo{IsStream: true}
+	info.RequireStreamProtocolEnd()
+
+	require.True(t, info.ConsumeStreamProtocolEndRequirement())
+	require.False(t, info.ConsumeStreamProtocolEndRequirement())
+}

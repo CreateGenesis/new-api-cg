@@ -163,6 +163,10 @@ export interface ChannelSettings {
   system_prompt_override?: boolean
 }
 
+export type StreamInterruptionBillingMode =
+  | 'input_only_free'
+  | 'all_interrupted_free'
+
 export interface ChannelOtherSettings {
   azure_responses_version?: string
   vertex_key_type?: 'json' | 'api_key'
@@ -196,6 +200,9 @@ export interface ChannelOtherSettings {
       min_tokens?: number
       max_tokens?: number
     }>
+  }
+  stream_interruption_billing?: {
+    mode?: StreamInterruptionBillingMode
   }
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean

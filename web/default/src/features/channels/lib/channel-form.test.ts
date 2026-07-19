@@ -151,6 +151,53 @@ describe('channel form status code retry settings', () => {
   })
 })
 
+describe('channel form stream interruption billing settings', () => {
+  test('loads and saves input-only interruption billing', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel('{"stream_interruption_billing":{"mode":"input_only_free"}}')
+    )
+
+    assert.equal(form.stream_interruption_billing_mode, 'input_only_free')
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.deepEqual(settings.stream_interruption_billing, {
+      mode: 'input_only_free',
+    })
+  })
+
+  test('removes interruption billing settings when disabled', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        '{"stream_interruption_billing":{"mode":"all_interrupted_free"}}'
+      )
+    )
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      stream_interruption_billing_mode: 'off',
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.stream_interruption_billing, undefined)
+  })
+})
+
 describe('channel form input token routing settings', () => {
   test('round trips GLM-5.2 mode and an open-ended range', () => {
     const form = transformChannelToFormDefaults(

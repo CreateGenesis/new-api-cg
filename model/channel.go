@@ -1171,6 +1171,11 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("status_code_retry.status_codes: %w", err)
 		}
 	}
+	if channelOtherSettings.StreamInterruptionBilling != nil {
+		if err := channelOtherSettings.StreamInterruptionBilling.Validate(); err != nil {
+			return fmt.Errorf("stream_interruption_billing.mode: %w", err)
+		}
+	}
 	return nil
 }
 

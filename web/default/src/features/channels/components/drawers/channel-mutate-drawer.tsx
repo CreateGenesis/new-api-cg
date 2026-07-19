@@ -24,6 +24,7 @@ import {
   Boxes,
   CheckCircle2,
   Circle,
+  CircleDollarSign,
   ClipboardPaste,
   HelpCircle,
   KeyRound,
@@ -254,6 +255,8 @@ const ADVANCED_SETTINGS_SECTION_IDS = {
   extraSettings: 'channel-section-advanced-extra-settings',
   fieldPassthrough: 'channel-section-advanced-field-passthrough',
   statusCodeRetry: 'channel-section-advanced-status-code-retry',
+  streamInterruptionBilling:
+    'channel-section-advanced-stream-interruption-billing',
   simulatedModelCache: 'channel-section-advanced-simulated-model-cache',
   upstreamModelDetection: 'channel-section-advanced-upstream-model-detection',
 } as const
@@ -306,6 +309,7 @@ const SENSITIVE_FORM_FIELDS = [
   'input_token_routing_enabled',
   'input_token_routing_glm_5_2_mode',
   'input_token_routing_ranges',
+  'stream_interruption_billing_mode',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -357,6 +361,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
     values.input_token_routing_glm_5_2_mode ||
+    values.stream_interruption_billing_mode !== 'off' ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -790,6 +795,21 @@ export function ChannelMutateDrawer({
   const currentInputTokenRoutingRanges = form.watch(
     'input_token_routing_ranges'
   )
+  const currentStreamInterruptionBillingMode = form.watch(
+    'stream_interruption_billing_mode'
+  )
+  let streamInterruptionBillingDescription = t(
+    'Keep the existing billing behavior.'
+  )
+  if (currentStreamInterruptionBillingMode === 'input_only_free') {
+    streamInterruptionBillingDescription = t(
+      'Interrupted streams with zero output tokens settle at zero quota.'
+    )
+  } else if (currentStreamInterruptionBillingMode === 'all_interrupted_free') {
+    streamInterruptionBillingDescription = t(
+      'All interrupted streams settle at zero quota, even after partial output.'
+    )
+  }
   const currentUpstreamModelUpdateAutoSyncEnabled = form.watch(
     'upstream_model_update_auto_sync_enabled'
   )
@@ -1083,6 +1103,8 @@ export function ChannelMutateDrawer({
     currentInputTokenRoutingGLM52Mode ||
     currentInputTokenRoutingRanges?.trim()
   )
+  const streamInterruptionBillingConfigured =
+    currentStreamInterruptionBillingMode !== 'off'
   const advancedConfigured = Boolean(
     routingStrategyConfigured ||
     inputTokenRoutingConfigured ||
@@ -1091,6 +1113,7 @@ export function ChannelMutateDrawer({
     extraSettingsConfigured ||
     fieldPassthroughConfigured ||
     statusCodeRetryConfigured ||
+    streamInterruptionBillingConfigured ||
     simulatedModelCacheConfigured ||
     upstreamModelDetectionConfigured
   )
@@ -1119,6 +1142,11 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.statusCodeRetry,
       title: t('Channel Retry Override'),
       configured: statusCodeRetryConfigured,
+    },
+    {
+      id: ADVANCED_SETTINGS_SECTION_IDS.streamInterruptionBilling,
+      title: t('Stream Interruption Billing'),
+      configured: streamInterruptionBillingConfigured,
     },
     {
       id: ADVANCED_SETTINGS_SECTION_IDS.extraSettings,
@@ -4640,6 +4668,89 @@ export function ChannelMutateDrawer({
                                 )}
                               />
                             </div>
+                          </fieldset>
+                        </div>
+
+                        <div
+                          id={
+                            ADVANCED_SETTINGS_SECTION_IDS.streamInterruptionBilling
+                          }
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              streamInterruptionBillingConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Stream Interruption Billing')}
+                            icon={<CircleDollarSign className='h-4 w-4' />}
+                          />
+                          <fieldset
+                            disabled={sensitiveLocked}
+                            className='disabled:opacity-60'
+                          >
+                            <FormField
+                              control={form.control}
+                              name='stream_interruption_billing_mode'
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {t('Stream Interruption Billing')}
+                                  </FormLabel>
+                                  <FormDescription>
+                                    {t(
+                                      'Choose how interrupted streaming responses are billed for this channel.'
+                                    )}
+                                  </FormDescription>
+                                  <Select
+                                    items={[
+                                      {
+                                        value: 'off',
+                                        label: t('Disabled'),
+                                      },
+                                      {
+                                        value: 'input_only_free',
+                                        label: t('Free only when no output'),
+                                      },
+                                      {
+                                        value: 'all_interrupted_free',
+                                        label: t(
+                                          'Free for all interrupted streams'
+                                        ),
+                                      },
+                                    ]}
+                                    value={field.value || 'off'}
+                                    onValueChange={field.onChange}
+                                  >
+                                    <FormControl>
+                                      <SelectTrigger className='w-full'>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                    </FormControl>
+                                    <SelectContent alignItemWithTrigger={false}>
+                                      <SelectGroup>
+                                        <SelectItem value='off'>
+                                          {t('Disabled')}
+                                        </SelectItem>
+                                        <SelectItem value='input_only_free'>
+                                          {t('Free only when no output')}
+                                        </SelectItem>
+                                        <SelectItem value='all_interrupted_free'>
+                                          {t(
+                                            'Free for all interrupted streams'
+                                          )}
+                                        </SelectItem>
+                                      </SelectGroup>
+                                    </SelectContent>
+                                  </Select>
+                                  <FormDescription>
+                                    {streamInterruptionBillingDescription}
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
                           </fieldset>
                         </div>
 

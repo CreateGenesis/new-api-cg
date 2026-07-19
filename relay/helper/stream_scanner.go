@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 
@@ -63,6 +64,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 无条件新建 StreamStatus
 	info.StreamStatus = relaycommon.NewStreamStatus()
+	if info.ConsumeStreamProtocolEndRequirement() {
+		info.StreamStatus.RequireProtocolEnd()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -254,6 +258,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
+				if info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAI {
+					info.StreamStatus.MarkProtocolEnd("[DONE]")
+				}
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return

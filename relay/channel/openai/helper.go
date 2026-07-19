@@ -91,22 +91,52 @@ func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, res
 	return nil
 }
 
-func processTokenData(relayMode int, data string, responseTextBuilder *strings.Builder, toolCount *int) error {
+func processTokenData(relayMode int, data string, responseTextBuilder *strings.Builder, toolCount *int) (bool, error) {
 	switch relayMode {
 	case relayconstant.RelayModeChatCompletions:
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-			return err
+			return false, err
 		}
-		return ProcessStreamResponse(streamResponse, responseTextBuilder, toolCount)
+		if err := ProcessStreamResponse(streamResponse, responseTextBuilder, toolCount); err != nil {
+			return false, err
+		}
+		return streamResponse.IsFinished(), nil
 	case relayconstant.RelayModeCompletions:
 		var streamResponse dto.CompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-			return err
+			return false, err
 		}
 		processCompletionsStreamResponse(streamResponse, responseTextBuilder)
+		for _, choice := range streamResponse.Choices {
+			if strings.TrimSpace(choice.FinishReason) != "" {
+				return true, nil
+			}
+		}
 	}
-	return nil
+	return false, nil
+}
+
+func markResponsesStreamProtocolEnd(info *relaycommon.RelayInfo, eventType string) {
+	if info == nil || info.StreamStatus == nil {
+		return
+	}
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete":
+		info.StreamStatus.MarkProtocolEnd(eventType)
+	}
+}
+
+func shouldSettleClientDisconnectWithStreamPolicy(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if c == nil || c.Request == nil || c.Request.Context().Err() == nil || info == nil || info.ChannelMeta == nil {
+		return false
+	}
+	settings := info.ChannelOtherSettings.StreamInterruptionBilling
+	if settings == nil {
+		return false
+	}
+	return settings.Mode == dto.StreamInterruptionBillingModeInputOnlyFree ||
+		settings.Mode == dto.StreamInterruptionBillingModeAllInterruptedFree
 }
 
 func processCompletionsStreamResponse(streamResponse dto.CompletionsStreamResponse, responseTextBuilder *strings.Builder) {

@@ -60,6 +60,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'input_token_routing_enabled',
   'input_token_routing_glm_5_2_mode',
   'input_token_routing_ranges',
+  'stream_interruption_billing_mode',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',

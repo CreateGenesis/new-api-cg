@@ -202,6 +202,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		chunk.Model = info.DownstreamModelName(chunk.Model)
 		if info.RelayFormat == types.RelayFormatOpenAI {
 			if err := helper.ObjectData(c, &chunk); err != nil {
+				if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
+					return true
+				}
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
 			}
@@ -214,12 +217,16 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return false
 		}
 		if err := HandleStreamFormat(c, info, string(chunkData), false, false); err != nil {
+			if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
+				return true
+			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			return false
 		}
 		return true
 	}
 
+	info.RequireStreamProtocolEnd()
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if streamErr != nil {
 			sr.Stop(streamErr)
@@ -232,6 +239,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			sr.Error(err)
 			return
 		}
+		markResponsesStreamProtocolEnd(info, streamResp.Type)
 
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
 			if streamResp.Response != nil {
@@ -280,7 +288,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	if info.RelayFormat == types.RelayFormatOpenAI && info.ShouldIncludeUsage && usage != nil {
 		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, state.Created, info.DownstreamModelName(state.Model), *usage)); err != nil {
-			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			if !shouldSettleClientDisconnectWithStreamPolicy(c, info) {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			}
 		}
 	}
 

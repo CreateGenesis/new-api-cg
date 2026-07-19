@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -233,8 +234,11 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 	resp := &http.Response{Body: pr}
 	info := &relaycommon.RelayInfo{
 		DisablePing: true,
+		IsStream:    true,
+		RelayFormat: types.RelayFormatOpenAI,
 		ChannelMeta: &relaycommon.ChannelMeta{},
 	}
+	info.RequireStreamProtocolEnd()
 
 	var count atomic.Int64
 	firstHandled := make(chan struct{})
@@ -277,6 +281,7 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 	assert.Equal(t, int64(1), count.Load(), "no chunk after disconnect should be processed")
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.IsInterrupted())
 
 	body := recorder.Body.String()
 	assert.Contains(t, body, "first")
@@ -386,6 +391,9 @@ func TestStreamScannerHandler_StreamStatus_DoneReason(t *testing.T) {
 
 	body := buildSSEBody(10)
 	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.IsStream = true
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.RequireStreamProtocolEnd()
 
 	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 
@@ -394,6 +402,7 @@ func TestStreamScannerHandler_StreamStatus_DoneReason(t *testing.T) {
 	assert.Nil(t, info.StreamStatus.EndError)
 	assert.True(t, info.StreamStatus.IsNormalEnd())
 	assert.False(t, info.StreamStatus.HasErrors())
+	assert.Equal(t, "[DONE]", info.StreamStatus.Snapshot().ProtocolEndEvent)
 }
 
 func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
@@ -404,12 +413,16 @@ func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
 		fmt.Fprintf(&b, "data: {\"id\":%d}\n", i)
 	}
 	c, resp, info := setupStreamTest(t, strings.NewReader(b.String()))
+	info.IsStream = true
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.RequireStreamProtocolEnd()
 
 	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
-	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.True(t, info.StreamStatus.IsInterrupted())
+	assert.False(t, info.StreamStatus.Snapshot().ProtocolEndReceived)
 }
 
 func TestStreamScannerHandler_StreamStatus_HandlerStop(t *testing.T) {

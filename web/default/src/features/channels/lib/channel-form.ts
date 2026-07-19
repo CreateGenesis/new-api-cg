@@ -298,6 +298,9 @@ export const channelFormSchema = z
     input_token_routing_enabled: z.boolean().optional(),
     input_token_routing_glm_5_2_mode: z.boolean().optional(),
     input_token_routing_ranges: z.string().optional(),
+    stream_interruption_billing_mode: z
+      .enum(['off', 'input_only_free', 'all_interrupted_free'])
+      .optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -648,6 +651,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   input_token_routing_enabled: false,
   input_token_routing_glm_5_2_mode: false,
   input_token_routing_ranges: '',
+  stream_interruption_billing_mode: 'off',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -716,6 +720,10 @@ export function transformChannelToFormDefaults(
   let inputTokenRoutingEnabled = false
   let inputTokenRoutingGLM52Mode = false
   let inputTokenRoutingRanges = ''
+  let streamInterruptionBillingMode:
+    | 'off'
+    | 'input_only_free'
+    | 'all_interrupted_free' = 'off'
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -838,6 +846,14 @@ export function transformChannelToFormDefaults(
         }
         inputTokenRoutingRanges = formatInputTokenRoutingRanges(ranges)
       }
+      const configuredStreamInterruptionMode =
+        parsed.stream_interruption_billing?.mode
+      if (
+        configuredStreamInterruptionMode === 'input_only_free' ||
+        configuredStreamInterruptionMode === 'all_interrupted_free'
+      ) {
+        streamInterruptionBillingMode = configuredStreamInterruptionMode
+      }
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -941,6 +957,7 @@ export function transformChannelToFormDefaults(
     input_token_routing_enabled: inputTokenRoutingEnabled,
     input_token_routing_glm_5_2_mode: inputTokenRoutingGLM52Mode,
     input_token_routing_ranges: inputTokenRoutingRanges,
+    stream_interruption_billing_mode: streamInterruptionBillingMode,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -1122,6 +1139,17 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   } else if ('input_token_routing' in settingsObj) {
     delete settingsObj.input_token_routing
+  }
+
+  if (
+    formData.stream_interruption_billing_mode === 'input_only_free' ||
+    formData.stream_interruption_billing_mode === 'all_interrupted_free'
+  ) {
+    settingsObj.stream_interruption_billing = {
+      mode: formData.stream_interruption_billing_mode,
+    }
+  } else if ('stream_interruption_billing' in settingsObj) {
+    delete settingsObj.stream_interruption_billing
   }
 
   // Upstream model update settings (for model-fetchable channel types)
