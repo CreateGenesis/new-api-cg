@@ -6,13 +6,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -49,12 +50,14 @@ func TestChannelStatusRoutesRegisterWithoutConflict(t *testing.T) {
 	})
 }
 
-func TestChannelKeyCanBeRevealedByRootWithoutSecureVerification(t *testing.T) {
+func TestChannelKeyRequiresSecurityProofFromRoot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousRedisEnabled := common.RedisEnabled
+	previousSessionSecret := common.SessionSecret
 	common.RedisEnabled = false
+	common.SessionSecret = "channel-key-route-test-secret"
 
 	db, err := gorm.Open(sqlite.Open("file:channel_key_route?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
@@ -64,65 +67,47 @@ func TestChannelKeyCanBeRevealedByRootWithoutSecureVerification(t *testing.T) {
 		model.DB = previousDB
 		model.LOG_DB = previousLogDB
 		common.RedisEnabled = previousRedisEnabled
+		common.SessionSecret = previousSessionSecret
 		sqlDB, dbErr := db.DB()
 		if dbErr == nil {
 			_ = sqlDB.Close()
 		}
 	})
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}))
 	root := &model.User{
-		Id:       1,
-		Username: "root",
-		Password: "test-password",
-		Role:     common.RoleRootUser,
-		Status:   common.UserStatusEnabled,
-		Group:    "default",
+		Id:          1,
+		Username:    "root",
+		Password:    "test-password",
+		Role:        common.RoleRootUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     "root-channel-key",
+		AuthVersion: 1,
 	}
 	require.NoError(t, db.Create(root).Error)
+	rootAuth := createChannelRouterAuth(t, root)
 	channel := &model.Channel{Id: 1, Name: "test-channel", Key: "sk-upstream-secret"}
 	require.NoError(t, db.Create(channel).Error)
 
 	engine := gin.New()
-	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("channel-key-route-test"))))
-	engine.GET("/login", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", root.Username)
-		session.Set("role", root.Role)
-		session.Set("id", root.Id)
-		session.Set("status", root.Status)
-		session.Set("group", root.Group)
-		if err := session.Save(); err != nil {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	engine.GET("/login/admin", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", "admin")
-		session.Set("role", common.RoleAdminUser)
-		session.Set("id", 2)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		if err := session.Save(); err != nil {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
+	engine.Use(skipAutomaticAdminAudit())
 	registerChannelRoutes(engine.Group("/api"))
 
-	loginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(loginRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
-	require.Equal(t, http.StatusNoContent, loginRecorder.Code)
-
 	request := httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
-	request.Header.Set("New-Api-User", "1")
-	for _, sessionCookie := range loginRecorder.Result().Cookies() {
-		request.AddCookie(sessionCookie)
-	}
+	request.Header.Set("Authorization", "Bearer "+rootAuth.accessToken)
 	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":"SECURITY_PROOF_REQUIRED"`)
+	assert.NotContains(t, recorder.Body.String(), channel.Key)
+
+	proofToken, _, err := service.IssueSecurityProof(rootAuth.identity, "2fa", []string{"channel.key.read"})
+	require.NoError(t, err)
+	request = httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
+	request.Header.Set("Authorization", "Bearer "+rootAuth.accessToken)
+	request.Header.Set("X-Security-Proof", proofToken)
+	recorder = httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -137,22 +122,23 @@ func TestChannelKeyCanBeRevealedByRootWithoutSecureVerification(t *testing.T) {
 	assert.Equal(t, channel.Key, response.Data.Key)
 
 	var auditLog model.Log
-	require.NoError(t, db.Where("type = ?", model.LogTypeManage).First(&auditLog).Error)
+	require.NoError(t, db.Where("type = ? AND content = ?", model.LogTypeManage, "Viewed channel key test-channel (ID: 1)").First(&auditLog).Error)
 	assert.Equal(t, "Viewed channel key test-channel (ID: 1)", auditLog.Content)
 
-	adminLoginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(adminLoginRecorder, httptest.NewRequest(http.MethodGet, "/login/admin", nil))
-	require.Equal(t, http.StatusNoContent, adminLoginRecorder.Code)
+	admin := &model.User{
+		Id: 2, Username: "admin", Password: "test-password", Role: common.RoleAdminUser,
+		Status: common.UserStatusEnabled, Group: "default", AffCode: "admin-channel-key", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(admin).Error)
+	adminAuth := createChannelRouterAuth(t, admin)
 
 	adminRequest := httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
-	adminRequest.Header.Set("New-Api-User", "2")
-	for _, sessionCookie := range adminLoginRecorder.Result().Cookies() {
-		adminRequest.AddCookie(sessionCookie)
-	}
+	adminRequest.Header.Set("Authorization", "Bearer "+adminAuth.accessToken)
+	adminRequest.Header.Set("X-Security-Proof", proofToken)
 	adminRecorder := httptest.NewRecorder()
 	engine.ServeHTTP(adminRecorder, adminRequest)
 
-	require.Equal(t, http.StatusOK, adminRecorder.Code)
+	require.Equal(t, http.StatusForbidden, adminRecorder.Code)
 	assert.NotContains(t, adminRecorder.Body.String(), channel.Key)
 	assert.Contains(t, adminRecorder.Body.String(), `"success":false`)
 }
@@ -163,8 +149,10 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousRedisEnabled := common.RedisEnabled
 	previousCriticalRateLimitEnabled := common.CriticalRateLimitEnable
+	previousSessionSecret := common.SessionSecret
 	common.RedisEnabled = false
 	common.CriticalRateLimitEnable = false
+	common.SessionSecret = "multi-key-secret-route-test-secret"
 
 	db, err := gorm.Open(sqlite.Open("file:multi_key_secret_route?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
@@ -175,22 +163,26 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 		model.LOG_DB = previousLogDB
 		common.RedisEnabled = previousRedisEnabled
 		common.CriticalRateLimitEnable = previousCriticalRateLimitEnabled
+		common.SessionSecret = previousSessionSecret
 		sqlDB, dbErr := db.DB()
 		if dbErr == nil {
 			_ = sqlDB.Close()
 		}
 	})
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}))
 	root := &model.User{
-		Id:       1,
-		Username: "root",
-		Password: "test-password",
-		Role:     common.RoleRootUser,
-		Status:   common.UserStatusEnabled,
-		Group:    "default",
+		Id:          1,
+		Username:    "root",
+		Password:    "test-password",
+		Role:        common.RoleRootUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     "root-multi-key",
+		AuthVersion: 1,
 	}
 	require.NoError(t, db.Create(root).Error)
+	rootAuth := createChannelRouterAuth(t, root)
 	require.NoError(t, db.Create(&model.Channel{Id: 1, Name: "single-channel", Key: "single-secret"}).Error)
 
 	longKey := "sk-abcdefghijklmnopqrstuvwxyz"
@@ -207,48 +199,14 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 	require.NoError(t, db.Create(multiKey).Error)
 
 	engine := gin.New()
-	engine.Use(sessions.Sessions("session", cookie.NewStore([]byte("multi-key-secret-route-test"))))
-	engine.GET("/login/root", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", root.Username)
-		session.Set("role", root.Role)
-		session.Set("id", root.Id)
-		session.Set("status", root.Status)
-		session.Set("group", root.Group)
-		if err := session.Save(); err != nil {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	engine.GET("/login/admin", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", "admin")
-		session.Set("role", common.RoleAdminUser)
-		session.Set("id", 2)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		if err := session.Save(); err != nil {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
+	engine.Use(skipAutomaticAdminAudit())
 	registerChannelRoutes(engine.Group("/api"))
-
-	rootLoginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(rootLoginRecorder, httptest.NewRequest(http.MethodGet, "/login/root", nil))
-	require.Equal(t, http.StatusNoContent, rootLoginRecorder.Code)
-	rootCookies := rootLoginRecorder.Result().Cookies()
 
 	sendRootPost := func(target string, body string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
-		request.Header.Set("New-Api-User", "1")
+		request.Header.Set("Authorization", "Bearer "+rootAuth.accessToken)
 		if body != "" {
 			request.Header.Set("Content-Type", "application/json")
-		}
-		for _, sessionCookie := range rootCookies {
-			request.AddCookie(sessionCookie)
 		}
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request)
@@ -316,20 +274,57 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 		assert.NotContains(t, recorder.Body.String(), longKey, target)
 	}
 
-	adminLoginRecorder := httptest.NewRecorder()
-	engine.ServeHTTP(adminLoginRecorder, httptest.NewRequest(http.MethodGet, "/login/admin", nil))
-	require.Equal(t, http.StatusNoContent, adminLoginRecorder.Code)
-	adminRequest := httptest.NewRequest(http.MethodPost, "/api/channel/2/multi_key/1/key", nil)
-	adminRequest.Header.Set("New-Api-User", "2")
-	for _, sessionCookie := range adminLoginRecorder.Result().Cookies() {
-		adminRequest.AddCookie(sessionCookie)
+	admin := &model.User{
+		Id: 2, Username: "admin", Password: "test-password", Role: common.RoleAdminUser,
+		Status: common.UserStatusEnabled, Group: "default", AffCode: "admin-multi-key", AuthVersion: 1,
 	}
+	require.NoError(t, db.Create(admin).Error)
+	adminAuth := createChannelRouterAuth(t, admin)
+	adminRequest := httptest.NewRequest(http.MethodPost, "/api/channel/2/multi_key/1/key", nil)
+	adminRequest.Header.Set("Authorization", "Bearer "+adminAuth.accessToken)
 	adminRecorder := httptest.NewRecorder()
 	engine.ServeHTTP(adminRecorder, adminRequest)
 
-	require.Equal(t, http.StatusOK, adminRecorder.Code)
+	require.Equal(t, http.StatusForbidden, adminRecorder.Code)
 	assert.Contains(t, adminRecorder.Body.String(), `"success":false`)
 	assert.NotContains(t, adminRecorder.Body.String(), shortKey)
+}
+
+type channelRouterAuthFixture struct {
+	accessToken string
+	identity    service.AuthIdentity
+}
+
+func createChannelRouterAuth(t *testing.T, user *model.User) channelRouterAuthFixture {
+	t.Helper()
+	now := time.Now().Unix()
+	identity := service.AuthIdentity{
+		UserID:          user.Id,
+		SessionID:       user.Username + "-session",
+		UserAuthVersion: user.AuthVersion,
+		SessionVersion:  1,
+	}
+	require.NoError(t, model.CreateUserSession(&model.UserSession{
+		SID:             identity.SessionID,
+		UserID:          identity.UserID,
+		Version:         identity.SessionVersion,
+		UserAuthVersion: identity.UserAuthVersion,
+		Status:          model.UserSessionStatusActive,
+		RefreshHash:     strings.Repeat("a", 64),
+		LoginMethod:     "password",
+		LastActiveAt:    now,
+		ExpiresAt:       now + 3600,
+	}))
+	accessToken, _, err := service.IssueAccessToken(identity)
+	require.NoError(t, err)
+	return channelRouterAuthFixture{accessToken: accessToken, identity: identity}
+}
+
+func skipAutomaticAdminAudit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyAuditLogged, true)
+		c.Next()
+	}
 }
 
 func assertChannelRoutePermission(t *testing.T, method string, path string, permission authz.Permission, handler any) {

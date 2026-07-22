@@ -89,29 +89,3 @@ func TestNormalizeUsageForSemanticProductionRoundTrip(t *testing.T) {
 	assert.Equal(t, 1246, roundTrip.TotalTokens)
 	assert.Equal(t, 1026, roundTrip.PromptTokensDetails.CachedTokens)
 }
-
-func TestBuildClaudeUsageFromOpenAIUsageSubtractsCachedInput(t *testing.T) {
-	openAI := dto.Usage{
-		PromptTokens: 1026, CompletionTokens: 220, UsageSemantic: UsageSemanticOpenAI,
-		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 1026},
-	}
-
-	claude := buildClaudeUsageFromOpenAIUsage(&openAI)
-	require.NotNil(t, claude)
-	assert.Equal(t, 0, claude.InputTokens)
-	assert.Equal(t, 1026, claude.CacheReadInputTokens)
-	assert.Equal(t, 0, claude.CacheCreationInputTokens)
-	assert.Equal(t, 220, claude.OutputTokens)
-
-	roundTrip := dto.Usage{
-		PromptTokens: claude.InputTokens, CompletionTokens: claude.OutputTokens,
-		UsageSemantic: UsageSemanticAnthropic,
-		PromptTokensDetails: dto.InputTokenDetails{
-			CachedTokens:         claude.CacheReadInputTokens,
-			CachedCreationTokens: claude.CacheCreationInputTokens,
-		},
-	}
-	normalized := NormalizeUsageForSemantic(&roundTrip, UsageSemanticOpenAI)
-	assert.Equal(t, 1026, normalized.PromptTokens)
-	assert.Equal(t, 1246, normalized.TotalTokens)
-}

@@ -35,7 +35,7 @@ func NormalizeInputTokens(usage *dto.Usage) NormalizedInputTokens {
 	cacheReadTokens := positiveTokenCount(usage.PromptTokensDetails.CachedTokens)
 	cacheCreation5mTokens := positiveTokenCount(usage.ClaudeCacheCreation5mTokens)
 	cacheCreation1hTokens := positiveTokenCount(usage.ClaudeCacheCreation1hTokens)
-	cacheCreationTokens := positiveTokenCount(usage.PromptTokensDetails.CachedCreationTokens)
+	cacheCreationTokens := positiveTokenCount(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	if splitTotal := saturatingTokenAdd(cacheCreation5mTokens, cacheCreation1hTokens); splitTotal > cacheCreationTokens {
 		cacheCreationTokens = splitTotal
 	}
