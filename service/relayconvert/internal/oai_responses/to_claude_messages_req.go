@@ -157,6 +157,8 @@ func responsesFunctionParametersToClaudeInputSchema(parameters any) map[string]i
 func applyResponsesReasoningToClaude(req *dto.OpenAIResponsesRequest, claudeRequest *dto.ClaudeRequest) {
 	effort := ReasoningEffort(req)
 	switch effort {
+	case "none":
+		claudeRequest.Thinking = &dto.Thinking{Type: "disabled"}
 	case "low":
 		claudeRequest.Thinking = &dto.Thinking{
 			Type:         "enabled",

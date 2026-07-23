@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service/relayconvert"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestHandleStreamResponseDataMarksClaudeMessageStop(t *testing.T) {
@@ -399,4 +401,55 @@ func TestOpenAIChatRequestToClaudeMessages_ClaudeOpus48ThinkingUsesAdaptiveHighE
 	require.Nil(t, claudeRequest.Temperature)
 	require.Nil(t, claudeRequest.TopP)
 	require.Nil(t, claudeRequest.TopK)
+}
+
+func TestOpenAIChatRequestToClaudeMessages_NoneDisablesThinking(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantModel string
+	}{
+		{name: "plain model", model: "claude-sonnet-4-5", wantModel: "claude-sonnet-4-5"},
+		{name: "thinking suffix", model: "claude-opus-4-8-thinking", wantModel: "claude-opus-4-8"},
+		{name: "effort suffix", model: "claude-opus-4-8-high", wantModel: "claude-opus-4-8"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := dto.GeneralOpenAIRequest{
+				Model:           tt.model,
+				ReasoningEffort: "none",
+				Reasoning:       []byte(`{"enabled":true,"max_tokens":2048}`),
+				Temperature:     commonPointer(0.7),
+				TopP:            commonPointer(0.9),
+				TopK:            commonPointer(40),
+				Messages: []dto.Message{
+					{
+						Role:    "user",
+						Content: "hello",
+					},
+				},
+			}
+
+			claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, request)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantModel, claudeRequest.Model)
+			require.NotNil(t, claudeRequest.Thinking)
+			assert.Equal(t, "disabled", claudeRequest.Thinking.Type)
+			assert.Nil(t, claudeRequest.Thinking.BudgetTokens)
+			assert.Empty(t, claudeRequest.Thinking.Display)
+			assert.Empty(t, claudeRequest.OutputConfig)
+			require.NotNil(t, claudeRequest.Temperature)
+			assert.Equal(t, 0.7, *claudeRequest.Temperature)
+			require.NotNil(t, claudeRequest.TopP)
+			assert.Equal(t, 0.9, *claudeRequest.TopP)
+			require.NotNil(t, claudeRequest.TopK)
+			assert.Equal(t, 40, *claudeRequest.TopK)
+
+			requestJSON, err := common.Marshal(claudeRequest)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"type":"disabled"}`, gjson.GetBytes(requestJSON, "thinking").Raw)
+			assert.False(t, gjson.GetBytes(requestJSON, "output_config").Exists())
+		})
+	}
 }
