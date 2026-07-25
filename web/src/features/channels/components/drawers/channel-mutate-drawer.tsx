@@ -304,6 +304,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'deepseek_v4_request_sanitization_enabled',
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
@@ -361,6 +362,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
     values.claude_beta_query ||
+    (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.simulated_model_cache_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
@@ -797,6 +799,9 @@ export function ChannelMutateDrawer({
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
+  const currentDeepSeekV4RequestSanitizationEnabled = form.watch(
+    'deepseek_v4_request_sanitization_enabled'
+  )
   const currentProxy = form.watch('proxy')
   const currentSystemPrompt = form.watch('system_prompt')
   const currentSystemPromptOverride = form.watch('system_prompt_override')
@@ -1098,6 +1103,7 @@ export function ChannelMutateDrawer({
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
     currentDisableTaskPollingSleep ||
+    (currentType === 43 && currentDeepSeekV4RequestSanitizationEnabled) ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride
@@ -4912,6 +4918,35 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+
+                              {currentType === 43 && (
+                                <FormField
+                                  control={form.control}
+                                  name='deepseek_v4_request_sanitization_enabled'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t(
+                                            'DeepSeek V4 request compatibility'
+                                          )}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Clamp max_tokens to 393216 and top_k to 99, and remove invalid required fields from tool schemas. Skipped when request body passthrough is enabled.'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
 
                               <FormField
                                 control={form.control}

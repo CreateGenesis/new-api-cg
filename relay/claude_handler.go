@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/deepseek"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
@@ -191,6 +192,14 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			if err != nil {
 				return newAPIErrorFromParamOverride(err)
 			}
+		}
+
+		jsonData, sanitization, err := deepseek.SanitizeV4RequestJSON(jsonData, info)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		}
+		if sanitization.Changed() {
+			logger.LogDebug(c, "deepseek v4 request sanitized: max_token_fields=%d, top_k_fields=%d, schema_fields=%d", sanitization.MaxTokenFields, sanitization.TopKFields, sanitization.SchemaFields)
 		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)

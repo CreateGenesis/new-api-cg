@@ -229,6 +229,48 @@ describe('channel form input token routing settings', () => {
   })
 })
 
+describe('channel form DeepSeek V4 request sanitization', () => {
+  test('loads and saves the setting for DeepSeek channels', () => {
+    const channel = testChannel('{"deepseek_v4_request_sanitization":true}')
+    channel.type = 43
+    const form = transformChannelToFormDefaults(channel)
+
+    assert.equal(form.deepseek_v4_request_sanitization_enabled, true)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'deepseek-v4-pro',
+      group: ['default'],
+      status: 1,
+      type: 43,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.deepseek_v4_request_sanitization, true)
+  })
+
+  test('removes the setting after changing to a non-DeepSeek channel', () => {
+    const channel = testChannel('{"deepseek_v4_request_sanitization":true}')
+    channel.type = 43
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'gpt-4.1',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.deepseek_v4_request_sanitization, undefined)
+  })
+})
+
 describe('channel form simulated model cache settings', () => {
   test('loads enabled simulated cache settings', () => {
     const form = transformChannelToFormDefaults(

@@ -180,6 +180,7 @@ export interface ChannelOtherSettings {
   allow_speed?: boolean
   claude_beta_query?: boolean
   disable_task_polling_sleep?: boolean
+  deepseek_v4_request_sanitization?: boolean
   simulated_model_cache?: {
     enabled?: boolean
     ttl_seconds?: number

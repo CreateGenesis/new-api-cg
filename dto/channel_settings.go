@@ -57,6 +57,7 @@ type ChannelOtherSettings struct {
 	SimulatedModelCache                   *SimulatedModelCacheSettings       `json:"simulated_model_cache,omitempty"`
 	StatusCodeRetry                       *StatusCodeRetrySettings           `json:"status_code_retry,omitempty"`
 	InputTokenRouting                     *InputTokenRoutingSettings         `json:"input_token_routing,omitempty"`
+	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 }
 
