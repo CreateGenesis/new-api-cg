@@ -49,7 +49,9 @@ import {
   UserCog,
   Info,
   LogIn,
+  SearchCode,
 } from 'lucide-react'
+import { lazy, Suspense, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -61,7 +63,9 @@ import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-p
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
+import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import type { UsageLog } from '../../data/schema'
 import { getCacheBillingUsage } from '../../lib/cache-billing'
@@ -82,6 +86,13 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { RelayRetrySummarySection } from './relay-retry-summary'
+
+const RelayDebugViewer = lazy(() =>
+  import('./relay-debug-viewer').then((module) => ({
+    default: module.RelayDebugViewer,
+  }))
+)
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -486,6 +497,10 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
+  const [showRelayTrace, setShowRelayTrace] = useState(false)
+  const isRoot = useAuthStore(
+    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
+  )
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const details = props.log.content ?? ''
   const other = parseLogOther(props.log.other)
@@ -508,6 +523,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
+  const relayRetry = props.isAdmin ? adminInfo?.relay_retry : undefined
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
       ? ([
@@ -645,7 +661,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
+        isTieredBilling || relayRetry
+          ? 'sm:max-w-4xl lg:max-w-5xl'
+          : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -782,6 +800,48 @@ export function DetailsDialog(props: DetailsDialogProps) {
               </div>
             )}
           </DetailSection>
+        )}
+
+        {relayRetry && (
+          <>
+            <RelayRetrySummarySection summary={relayRetry} />
+            {isRoot && props.log.request_id && (
+              <div className='min-w-0 space-y-2'>
+                {relayRetry.trace_available ? (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => setShowRelayTrace((visible) => !visible)}
+                    aria-expanded={showRelayTrace}
+                  >
+                    <SearchCode data-icon='inline-start' aria-hidden='true' />
+                    {showRelayTrace
+                      ? t('Hide full relay trace')
+                      : t('View full relay trace')}
+                  </Button>
+                ) : (
+                  <span className='text-muted-foreground text-xs'>
+                    {t('Full relay trace is unavailable.')}
+                  </span>
+                )}
+                {showRelayTrace && relayRetry.trace_available && (
+                  <Suspense
+                    fallback={
+                      <div
+                        className='text-muted-foreground flex min-h-20 items-center justify-center text-xs'
+                        role='status'
+                      >
+                        {t('Loading relay trace')}
+                      </div>
+                    }
+                  >
+                    <RelayDebugViewer requestId={props.log.request_id} />
+                  </Suspense>
+                )}
+              </div>
+            )}
+          </>
         )}
 
         {/* Request conversion (admin only, not for refund) */}

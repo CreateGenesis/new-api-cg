@@ -1183,6 +1183,11 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("status_code_retry.status_codes: %w", err)
 		}
 	}
+	if channelOtherSettings.SimulatedModelCache != nil {
+		if err := channelOtherSettings.SimulatedModelCache.Validate(); err != nil {
+			return err
+		}
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

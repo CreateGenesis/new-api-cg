@@ -36,6 +36,7 @@ const (
 	SimulatedModelCacheBypassRedisError       = "redis_error"
 	SimulatedModelCacheBypassRedisUnavailable = "redis_unavailable"
 	SimulatedModelCacheBypassPromptTooLarge   = "prompt_too_large"
+	SimulatedModelCacheBypassInvalidPrompt    = "invalid_prompt"
 	SimulatedModelCacheBypassMatchNotReady    = "match_not_ready"
 	SimulatedModelCacheBypassInputTokensLow   = "input_tokens_below_minimum"
 	SimulatedModelCacheBypassResponseTooLarge = "response_too_large"
@@ -141,6 +142,7 @@ type SimulatedModelCacheRoutingPreparation struct {
 	ChannelID  int
 	Model      string
 	PromptText string
+	Prompt     SimulatedModelCachePrompt
 	Settings   dto.SimulatedModelCacheSettings
 	Result     SimulatedModelCachePartialMatchResult
 }
@@ -259,7 +261,7 @@ func SubmitSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedMod
 	if err := ctx.Err(); err != nil {
 		return nil, SimulatedModelCacheBypassRequestCanceled
 	}
-	estimatedBytes := estimateSimulatedModelCacheCurrentMatchBytes(req.PromptText)
+	estimatedBytes := estimateSimulatedModelCacheCurrentMatchBytes(req.effectivePrompt())
 	reservation := ReserveSimulatedModelCacheMemory(estimatedBytes)
 	if reservation == nil {
 		return nil, SimulatedModelCacheBypassMemoryBudget
@@ -286,10 +288,13 @@ func SubmitSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedMod
 	return nil, SimulatedModelCacheBypassWorkerQueueFull
 }
 
-func estimateSimulatedModelCacheCurrentMatchBytes(prompt string) int64 {
-	runeCount := utf8.RuneCountInString(prompt)
+func estimateSimulatedModelCacheCurrentMatchBytes(prompt SimulatedModelCachePrompt) int64 {
+	if prompt.IsMultimodal() {
+		return int64(len(prompt.blocks))*256 + 64*1024
+	}
+	runeCount := utf8.RuneCountInString(prompt.Text)
 	chunkCount := runeCount/simulatedModelCacheFingerprintMinRunes + 1
-	estimatedBytes := int64(len(prompt)) + int64(chunkCount)*768 + 64*1024
+	estimatedBytes := int64(len(prompt.Text)) + int64(chunkCount)*768 + 64*1024
 	if runeCount >= simulatedModelCacheFineFingerprintWindowRunes && runeCount <= simulatedModelCacheFineFingerprintMaxRunes {
 		windowCount := runeCount - simulatedModelCacheFineFingerprintWindowRunes + 1
 		estimatedBytes += int64(windowCount) * (simulatedModelCacheFineFingerprintHashBytes + simulatedModelCacheFineMatchBytesPerWindow)

@@ -392,6 +392,8 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  RelayDebugLogEnabled: boolean
+  RelayDebugLogTextLimitMB: number
   'performance_setting.simulated_model_cache_memory_budget_mb': number
   'performance_setting.simulated_model_cache_max_entries_per_scope': number
   'performance_setting.simulated_model_cache_min_input_tokens': number

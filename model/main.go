@@ -280,6 +280,7 @@ func migrateDB() error {
 		&Redemption{},
 		&Ability{},
 		&Log{},
+		&RelayDebugPayload{},
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
@@ -410,7 +411,7 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return LOG_DB.AutoMigrate(&Log{}, &RelayDebugPayload{})
 }
 
 func migrateClickHouseLogDB() error {
@@ -418,7 +419,13 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL(ttlDays)).Error; err != nil {
 		return err
 	}
-	return syncClickHouseLogTTL(ttlDays)
+	if err := LOG_DB.Exec(clickHouseRelayDebugCreateTableSQL(ttlDays)).Error; err != nil {
+		return err
+	}
+	if err := syncClickHouseLogTTL(ttlDays); err != nil {
+		return err
+	}
+	return syncClickHouseRelayDebugTTL(ttlDays)
 }
 
 func clickHouseLogTTLDays() int {
@@ -471,6 +478,38 @@ CREATE TABLE IF NOT EXISTS logs (
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(toDateTime(created_at))
 ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
+}
+
+func clickHouseRelayDebugCreateTableSQL(ttlDays int) string {
+	return fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS relay_debug_payloads (
+	request_id String,
+	created_at Int64,
+	chunk_index Int32,
+	chunk_count Int32,
+	encoding String,
+	uncompressed_size Int64,
+	checksum String,
+	payload String
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(toDateTime(created_at))
+ORDER BY (created_at, request_id, chunk_index)%s`, clickHouseLogTTLClause(ttlDays))
+}
+
+func syncClickHouseRelayDebugTTL(ttlDays int) error {
+	expression := clickHouseLogTTLExpression(ttlDays)
+	if expression != "" {
+		return LOG_DB.Exec("ALTER TABLE relay_debug_payloads MODIFY TTL " + expression).Error
+	}
+	var createTableSQL string
+	if err := LOG_DB.Raw("SHOW CREATE TABLE relay_debug_payloads").Scan(&createTableSQL).Error; err != nil {
+		return err
+	}
+	if !clickHouseCreateTableHasTTL(createTableSQL) {
+		return nil
+	}
+	return LOG_DB.Exec("ALTER TABLE relay_debug_payloads REMOVE TTL").Error
 }
 
 func syncClickHouseLogTTL(ttlDays int) error {

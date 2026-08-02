@@ -1,8 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/alicebob/miniredis/v2"
@@ -17,6 +22,48 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func simulatedModelCacheMultimodalTestSettings() dto.SimulatedModelCacheSettings {
+	imageRate := 520.0
+	videoRate := 820.0
+	audioRate := 25.0
+	fileRate := 4096.0
+	imageFallback := 520
+	videoFallback := 8192
+	audioFallback := 256
+	fileFallback := 4096
+	return dto.SimulatedModelCacheSettings{
+		Enabled: true,
+		Multimodal: &dto.SimulatedModelCacheMultimodalSettings{
+			Enabled:                       true,
+			ImageTokensPerMegapixel:       &imageRate,
+			VideoTokensPerSecondMegapixel: &videoRate,
+			AudioTokensPerSecond:          &audioRate,
+			FileTokensPerMiB:              &fileRate,
+			ImageFallbackTokens:           &imageFallback,
+			VideoFallbackTokens:           &videoFallback,
+			AudioFallbackTokens:           &audioFallback,
+			FileFallbackTokens:            &fileFallback,
+		},
+	}
+}
+
+func simulatedModelCachePNGDataURL(t *testing.T, width int, height int) string {
+	t.Helper()
+	var buffer bytes.Buffer
+	require.NoError(t, png.Encode(&buffer, image.NewRGBA(image.Rect(0, 0, width, height))))
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buffer.Bytes())
+}
+
+func simulatedModelCacheMediaWeight(prompt SimulatedModelCachePrompt) uint64 {
+	var weight uint64
+	for _, block := range prompt.blocks {
+		if block.media && !block.barrier {
+			weight += uint64(block.weight)
+		}
+	}
+	return weight
+}
 
 func TestExtractSimulatedModelCachePromptText(t *testing.T) {
 	tests := []struct {
@@ -79,6 +126,339 @@ func TestExtractSimulatedModelCachePromptText(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestExtractSimulatedModelCachePromptSeparatesDifferentMedia(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	body := func(url string) []byte {
+		return []byte(fmt.Sprintf(`{"model":"gpt-test","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":%q}}]}]}`, url))
+	}
+
+	first := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("https://example.com/a.png"), settings)
+	second := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("https://example.com/b.png"), settings)
+
+	assert.True(t, first.IsMultimodal())
+	assert.True(t, second.IsMultimodal())
+	assert.NotEqual(t, first.identityDigest, second.identityDigest)
+}
+
+func TestExtractSimulatedModelCachePromptNormalizesEquivalentBase64(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	dataURL := simulatedModelCachePNGDataURL(t, 2, 3)
+	encoded := strings.TrimPrefix(dataURL, "data:image/png;base64,")
+	equivalent := strings.TrimRight(encoded, "=")
+	equivalent = equivalent[:12] + "\n" + equivalent[12:]
+	body := func(data string) []byte {
+		return []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, "data:image/png;base64,"+data))
+	}
+
+	first := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body(encoded), settings)
+	second := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body(equivalent), settings)
+
+	assert.True(t, first.IsMultimodal())
+	assert.Equal(t, first.identityDigest, second.identityDigest)
+}
+
+func TestDecodeSimulatedModelCacheInlineMediaRejectsExcessPadding(t *testing.T) {
+	_, _, err := decodeSimulatedModelCacheInlineMedia("YQ===")
+
+	assert.ErrorContains(t, err, "invalid base64 padding")
+}
+
+func TestSimulatedModelCacheProbeMediaRejectsOversizedPCMDuration(t *testing.T) {
+	decodedBytes := int64(relaycommon.MaxTaskDurationSeconds*24_000*2 + 1)
+
+	metadata, invalid := simulatedModelCacheProbeMedia("audio", "", "pcm16", []byte{1}, decodedBytes)
+
+	assert.True(t, invalid)
+	assert.False(t, metadata.hasSeconds)
+}
+
+func TestExtractSimulatedModelCachePromptNormalizesRecognizedSignedURLs(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	body := func(rawURL string) []byte {
+		return []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, rawURL))
+	}
+
+	first := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("https://bucket.example/a.png?version=7&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=one&X-Amz-Date=20260101T000000Z&X-Amz-Signature=aaa"), settings)
+	refreshed := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("https://bucket.example/a.png?X-Amz-Date=20260102T000000Z&X-Amz-Signature=bbb&X-Amz-Credential=two&X-Amz-Algorithm=AWS4-HMAC-SHA256&version=7"), settings)
+	differentContentSelector := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("https://bucket.example/a.png?version=8&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=two&X-Amz-Date=20260102T000000Z&X-Amz-Signature=bbb"), settings)
+
+	assert.Equal(t, first.identityDigest, refreshed.identityDigest)
+	assert.NotEqual(t, first.identityDigest, differentContentSelector.identityDigest)
+}
+
+func TestExtractSimulatedModelCachePromptNormalizesSignedURLFamilies(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	tests := []struct {
+		name      string
+		firstURL  string
+		secondURL string
+	}{
+		{
+			name:      "Google Cloud Storage",
+			firstURL:  "https://storage.example/a.png?generation=7&X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=one&X-Goog-Date=20260101T000000Z&X-Goog-Signature=aaa",
+			secondURL: "https://storage.example/a.png?X-Goog-Date=20260102T000000Z&X-Goog-Signature=bbb&X-Goog-Credential=two&X-Goog-Algorithm=GOOG4-RSA-SHA256&generation=7",
+		},
+		{
+			name:      "Azure Blob Storage",
+			firstURL:  "https://account.blob.example/a.png?version=7&sv=2024-11-04&se=2026-01-01&sp=r&sig=aaa",
+			secondURL: "https://account.blob.example/a.png?sig=bbb&sp=r&se=2026-01-02&sv=2024-11-04&version=7",
+		},
+		{
+			name:      "Alibaba OSS",
+			firstURL:  "https://bucket.oss.example/a.png?version=7&OSSAccessKeyId=one&Expires=100&Signature=aaa",
+			secondURL: "https://bucket.oss.example/a.png?Signature=bbb&Expires=200&OSSAccessKeyId=two&version=7",
+		},
+		{
+			name:      "Tencent COS",
+			firstURL:  "https://bucket.cos.example/a.png?version=7&q-sign-algorithm=sha1&q-ak=one&q-key-time=1%3B2&q-signature=aaa",
+			secondURL: "https://bucket.cos.example/a.png?q-signature=bbb&q-key-time=3%3B4&q-ak=two&q-sign-algorithm=sha1&version=7",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := func(rawURL string) []byte {
+				return []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, rawURL))
+			}
+			first := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body(test.firstURL), settings)
+			second := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body(test.secondURL), settings)
+
+			assert.Equal(t, first.identityDigest, second.identityDigest)
+		})
+	}
+}
+
+func TestExtractSimulatedModelCachePromptUsesImageFormula(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	dataURL := simulatedModelCachePNGDataURL(t, 1000, 500)
+	body := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, dataURL))
+
+	prompt := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body, settings)
+
+	require.True(t, prompt.IsMultimodal())
+	assert.Equal(t, uint64(260), simulatedModelCacheMediaWeight(prompt))
+}
+
+func TestExtractSimulatedModelCachePromptSupportsProviderMediaBlocks(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	dataURL := simulatedModelCachePNGDataURL(t, 2, 3)
+	base64Data := strings.TrimPrefix(dataURL, "data:image/png;base64,")
+	tests := []struct {
+		name   string
+		format types.RelayFormat
+		body   string
+	}{
+		{
+			name:   "OpenAI Responses nested message",
+			format: types.RelayFormatOpenAIResponses,
+			body:   fmt.Sprintf(`{"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":%q}]}]}`, dataURL),
+		},
+		{
+			name:   "Claude base64 source",
+			format: types.RelayFormatClaude,
+			body:   fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":%q}}]}]}`, base64Data),
+		},
+		{
+			name:   "Gemini inline data",
+			format: types.RelayFormatGemini,
+			body:   fmt.Sprintf(`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":%q}}]}]}`, base64Data),
+		},
+		{
+			name:   "Gemini Cloud Storage file data",
+			format: types.RelayFormatGemini,
+			body:   `{"contents":[{"role":"user","parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"gs://bucket/video.mp4"}}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prompt := ExtractSimulatedModelCachePrompt(test.format, "gpt-test", []byte(test.body), settings)
+
+			require.True(t, prompt.IsMultimodal())
+			assert.Empty(t, prompt.DiagnosticReason())
+			assert.Greater(t, simulatedModelCacheMediaWeight(prompt), uint64(0))
+		})
+	}
+}
+
+func TestExtractSimulatedModelCachePromptUsesMediaFormulasAndFallbacks(t *testing.T) {
+	settings := simulatedModelCacheMultimodalTestSettings()
+	pcm16 := base64.StdEncoding.EncodeToString(make([]byte, 96_000))
+	fileData := base64.StdEncoding.EncodeToString(make([]byte, 256*1024))
+	tests := []struct {
+		name       string
+		format     types.RelayFormat
+		body       string
+		wantWeight uint64
+	}{
+		{
+			name:       "video metadata formula",
+			format:     types.RelayFormatOpenAI,
+			body:       `{"messages":[{"role":"user","content":[{"type":"input_video","video_url":"https://example.com/video.mp4","width":1920,"height":1080,"duration":2}]}]}`,
+			wantWeight: 3401,
+		},
+		{
+			name:       "PCM audio duration formula",
+			format:     types.RelayFormatOpenAI,
+			body:       fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":%q,"format":"pcm16"}}]}]}`, pcm16),
+			wantWeight: 50,
+		},
+		{
+			name:       "inline file size formula",
+			format:     types.RelayFormatOpenAIResponses,
+			body:       fmt.Sprintf(`{"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_data":%q,"filename":"report.pdf"}]}]}`, fileData),
+			wantWeight: 1024,
+		},
+		{
+			name:       "video fallback",
+			format:     types.RelayFormatOpenAI,
+			body:       `{"messages":[{"role":"user","content":[{"type":"input_video","video_url":"https://example.com/video.mp4"}]}]}`,
+			wantWeight: 8192,
+		},
+		{
+			name:       "audio fallback",
+			format:     types.RelayFormatOpenAI,
+			body:       `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"url":"https://example.com/audio.wav"}}]}]}`,
+			wantWeight: 256,
+		},
+		{
+			name:       "file fallback",
+			format:     types.RelayFormatOpenAIResponses,
+			body:       `{"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_url":"https://example.com/report.pdf"}]}]}`,
+			wantWeight: 4096,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prompt := ExtractSimulatedModelCachePrompt(test.format, "gpt-test", []byte(test.body), settings)
+
+			require.True(t, prompt.IsMultimodal())
+			assert.Empty(t, prompt.DiagnosticReason())
+			assert.Equal(t, test.wantWeight, simulatedModelCacheMediaWeight(prompt))
+		})
+	}
+}
+
+func TestSimulatedModelCacheMultimodalBarrierStopsMatchingAtInvalidMedia(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	settings := simulatedModelCacheMultimodalTestSettings()
+	valid := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"prefix"},{"type":"image_url","image_url":{"url":"https://example.com/image.png"}},{"type":"text","text":"suffix"}]}]}`), settings)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 9, Model: "gpt-test", Prompt: valid, TTLSeconds: 60,
+	}))
+	invalid := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"prefix"},{"type":"image_url","image_url":{"url":"not-a-url"}},{"type":"text","text":"suffix"}]}]}`), settings)
+
+	match, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 9, Model: "gpt-test", Prompt: invalid, MinMatchRatio: 0.01,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_image", invalid.DiagnosticReason())
+	assert.True(t, match.Found)
+	assert.Greater(t, match.MatchRatio, 0.0)
+	assert.Less(t, match.MatchRatio, 1.0)
+}
+
+func TestSimulatedModelCacheMultimodalSettingsDigestIsolatesRedisScopes(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	firstSettings := simulatedModelCacheMultimodalTestSettings()
+	secondSettings := simulatedModelCacheMultimodalTestSettings()
+	secondRate := 521.0
+	secondSettings.Multimodal.ImageTokensPerMegapixel = &secondRate
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`)
+	first := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body, firstSettings)
+	second := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body, secondSettings)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 10, Model: "gpt-test", Prompt: first, TTLSeconds: 60,
+	}))
+
+	match, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 10, Model: "gpt-test", Prompt: second, MinMatchRatio: 0.01,
+	})
+
+	require.NoError(t, err)
+	assert.False(t, match.Found)
+	assert.Zero(t, match.CandidateCount)
+}
+
+func TestSimulatedModelCacheRedisDoesNotStoreRawMediaReferences(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	settings := simulatedModelCacheMultimodalTestSettings()
+	dataURL := simulatedModelCachePNGDataURL(t, 2, 3)
+	references := []string{
+		"https://private.example/sensitive.png?tenant=secret",
+		"file-secret-123",
+		dataURL,
+	}
+	bodies := [][]byte{
+		[]byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, references[0])),
+		[]byte(fmt.Sprintf(`{"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":%q}]}]}`, references[1])),
+		[]byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, references[2])),
+	}
+	formats := []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatOpenAI}
+	for index, body := range bodies {
+		prompt := ExtractSimulatedModelCachePrompt(formats[index], "gpt-test", body, settings)
+		require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+			UserID: 11, Model: "gpt-test", Prompt: prompt, TTLSeconds: 60,
+		}))
+	}
+
+	keys, err := common.RDB.Keys(ctx, simulatedModelCacheKeyPrefix+":*").Result()
+	require.NoError(t, err)
+	var stored strings.Builder
+	for _, key := range keys {
+		if common.RDB.Type(ctx, key).Val() != "string" {
+			continue
+		}
+		value, getErr := common.RDB.Get(ctx, key).Result()
+		require.NoError(t, getErr)
+		stored.WriteString(value)
+	}
+	for _, reference := range references {
+		assert.NotContains(t, stored.String(), reference)
+	}
+}
+
+func TestSimulatedModelCacheMultimodalStrictPrefixAndMediaOnlyRedisMatch(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	settings := simulatedModelCacheMultimodalTestSettings()
+	body := func(text string, url string) []byte {
+		return []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"text","text":%q},{"type":"image_url","image_url":{"url":%q}}]}]}`, text, url))
+	}
+	stored := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("shared prefix", "https://example.com/a.png"), settings)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 7, Model: "gpt-test", Prompt: stored, TTLSeconds: 60,
+	}))
+
+	exact, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 7, Model: "gpt-test", Prompt: stored, MinMatchRatio: 0.01,
+	})
+	require.NoError(t, err)
+	assert.True(t, exact.Found)
+	assert.Equal(t, 1.0, exact.MatchRatio)
+
+	differentMedia := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("shared prefix", "https://example.com/b.png"), settings)
+	partial, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 7, Model: "gpt-test", Prompt: differentMedia, MinMatchRatio: 0.01,
+	})
+	require.NoError(t, err)
+	assert.True(t, partial.Found)
+	assert.Greater(t, partial.MatchRatio, 0.0)
+	assert.Less(t, partial.MatchRatio, 1.0)
+
+	mediaOnly := ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", body("", "https://example.com/media-only.png"), settings)
+	require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 8, Model: "gpt-test", Prompt: mediaOnly, TTLSeconds: 60,
+	}))
+	mediaOnlyMatch, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 8, Model: "gpt-test", Prompt: mediaOnly, MinMatchRatio: 1,
+	})
+	require.NoError(t, err)
+	assert.True(t, mediaOnlyMatch.Found)
+	assert.Equal(t, 1.0, mediaOnlyMatch.MatchRatio)
 }
 
 func TestSimulatedModelCacheMatchRatioUsesCurrentPromptLength(t *testing.T) {
@@ -294,6 +674,86 @@ func TestApplySimulatedModelCacheUsageRewriteUsesAnthropicUsageSemantics(t *test
 	assert.Equal(t, 25, marker.SimulatedCachedTokens)
 }
 
+func TestApplySimulatedModelCacheUsageRewriteUpdatesBillingUsage(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 7,
+		TotalTokens:      107,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:  100,
+			OutputTokens: 7,
+		}),
+	}
+
+	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{MatchRatio: 0.25})
+	billingUsage := effectiveBillingUsage(usage)
+
+	assert.Equal(t, 75, billingUsage.PromptTokens)
+	assert.Equal(t, 25, billingUsage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 107, billingUsage.TotalTokens)
+}
+
+func TestApplySimulatedModelCacheUsageRewriteReplacesCacheCreationInBillingUsage(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 7,
+		TotalTokens:      127,
+		UsageSemantic:    UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedCreationTokens: 20,
+		},
+		ClaudeCacheCreation5mTokens: 8,
+		ClaudeCacheCreation1hTokens: 12,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:              100,
+			OutputTokens:             7,
+			CacheCreationInputTokens: 20,
+			CacheCreation: &dto.ClaudeCacheCreationUsage{
+				Ephemeral5mInputTokens: 8,
+				Ephemeral1hInputTokens: 12,
+			},
+		}),
+	}
+
+	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{MatchRatio: 0.25})
+	billingUsage := effectiveBillingUsage(usage)
+
+	require.NotNil(t, marker)
+	assert.Equal(t, 120, marker.OriginalPromptTokens)
+	assert.Equal(t, 30, marker.SimulatedCachedTokens)
+	assert.Equal(t, 90, billingUsage.PromptTokens)
+	assert.Equal(t, 30, billingUsage.PromptTokensDetails.CachedTokens)
+	assert.Zero(t, billingUsage.PromptTokensDetails.CachedCreationTokens)
+	assert.Equal(t, 127, billingUsage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage.ClaudeUsage)
+	assert.Zero(t, usage.BillingUsage.ClaudeUsage.CacheCreationInputTokens)
+	assert.Nil(t, usage.BillingUsage.ClaudeUsage.CacheCreation)
+}
+
+func TestApplySimulatedModelCacheUsageRewriteKeepsGeminiToolTokensInTotalOnce(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 12,
+		TotalTokens:      112,
+		BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+			PromptTokenCount:        80,
+			ToolUsePromptTokenCount: 20,
+			CandidatesTokenCount:    10,
+			ThoughtsTokenCount:      2,
+			TotalTokenCount:         112,
+		}),
+	}
+
+	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{MatchRatio: 0.25})
+	billingUsage := effectiveBillingUsage(usage)
+
+	assert.Equal(t, 100, billingUsage.PromptTokens)
+	assert.Equal(t, 25, billingUsage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 112, billingUsage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
+	assert.Zero(t, usage.BillingUsage.GeminiUsageMetadata.ToolUsePromptTokenCount)
+}
+
 func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndModel(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	originalMaxEntries := common.GetSimulatedModelCacheEntriesPerScope()
@@ -345,14 +805,16 @@ func TestSimulatedModelCacheFingerprintIndexKeepsRecentUniquePromptsPerUserAndMo
 	assert.Equal(t, int64(1), otherModelCount)
 }
 
-func TestSimulatedModelCacheV4StoresOneFingerprintPerPromptAndKeepsOlderVersionsUntouched(t *testing.T) {
+func TestSimulatedModelCacheV5StoresOneFingerprintPerPromptAndKeepsOlderVersionsUntouched(t *testing.T) {
 	ctx := withSimulatedModelCacheTestRedis(t)
 	const prompt = "shared prompt "
 	promptText := strings.Repeat(prompt, 20)
 	v1Key := "simulated_model_cache:v1:legacy"
 	v2Key := "simulated_model_cache:v2:legacy"
+	v4Key := "simulated_model_cache:v4:legacy"
 	require.NoError(t, common.RDB.Set(ctx, v1Key, "legacy", 0).Err())
 	require.NoError(t, common.RDB.Set(ctx, v2Key, "legacy", 0).Err())
+	require.NoError(t, common.RDB.Set(ctx, v4Key, "legacy", 0).Err())
 
 	for i := 0; i < 2; i++ {
 		require.NoError(t, StoreSimulatedModelCachePromptFingerprint(ctx, SimulatedModelCachePartialMatchRequest{
@@ -377,6 +839,33 @@ func TestSimulatedModelCacheV4StoresOneFingerprintPerPromptAndKeepsOlderVersions
 	legacy, err = common.RDB.Get(ctx, v2Key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "legacy", legacy)
+	legacy, err = common.RDB.Get(ctx, v4Key).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "legacy", legacy)
+}
+
+func TestSimulatedModelCacheV5IgnoresV4FingerprintIndexes(t *testing.T) {
+	ctx := withSimulatedModelCacheTestRedis(t)
+	promptText := strings.Repeat("legacy prompt ", 20)
+	promptID := sha256Hex([]byte(promptText))
+	legacyFingerprint, err := buildSimulatedModelCachePromptFingerprint(ctx, promptText)
+	require.NoError(t, err)
+	legacyFingerprint.Version = "v4"
+	raw, err := common.Marshal(legacyFingerprint)
+	require.NoError(t, err)
+	legacyIndexKey := strings.Replace(simulatedModelCacheScopeIndexKey(0, 12, "gpt-test"), simulatedModelCacheKeyPrefix, "simulated_model_cache:v4", 1)
+	legacyFingerprintKey := strings.Replace(simulatedModelCacheFingerprintKey(0, 12, "gpt-test", promptID), simulatedModelCacheKeyPrefix, "simulated_model_cache:v4", 1)
+	require.NoError(t, common.RDB.Set(ctx, legacyFingerprintKey, raw, time.Minute).Err())
+	require.NoError(t, common.RDB.ZAdd(ctx, legacyIndexKey, &redis.Z{Score: 1, Member: promptID}).Err())
+
+	match, err := FindSimulatedModelCachePartialMatch(ctx, SimulatedModelCachePartialMatchRequest{
+		UserID: 12, Model: "gpt-test", PromptText: promptText, MinMatchRatio: 0.01,
+	})
+
+	require.NoError(t, err)
+	assert.False(t, match.Found)
+	assert.Zero(t, match.CandidateCount)
+	assert.Equal(t, "string", common.RDB.Type(ctx, legacyFingerprintKey).Val())
 }
 
 func TestSimulatedModelCachePartialFingerprintMatchesShortPrompts(t *testing.T) {

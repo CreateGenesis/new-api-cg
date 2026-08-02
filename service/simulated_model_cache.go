@@ -15,11 +15,12 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/shopspring/decimal"
 )
 
 const (
-	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v4"
-	SimulatedModelCacheFingerprintVersion = "v4"
+	simulatedModelCacheKeyPrefix          = "simulated_model_cache:v5"
+	SimulatedModelCacheFingerprintVersion = "v5"
 	legacySimulatedModelCacheReplayDir    = "simulated-model-cache"
 )
 
@@ -38,6 +39,7 @@ type SimulatedModelCachePartialMatchRequest struct {
 	UserID                int
 	Model                 string
 	PromptText            string
+	Prompt                SimulatedModelCachePrompt
 	MinMatchRatio         float64
 	TTLSeconds            int
 	KeyDigest             string
@@ -217,8 +219,29 @@ func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedMod
 		ratio = 1
 	}
 
+	originalPromptTokens, cachedTokens, simulatedPromptTokens := applySimulatedModelCacheRatioToUsage(usage, ratio)
+	applySimulatedModelCacheRatioToBillingUsage(usage.BillingUsage, ratio)
+
+	return &relaycommon.SimulatedModelCacheInfo{
+		Mode:                  rewrite.Mode,
+		MatchRatio:            ratio,
+		OriginalPromptTokens:  originalPromptTokens,
+		SimulatedPromptTokens: simulatedPromptTokens,
+		SimulatedCachedTokens: cachedTokens,
+		FingerprintVersion:    rewrite.FingerprintVersion,
+		CandidateCount:        rewrite.CandidateCount,
+		MatchDurationMS:       rewrite.MatchDuration.Milliseconds(),
+	}
+}
+
+func applySimulatedModelCacheRatioToUsage(usage *dto.Usage, ratio float64) (int, int, int) {
+	if usage == nil {
+		return 0, 0, 0
+	}
 	originalPromptTokens := NormalizeInputTokens(usage).TotalInputTokens
-	cachedTokens := int(math.Ceil(float64(originalPromptTokens) * ratio))
+	cachedTokens, _ := common.QuotaFromDecimalChecked(
+		decimal.NewFromInt(int64(originalPromptTokens)).Mul(decimal.NewFromFloat(ratio)).Ceil(),
+	)
 	if cachedTokens > originalPromptTokens {
 		cachedTokens = originalPromptTokens
 	}
@@ -227,10 +250,16 @@ func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedMod
 	}
 	simulatedPromptTokens := originalPromptTokens - cachedTokens
 
+	usage.PromptTokensDetails.CachedCreationTokens = 0
+	usage.PromptTokensDetails.CacheWriteTokens = 0
 	usage.PromptTokensDetails.CachedTokens = cachedTokens
 	if usage.InputTokensDetails == nil {
 		usage.InputTokensDetails = &dto.InputTokenDetails{}
 	}
+	usage.InputTokensDetails.CachedCreationTokens = 0
+	usage.InputTokensDetails.CacheWriteTokens = 0
+	usage.ClaudeCacheCreation5mTokens = 0
+	usage.ClaudeCacheCreation1hTokens = 0
 	if usage.UsageSemantic == UsageSemanticAnthropic {
 		usage.PromptTokens = simulatedPromptTokens
 		usage.InputTokens = simulatedPromptTokens
@@ -244,16 +273,48 @@ func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedMod
 	if usage.OutputTokens == 0 && usage.CompletionTokens > 0 {
 		usage.OutputTokens = usage.CompletionTokens
 	}
+	return originalPromptTokens, cachedTokens, simulatedPromptTokens
+}
 
-	return &relaycommon.SimulatedModelCacheInfo{
-		Mode:                  rewrite.Mode,
-		MatchRatio:            ratio,
-		OriginalPromptTokens:  originalPromptTokens,
-		SimulatedPromptTokens: simulatedPromptTokens,
-		SimulatedCachedTokens: cachedTokens,
-		FingerprintVersion:    rewrite.FingerprintVersion,
-		CandidateCount:        rewrite.CandidateCount,
-		MatchDurationMS:       rewrite.MatchDuration.Milliseconds(),
+func applySimulatedModelCacheRatioToBillingUsage(billingUsage *dto.BillingUsage, ratio float64) {
+	if billingUsage == nil {
+		return
+	}
+	wrapper := &dto.Usage{BillingUsage: dto.CloneBillingUsage(billingUsage)}
+	normalized, ok := usageFromBillingUsage(wrapper)
+	if !ok {
+		return
+	}
+	applySimulatedModelCacheRatioToUsage(normalized, ratio)
+	semantic := strings.ToLower(strings.TrimSpace(billingUsage.Semantic))
+	source := strings.ToLower(strings.TrimSpace(billingUsage.Source))
+	switch {
+	case billingUsage.OpenAIUsage != nil && (semantic == dto.BillingUsageSemanticOpenAI || source == dto.BillingUsageSourceOAIChat || source == dto.BillingUsageSourceOAIResponses):
+		rewritten := NormalizeUsageForSemantic(normalized, UsageSemanticOpenAI)
+		rewritten.BillingUsage = nil
+		*billingUsage.OpenAIUsage = rewritten
+	case billingUsage.ClaudeUsage != nil && (semantic == dto.BillingUsageSemanticAnthropic || source == dto.BillingUsageSourceClaudeMessages):
+		rewritten := NormalizeUsageForSemantic(normalized, UsageSemanticAnthropic)
+		billingUsage.ClaudeUsage.InputTokens = rewritten.PromptTokens
+		billingUsage.ClaudeUsage.OutputTokens = rewritten.CompletionTokens
+		billingUsage.ClaudeUsage.CacheReadInputTokens = rewritten.PromptTokensDetails.CachedTokens
+		billingUsage.ClaudeUsage.CacheCreationInputTokens = 0
+		billingUsage.ClaudeUsage.CacheCreation = nil
+		billingUsage.ClaudeUsage.ClaudeCacheCreation5mTokens = 0
+		billingUsage.ClaudeUsage.ClaudeCacheCreation1hTokens = 0
+	case billingUsage.GeminiUsageMetadata != nil && (semantic == dto.BillingUsageSemanticGemini || source == dto.BillingUsageSourceGeminiChat):
+		rewritten := NormalizeUsageForSemantic(normalized, UsageSemanticOpenAI)
+		metadata := billingUsage.GeminiUsageMetadata
+		metadata.PromptTokenCount = rewritten.PromptTokens
+		metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, metadata.ToolUsePromptTokensDetails...)
+		metadata.ToolUsePromptTokenCount = 0
+		metadata.ToolUsePromptTokensDetails = nil
+		metadata.CachedContentTokenCount = rewritten.PromptTokensDetails.CachedTokens
+		metadata.CandidatesTokenCount = rewritten.CompletionTokens - metadata.ThoughtsTokenCount
+		if metadata.CandidatesTokenCount < 0 {
+			metadata.CandidatesTokenCount = 0
+		}
+		metadata.TotalTokenCount = rewritten.TotalTokens
 	}
 }
 
@@ -357,12 +418,17 @@ func ttlFromSeconds(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func simulatedModelCacheScopeIndexKey(channelID int, userID int, model string) string {
-	return fmt.Sprintf("%s:scope_index:%d:%d:%s",
+func simulatedModelCacheScopeIndexKey(channelID int, userID int, model string, scopeDigests ...string) string {
+	scope := "text"
+	if len(scopeDigests) > 0 && scopeDigests[0] != "" {
+		scope = scopeDigests[0]
+	}
+	return fmt.Sprintf("%s:scope_index:%d:%d:%s:%s",
 		simulatedModelCacheKeyPrefix,
 		channelID,
 		userID,
 		sha256Hex([]byte(model)),
+		sha256Hex([]byte(scope)),
 	)
 }
 

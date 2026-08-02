@@ -44,6 +44,8 @@ const defaultOperationsSettings: OperationsSettings = {
   WorkerValidKey: '',
   WorkerAllowHttpImageRequestEnabled: false,
   LogConsumeEnabled: false,
+  RelayDebugLogEnabled: true,
+  RelayDebugLogTextLimitMB: 16,
   'performance_setting.simulated_model_cache_memory_budget_mb': 1024,
   'performance_setting.simulated_model_cache_max_entries_per_scope': 100,
   'performance_setting.simulated_model_cache_min_input_tokens': 128,

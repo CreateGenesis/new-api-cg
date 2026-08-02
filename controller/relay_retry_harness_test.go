@@ -72,7 +72,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	require.NoError(t, model.InitDB())
 	db := model.DB
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}, &model.User{}))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}, &model.User{}, &model.RelayDebugPayload{}))
 	common.MemoryCacheEnabled = false
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -124,17 +124,26 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	require.NoError(t, db.Create(&abilities).Error)
 
 	originalRetryTimes := common.RetryTimes
+	originalLogConsumeEnabled := common.LogConsumeEnabled
+	originalRelayDebugLogEnabled := common.RelayDebugLogEnabled
+	originalRelayDebugLogTextLimitMB := common.RelayDebugLogTextLimitMB
 	originalErrorLogEnabled := constant.ErrorLogEnabled
 	originalRetryRanges := append([]operation_setting.StatusCodeRange(nil), operation_setting.AutomaticRetryStatusCodeRanges...)
 	originalModelRatios := ratio_setting.ModelRatio2JSONString()
 	originalFreeModelPreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
 	common.RetryTimes = 10
+	common.LogConsumeEnabled = true
+	common.RelayDebugLogEnabled = true
+	common.RelayDebugLogTextLimitMB = 1
 	constant.ErrorLogEnabled = true
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 503, End: 503}}
 	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{"%s":0}`, modelName)))
 	t.Cleanup(func() {
 		common.RetryTimes = originalRetryTimes
+		common.LogConsumeEnabled = originalLogConsumeEnabled
+		common.RelayDebugLogEnabled = originalRelayDebugLogEnabled
+		common.RelayDebugLogTextLimitMB = originalRelayDebugLogTextLimitMB
 		constant.ErrorLogEnabled = originalErrorLogEnabled
 		operation_setting.AutomaticRetryStatusCodeRanges = originalRetryRanges
 		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = originalFreeModelPreConsume
@@ -150,6 +159,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set(common.RequestIdKey, "relay-debug-final-failure")
 	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
@@ -183,6 +193,29 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	var errorLogCount int64
 	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
 	assert.Equal(t, int64(1), errorLogCount, "all failed upstream attempts must produce one final request error log")
+	var failedLog model.Log
+	require.NoError(t, db.Where("request_id = ? AND type = ?", "relay-debug-final-failure", model.LogTypeError).First(&failedLog).Error)
+	var failedOther struct {
+		AdminInfo struct {
+			RelayRetry *service.RelayRetrySummary `json:"relay_retry"`
+		} `json:"admin_info"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(failedLog.Other, &failedOther))
+	require.NotNil(t, failedOther.AdminInfo.RelayRetry)
+	assert.Equal(t, "failed", failedOther.AdminInfo.RelayRetry.Outcome)
+	assert.Equal(t, 12, failedOther.AdminInfo.RelayRetry.AttemptCount)
+	assert.Equal(t, 12, failedOther.AdminInfo.RelayRetry.FailureCount)
+	assert.Equal(t, 1, failedOther.AdminInfo.RelayRetry.UniqueErrorCount)
+	assert.True(t, failedOther.AdminInfo.RelayRetry.TraceAvailable)
+	require.Len(t, failedOther.AdminInfo.RelayRetry.Errors, 1)
+	assert.Len(t, failedOther.AdminInfo.RelayRetry.Errors[0].Occurrences, 12)
+	failedTracePayload, err := model.LoadRelayDebugPayload(ctx.Request.Context(), "relay-debug-final-failure")
+	require.NoError(t, err)
+	var failedTrace service.RelayDebugTrace
+	require.NoError(t, common.Unmarshal(failedTracePayload, &failedTrace))
+	assert.Equal(t, "failed", failedTrace.Outcome)
+	assert.Len(t, failedTrace.Attempts, 12)
+	assert.NotContains(t, string(failedTracePayload), "Bearer channel-1")
 
 	attemptsMu.Lock()
 	attempts = nil
@@ -197,6 +230,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
 	)
 	successCtx.Request.Header.Set("Content-Type", "application/json")
+	successCtx.Set(common.RequestIdKey, "relay-debug-recovered")
 	common.SetContextKey(successCtx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(successCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(successCtx, constant.ContextKeyUsingGroup, "default")
@@ -212,6 +246,28 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	require.Len(t, successAttempts, 3)
 	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeError).Count(&errorLogCount).Error)
 	assert.Equal(t, int64(1), errorLogCount, "a successful retry must not persist intermediate upstream errors")
+	var recoveredLog model.Log
+	require.NoError(t, db.Where("request_id = ? AND type = ?", "relay-debug-recovered", model.LogTypeConsume).First(&recoveredLog).Error)
+	var recoveredOther struct {
+		AdminInfo struct {
+			RelayRetry *service.RelayRetrySummary `json:"relay_retry"`
+		} `json:"admin_info"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(recoveredLog.Other, &recoveredOther))
+	require.NotNil(t, recoveredOther.AdminInfo.RelayRetry)
+	assert.Equal(t, "recovered", recoveredOther.AdminInfo.RelayRetry.Outcome)
+	assert.Equal(t, 3, recoveredOther.AdminInfo.RelayRetry.AttemptCount)
+	assert.Equal(t, 2, recoveredOther.AdminInfo.RelayRetry.FailureCount)
+	assert.Equal(t, 1, recoveredOther.AdminInfo.RelayRetry.UniqueErrorCount)
+	assert.True(t, recoveredOther.AdminInfo.RelayRetry.TraceAvailable)
+	recoveredTracePayload, err := model.LoadRelayDebugPayload(successCtx.Request.Context(), "relay-debug-recovered")
+	require.NoError(t, err)
+	var recoveredTrace service.RelayDebugTrace
+	require.NoError(t, common.Unmarshal(recoveredTracePayload, &recoveredTrace))
+	require.Len(t, recoveredTrace.Attempts, 3)
+	assert.True(t, recoveredTrace.Attempts[2].Succeeded)
+	require.NotEmpty(t, recoveredTrace.Attempts[2].Exchanges)
+	assert.NotNil(t, recoveredTrace.Attempts[2].Exchanges[0].Request.Body)
 
 	channels[0].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":1,"max_tokens":500000}]}}`
 	channels[1].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":0}]}}`
@@ -239,6 +295,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		strings.NewReader(largeRoutingRequestBody),
 	)
 	routingCtx.Request.Header.Set("Content-Type", "application/json")
+	routingCtx.Set(common.RequestIdKey, "relay-debug-routing-recovered")
 	common.SetContextKey(routingCtx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(routingCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(routingCtx, constant.ContextKeyUsingGroup, "default")
@@ -269,6 +326,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		strings.NewReader(largeRoutingRequestBody),
 	)
 	noHigherCtx.Request.Header.Set("Content-Type", "application/json")
+	noHigherCtx.Set(common.RequestIdKey, "relay-debug-routing-failed")
 	common.SetContextKey(noHigherCtx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(noHigherCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(noHigherCtx, constant.ContextKeyUsingGroup, "default")

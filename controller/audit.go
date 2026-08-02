@@ -29,6 +29,7 @@ var auditContentTemplates = map[string]string{
 	"user.passkey_delete":          "Deleted a passkey",
 	"user.reset_passkey":           "Reset the user passkey",
 	"option.update":                "Updated system setting ${key}",
+	"relay_debug.read":             "Read Relay debug trace ${request_id} (${result})",
 	"system_config.export":         "Exported system configuration (${options} settings, ${channels} channels, ${models} models)",
 	"system_config.import_preview": "Previewed system configuration import (${conflicts} conflicts)",
 	"system_config.import":         "Imported system configuration (${options} settings, ${channels} channels, ${models} models)",

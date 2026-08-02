@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,13 @@ type simulatedModelCacheFingerprintChunk struct {
 	RuneLength uint16 `json:"r"`
 }
 
+type simulatedModelCacheMultimodalFingerprintBlock struct {
+	HashHigh uint64 `json:"h"`
+	HashLow  uint64 `json:"l"`
+	Weight   uint32 `json:"w"`
+	Barrier  bool   `json:"b,omitempty"`
+}
+
 func (c simulatedModelCacheFingerprintChunk) symbol() simulatedModelCacheFingerprintSymbol {
 	return simulatedModelCacheFingerprintSymbol{
 		HashHigh:   c.HashHigh,
@@ -58,11 +66,41 @@ func (c simulatedModelCacheFingerprintChunk) symbol() simulatedModelCacheFingerp
 }
 
 type simulatedModelCachePromptFingerprint struct {
-	Version    string                                `json:"v"`
-	TotalRunes int                                   `json:"t"`
-	Chunks     []simulatedModelCacheFingerprintChunk `json:"c"`
-	FineHashes []byte                                `json:"s,omitempty"`
-	KeyDigest  string                                `json:"k,omitempty"`
+	Version     string                                          `json:"v"`
+	Mode        string                                          `json:"m,omitempty"`
+	TotalRunes  int                                             `json:"t,omitempty"`
+	TotalWeight uint64                                          `json:"w,omitempty"`
+	Chunks      []simulatedModelCacheFingerprintChunk           `json:"c,omitempty"`
+	Blocks      []simulatedModelCacheMultimodalFingerprintBlock `json:"b,omitempty"`
+	FineHashes  []byte                                          `json:"s,omitempty"`
+	KeyDigest   string                                          `json:"k,omitempty"`
+}
+
+func buildSimulatedModelCacheFingerprint(ctx context.Context, prompt SimulatedModelCachePrompt) (simulatedModelCachePromptFingerprint, error) {
+	if !prompt.IsMultimodal() {
+		return buildSimulatedModelCachePromptFingerprint(ctx, prompt.Text)
+	}
+	if prompt.fatalReason != "" {
+		return simulatedModelCachePromptFingerprint{}, fmt.Errorf("invalid multimodal prompt: %s", prompt.fatalReason)
+	}
+	fingerprint := simulatedModelCachePromptFingerprint{
+		Version:     SimulatedModelCacheFingerprintVersion,
+		Mode:        "multimodal",
+		TotalWeight: prompt.totalWeight,
+		Blocks:      make([]simulatedModelCacheMultimodalFingerprintBlock, 0, len(prompt.blocks)),
+	}
+	for index, block := range prompt.blocks {
+		if index&255 == 0 && ctx != nil && ctx.Err() != nil {
+			return simulatedModelCachePromptFingerprint{}, ctx.Err()
+		}
+		fingerprint.Blocks = append(fingerprint.Blocks, simulatedModelCacheMultimodalFingerprintBlock{
+			HashHigh: block.hashHigh,
+			HashLow:  block.hashLow,
+			Weight:   block.weight,
+			Barrier:  block.barrier,
+		})
+	}
+	return fingerprint, nil
 }
 
 func buildSimulatedModelCachePromptFingerprint(ctx context.Context, prompt string) (simulatedModelCachePromptFingerprint, error) {
@@ -367,6 +405,9 @@ func simulatedModelCacheFineFingerprintSymbolAt(hashes []byte, index int) simula
 }
 
 func (f simulatedModelCachePromptFingerprint) hasUsableFineHashes() bool {
+	if f.Mode != "" {
+		return false
+	}
 	if f.TotalRunes < simulatedModelCacheFineFingerprintWindowRunes || f.TotalRunes > simulatedModelCacheFineFingerprintMaxRunes {
 		return false
 	}
@@ -375,6 +416,22 @@ func (f simulatedModelCachePromptFingerprint) hasUsableFineHashes() bool {
 }
 
 func (f simulatedModelCachePromptFingerprint) hasValidFineHashes() bool {
+	if f.Mode == "multimodal" {
+		if f.TotalRunes != 0 || len(f.Chunks) != 0 || len(f.FineHashes) != 0 || f.TotalWeight == 0 || f.TotalWeight > math.MaxInt32 || len(f.Blocks) == 0 {
+			return false
+		}
+		var total uint64
+		for _, block := range f.Blocks {
+			if block.Weight == 0 || total > math.MaxInt32-uint64(block.Weight) {
+				return false
+			}
+			total += uint64(block.Weight)
+		}
+		return total == f.TotalWeight
+	}
+	if f.Mode != "" || f.TotalWeight != 0 || len(f.Blocks) != 0 {
+		return false
+	}
 	if f.TotalRunes < 0 || f.TotalRunes > simulatedModelCacheMaxFingerprintRunes {
 		return false
 	}
@@ -382,6 +439,26 @@ func (f simulatedModelCachePromptFingerprint) hasValidFineHashes() bool {
 		return len(f.FineHashes) == 0
 	}
 	return f.hasUsableFineHashes()
+}
+
+func simulatedModelCacheMatchedMultimodalWeight(current simulatedModelCachePromptFingerprint, candidate simulatedModelCachePromptFingerprint) uint64 {
+	if current.Mode != "multimodal" || candidate.Mode != "multimodal" {
+		return 0
+	}
+	limit := min(len(current.Blocks), len(candidate.Blocks))
+	var matched uint64
+	for index := 0; index < limit; index++ {
+		currentBlock := current.Blocks[index]
+		candidateBlock := candidate.Blocks[index]
+		if currentBlock.Barrier || candidateBlock.Barrier {
+			break
+		}
+		if currentBlock.HashHigh != candidateBlock.HashHigh || currentBlock.HashLow != candidateBlock.HashLow || currentBlock.Weight != candidateBlock.Weight {
+			break
+		}
+		matched += uint64(currentBlock.Weight)
+	}
+	return matched
 }
 
 func SimulatedModelCacheMatchRatio(cachedPrompt string, currentPrompt string) float64 {
@@ -409,6 +486,13 @@ func runSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelC
 	return result, prepared, err
 }
 
+func (req SimulatedModelCachePartialMatchRequest) effectivePrompt() SimulatedModelCachePrompt {
+	if req.Prompt.IsMultimodal() || strings.TrimSpace(req.Prompt.Text) != "" {
+		return req.Prompt
+	}
+	return SimulatedModelCachePrompt{Text: req.PromptText}
+}
+
 func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModelCachePartialMatchRequest) (result SimulatedModelCachePartialMatch, resultErr error) {
 	startedAt := time.Now()
 	result = SimulatedModelCachePartialMatch{FingerprintVersion: SimulatedModelCacheFingerprintVersion}
@@ -428,14 +512,15 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		result.MatchDuration = time.Since(startedAt)
 		return result, nil
 	}
-	if strings.TrimSpace(req.PromptText) == "" {
+	prompt := req.effectivePrompt()
+	if prompt.IsEmpty() {
 		result.MatchDuration = time.Since(startedAt)
 		return result, nil
 	}
 
 	var currentReservation *SimulatedModelCacheMemoryReservation
 	if !req.currentMemoryReserved {
-		currentReservation = ReserveSimulatedModelCacheMemory(estimateSimulatedModelCacheCurrentMatchBytes(req.PromptText))
+		currentReservation = ReserveSimulatedModelCacheMemory(estimateSimulatedModelCacheCurrentMatchBytes(prompt))
 		if currentReservation == nil {
 			result.BypassReason = SimulatedModelCacheBypassMemoryBudget
 			result.MatchDuration = time.Since(startedAt)
@@ -443,12 +528,14 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		}
 		defer currentReservation.Release()
 	}
-	current, err := buildSimulatedModelCachePromptFingerprint(ctx, req.PromptText)
+	current, err := buildSimulatedModelCacheFingerprint(ctx, prompt)
 	if err != nil {
 		if errors.Is(err, errSimulatedModelCachePromptTooLarge) {
 			result.BypassReason = SimulatedModelCacheBypassPromptTooLarge
-		} else {
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result.BypassReason = SimulatedModelCacheBypassRequestCanceled
+		} else {
+			result.BypassReason = SimulatedModelCacheBypassInvalidPrompt
 		}
 		result.MatchDuration = time.Since(startedAt)
 		return result, err
@@ -457,9 +544,12 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		request:     req,
 		fingerprint: current,
 	}
-	matcher := newSimulatedModelCacheFingerprintMatcher(current)
+	var matcher *simulatedModelCacheFingerprintMatcher
+	if current.Mode == "" {
+		matcher = newSimulatedModelCacheFingerprintMatcher(current)
+	}
 
-	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model)
+	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model, prompt.scopeDigest)
 	maxEntries := common.GetSimulatedModelCacheEntriesPerScope()
 	promptIDs, err := common.RDB.ZRevRange(ctx, indexKey, 0, int64(maxEntries-1)).Result()
 	if err != nil {
@@ -499,7 +589,7 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 		minRatio = 1
 	}
 	stalePromptIDs := make([]interface{}, 0)
-	bestMatchedRunes := 0
+	bestMatchedWeight := uint64(0)
 	preferredSet := make(map[string]struct{})
 	for index, raw := range rawFingerprints {
 		if index&7 == 0 {
@@ -524,29 +614,43 @@ func findSimulatedModelCachePartialMatch(ctx context.Context, req SimulatedModel
 				continue
 			}
 		}
-		matchedRunes := matcher.matchedRunes(ctx, candidate)
+		matchedWeight := uint64(0)
+		currentWeight := uint64(current.TotalRunes)
+		if current.Mode == "multimodal" {
+			matchedWeight = simulatedModelCacheMatchedMultimodalWeight(current, candidate)
+			currentWeight = current.TotalWeight
+		} else {
+			matchedWeight = uint64(matcher.matchedRunes(ctx, candidate))
+		}
 		if err := ctx.Err(); err != nil {
 			result.BypassReason = SimulatedModelCacheBypassRequestCanceled
 			result.MatchDuration = time.Since(startedAt)
 			return result, err
 		}
-		ratio := float64(matchedRunes) / float64(current.TotalRunes)
+		if currentWeight == 0 {
+			continue
+		}
+		ratio := float64(matchedWeight) / float64(currentWeight)
 		if ratio < minRatio {
 			continue
 		}
-		if matchedRunes > bestMatchedRunes {
-			bestMatchedRunes = matchedRunes
+		if matchedWeight > bestMatchedWeight {
+			bestMatchedWeight = matchedWeight
 			preferredSet = make(map[string]struct{})
 			if candidate.KeyDigest != "" {
 				preferredSet[candidate.KeyDigest] = struct{}{}
 			}
-		} else if matchedRunes == bestMatchedRunes && candidate.KeyDigest != "" {
+		} else if matchedWeight == bestMatchedWeight && candidate.KeyDigest != "" {
 			preferredSet[candidate.KeyDigest] = struct{}{}
 		}
 	}
-	if bestMatchedRunes > 0 {
+	if bestMatchedWeight > 0 {
 		result.Found = true
-		result.MatchRatio = float64(bestMatchedRunes) / float64(current.TotalRunes)
+		currentWeight := uint64(current.TotalRunes)
+		if current.Mode == "multimodal" {
+			currentWeight = current.TotalWeight
+		}
+		result.MatchRatio = float64(bestMatchedWeight) / float64(currentWeight)
 		for digest := range preferredSet {
 			result.PreferredKeyDigests = append(result.PreferredKeyDigests, digest)
 		}
@@ -562,15 +666,16 @@ func StoreSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 	if !common.RedisEnabled || common.RDB == nil {
 		return ErrSimulatedModelCacheRedisDisabled
 	}
-	if strings.TrimSpace(req.PromptText) == "" {
+	prompt := req.effectivePrompt()
+	if prompt.IsEmpty() {
 		return nil
 	}
-	reservation := ReserveSimulatedModelCacheMemory(estimateSimulatedModelCacheCurrentMatchBytes(req.PromptText))
+	reservation := ReserveSimulatedModelCacheMemory(estimateSimulatedModelCacheCurrentMatchBytes(prompt))
 	if reservation == nil {
 		return ErrSimulatedModelCacheMemoryBudget
 	}
 	defer reservation.Release()
-	fingerprint, err := buildSimulatedModelCachePromptFingerprint(ctx, req.PromptText)
+	fingerprint, err := buildSimulatedModelCacheFingerprint(ctx, prompt)
 	if err != nil {
 		return err
 	}
@@ -616,13 +721,17 @@ func storeSimulatedModelCachePromptFingerprint(ctx context.Context, req Simulate
 	if len(raw) > simulatedModelCacheMaxFingerprintEncodedBytes {
 		return fmt.Errorf("simulated model cache fingerprint exceeds %d bytes", simulatedModelCacheMaxFingerprintEncodedBytes)
 	}
-	promptID := sha256Hex([]byte(req.PromptText))
+	prompt := req.effectivePrompt()
+	promptID := sha256Hex([]byte(prompt.Text))
+	if prompt.IsMultimodal() {
+		promptID = prompt.identityDigest
+	}
 	fingerprintKey := simulatedModelCacheFingerprintKey(req.ChannelID, req.UserID, req.Model, promptID)
 	if err := common.RDB.Set(ctx, fingerprintKey, string(raw), ttl).Err(); err != nil {
 		return err
 	}
 
-	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model)
+	indexKey := simulatedModelCacheScopeIndexKey(req.ChannelID, req.UserID, req.Model, prompt.scopeDigest)
 	now := time.Now()
 	if err := common.RDB.ZAdd(ctx, indexKey, &redis.Z{Score: float64(now.UnixNano()), Member: promptID}).Err(); err != nil {
 		return err

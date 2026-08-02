@@ -80,12 +80,16 @@ import type { LogCleanupTask } from '../types'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  RelayDebugLogEnabled: z.boolean(),
+  RelayDebugLogTextLimitMB: z.number().int().min(1).max(128),
 })
 
 type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
   defaultEnabled: boolean
+  defaultRelayDebugEnabled: boolean
+  defaultRelayDebugTextLimitMB: number
 }
 
 type ServerLogInfo = {
@@ -139,17 +143,18 @@ function isActiveLogCleanupTask(task: LogCleanupTask | null) {
   return task?.status === 'pending' || task?.status === 'running'
 }
 
-export function LogSettingsSection({
-  defaultEnabled,
-}: LogSettingsSectionProps) {
+export function LogSettingsSection(props: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const form = useForm<LogSettingsFormValues>({
     resolver: zodResolver(logSettingsSchema),
     defaultValues: {
-      LogConsumeEnabled: defaultEnabled,
+      LogConsumeEnabled: props.defaultEnabled,
+      RelayDebugLogEnabled: props.defaultRelayDebugEnabled,
+      RelayDebugLogTextLimitMB: props.defaultRelayDebugTextLimitMB,
     },
   })
+  const relayDebugEnabled = form.watch('RelayDebugLogEnabled')
 
   const [purgeDate, setPurgeDate] = useState<Date | undefined>(() =>
     getDateDaysAgo(30)
@@ -174,8 +179,17 @@ export function LogSettingsSection({
   }, [])
 
   useEffect(() => {
-    form.reset({ LogConsumeEnabled: defaultEnabled })
-  }, [defaultEnabled, form])
+    form.reset({
+      LogConsumeEnabled: props.defaultEnabled,
+      RelayDebugLogEnabled: props.defaultRelayDebugEnabled,
+      RelayDebugLogTextLimitMB: props.defaultRelayDebugTextLimitMB,
+    })
+  }, [
+    form,
+    props.defaultEnabled,
+    props.defaultRelayDebugEnabled,
+    props.defaultRelayDebugTextLimitMB,
+  ])
 
   useEffect(() => {
     fetchServerLogInfo()
@@ -257,11 +271,31 @@ export function LogSettingsSection({
   }, [logCleanupActive, logCleanupTaskId, t])
 
   const onSubmit = async (values: LogSettingsFormValues) => {
-    if (values.LogConsumeEnabled === defaultEnabled) return
-    await updateOption.mutateAsync({
-      key: 'LogConsumeEnabled',
-      value: values.LogConsumeEnabled,
-    })
+    const updates = []
+    if (values.LogConsumeEnabled !== props.defaultEnabled) {
+      updates.push({
+        key: 'LogConsumeEnabled',
+        value: values.LogConsumeEnabled,
+      })
+    }
+    if (values.RelayDebugLogEnabled !== props.defaultRelayDebugEnabled) {
+      updates.push({
+        key: 'RelayDebugLogEnabled',
+        value: values.RelayDebugLogEnabled,
+      })
+    }
+    if (
+      values.RelayDebugLogTextLimitMB !== props.defaultRelayDebugTextLimitMB
+    ) {
+      updates.push({
+        key: 'RelayDebugLogTextLimitMB',
+        value: values.RelayDebugLogTextLimitMB,
+      })
+    }
+    if (updates.length === 0) return
+    await Promise.all(
+      updates.map((request) => updateOption.mutateAsync(request))
+    )
   }
 
   const handleRequestCleanLogs = () => {
@@ -366,6 +400,65 @@ export function LogSettingsSection({
               </SettingsSwitchItem>
             )}
           />
+
+          <FormField
+            control={form.control}
+            name='RelayDebugLogEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Record Relay failure diagnostics')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Store sanitized request and upstream attempt details only when a Relay attempt fails. Credentials and media payloads are omitted.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <FormMessage />
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <SettingsControlGroup className='space-y-2'>
+            <FormField
+              control={form.control}
+              name='RelayDebugLogTextLimitMB'
+              render={({ field }) => (
+                <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center'>
+                  <div className='space-y-1'>
+                    <FormLabel>{t('Trace text limit (MiB)')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Maximum sanitized text stored per Relay trace (1-128 MiB).'
+                      )}
+                    </FormDescription>
+                  </div>
+                  <div>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={128}
+                        step={1}
+                        value={field.value}
+                        onChange={(event) =>
+                          field.onChange(Number(event.target.value))
+                        }
+                        disabled={!relayDebugEnabled}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </div>
+                </div>
+              )}
+            />
+          </SettingsControlGroup>
 
           <SettingsControlGroup className='space-y-3'>
             <div>

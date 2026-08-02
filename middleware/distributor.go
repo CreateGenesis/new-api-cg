@@ -582,14 +582,6 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	if err != nil {
 		return nil
 	}
-	promptText := service.ExtractSimulatedModelCachePromptText(format, body)
-	if strings.TrimSpace(promptText) == "" {
-		return nil
-	}
-	minimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
-	if minimumInputTokens > 0 && service.EstimateTokenByModel(modelName, promptText) < minimumInputTokens {
-		return nil
-	}
 	keys := channel.GetKeys()
 	allowed := make(map[string]struct{}, len(keys))
 	for index, key := range keys {
@@ -612,12 +604,20 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	} else {
 		settings = settings.Normalize()
 	}
+	prompt := service.ExtractSimulatedModelCachePrompt(format, modelName, body, settings)
+	if prompt.IsEmpty() {
+		return nil
+	}
+	minimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	if minimumInputTokens > 0 && prompt.EstimatedTokens() < minimumInputTokens {
+		return nil
+	}
 	matchCtx, cancel := context.WithTimeout(c.Request.Context(), 500*time.Millisecond)
 	result := service.MatchSimulatedModelCacheSynchronously(matchCtx, service.SimulatedModelCachePartialMatchRequest{
 		ChannelID:         channel.Id,
 		UserID:            common.GetContextKeyInt(c, constant.ContextKeyUserId),
 		Model:             modelName,
-		PromptText:        promptText,
+		Prompt:            prompt,
 		MinMatchRatio:     settings.MinMatchRatio,
 		TTLSeconds:        settings.TTLSeconds,
 		AllowedKeyDigests: allowed,
@@ -629,7 +629,8 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	preparation := &service.SimulatedModelCacheRoutingPreparation{
 		ChannelID:  channel.Id,
 		Model:      modelName,
-		PromptText: promptText,
+		PromptText: prompt.Text,
+		Prompt:     prompt,
 		Settings:   settings,
 		Result:     result,
 	}

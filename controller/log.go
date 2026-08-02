@@ -1,14 +1,59 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+func GetRelayDebugTrace(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	requestId := c.Param("request_id")
+	payload, err := model.LoadRelayDebugPayload(c.Request.Context(), requestId)
+	if err != nil {
+		result := "unavailable"
+		status := http.StatusInternalServerError
+		code := "RELAY_DEBUG_TRACE_UNAVAILABLE"
+		message := "relay debug trace is unavailable"
+		if errors.Is(err, model.ErrRelayDebugTraceNotFound) {
+			result = "not_found"
+			status = http.StatusNotFound
+			code = "RELAY_DEBUG_TRACE_NOT_FOUND"
+			message = "relay debug trace was not found"
+		}
+		recordManageAudit(c, "relay_debug.read", map[string]interface{}{
+			"request_id": requestId,
+			"result":     result,
+		})
+		c.JSON(status, gin.H{"success": false, "code": code, "message": message})
+		return
+	}
+
+	trace := service.RelayDebugTrace{}
+	if err := common.Unmarshal(payload, &trace); err != nil || trace.RequestId != requestId {
+		recordManageAudit(c, "relay_debug.read", map[string]interface{}{
+			"request_id": requestId,
+			"result":     "unavailable",
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"code":    "RELAY_DEBUG_TRACE_UNAVAILABLE",
+			"message": "relay debug trace is unavailable",
+		})
+		return
+	}
+	recordManageAudit(c, "relay_debug.read", map[string]interface{}{
+		"request_id": requestId,
+		"result":     "success",
+	})
+	common.ApiSuccess(c, trace)
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)

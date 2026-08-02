@@ -92,6 +92,108 @@ export interface ChannelAffinityInfo {
   using_group?: string
 }
 
+export interface RelayRetryOccurrence {
+  attempt_index: number
+  stage: string
+  channel_id?: number
+  channel_name?: string
+  channel_type?: number
+  multi_key_index?: number
+  action: string
+  reason: string
+}
+
+export interface RelayRetryErrorSummary {
+  status_code: number
+  upstream_status_code?: number
+  type?: string
+  code?: string
+  message: string
+  response_preview?: string
+  occurrences: RelayRetryOccurrence[]
+}
+
+export interface RelayRetrySummary {
+  version: number
+  outcome: 'recovered' | 'failed' | string
+  method: string
+  path: string
+  content_type?: string
+  body_size: number
+  attempt_count: number
+  failure_count: number
+  unique_error_count: number
+  trace_available: boolean
+  errors: RelayRetryErrorSummary[]
+}
+
+export interface RelayDebugBody {
+  kind: string
+  content_type?: string
+  text?: string
+  size: number
+  original_length?: number
+  sha256?: string
+  truncated?: boolean
+  omitted_reason?: string
+}
+
+export interface RelayDebugHTTPMessage {
+  method?: string
+  url?: string
+  status?: number
+  headers?: Record<string, string[]>
+  body?: RelayDebugBody
+}
+
+export interface RelayDebugAttempt {
+  index: number
+  stage: string
+  channel_id?: number
+  channel_name?: string
+  channel_type?: number
+  multi_key_index?: number
+  started_at: number
+  duration_ms: number
+  succeeded: boolean
+  exchanges?: Array<{
+    index?: number
+    request: RelayDebugHTTPMessage
+    response: RelayDebugHTTPMessage
+  }>
+  error?: {
+    status_code: number
+    upstream_status_code?: number
+    type?: string
+    code?: string
+    message: string
+    local?: boolean
+    response?: RelayDebugBody
+  }
+  decision: {
+    action: string
+    reason: string
+  }
+}
+
+export interface RelayDebugTrace {
+  version: number
+  request_id: string
+  outcome: string
+  created_at: number
+  finalized_at: number
+  client: {
+    method: string
+    path: string
+    url: string
+    content_type?: string
+    headers?: Record<string, string[]>
+    body?: RelayDebugBody
+    body_size: number
+  }
+  attempts: RelayDebugAttempt[]
+}
+
 export const USAGE_BILLING_PATH = {
   LOCAL: 'local',
   UPSTREAM: 'upstream',
@@ -137,6 +239,7 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
+    relay_retry?: RelayRetrySummary
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.

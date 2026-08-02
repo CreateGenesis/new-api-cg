@@ -189,6 +189,15 @@ func UpdateOption(c *gin.Context) {
 		}
 	}
 	switch option.Key {
+	case "RelayDebugLogTextLimitMB":
+		limit, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || limit < 1 || limit > 128 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "relay debug log text limit must be between 1 and 128 MB",
+			})
+			return
+		}
 	case "performance_setting.simulated_model_cache_memory_budget_mb":
 		if err := validateSimulatedModelCacheMemoryBudgetMB(option.Value.(string)); err != nil {
 			c.JSON(http.StatusOK, gin.H{

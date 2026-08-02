@@ -795,6 +795,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const [dialogOpen, setDialogOpen] = useState(false)
         const log = row.original
         const other = parseLogOther(log.other)
+        const relayRetry = isAdmin ? other?.admin_info?.relay_retry : undefined
 
         const segments = buildDetailSegments(log, other, t, isAdmin)
         const primary = segments[0]
@@ -834,10 +835,23 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           <>
             <button
               type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+              className='group flex max-w-[240px] min-w-0 items-center gap-1.5 text-left text-xs'
               onClick={() => setDialogOpen(true)}
               title={t('Click to view full details')}
             >
+              {relayRetry && (
+                <StatusBadge
+                  label={t('Retry errors: {{count}}', {
+                    count: relayRetry.failure_count,
+                  })}
+                  variant={
+                    relayRetry.outcome === 'recovered' ? 'orange' : 'red'
+                  }
+                  size='sm'
+                  copyable={false}
+                  className='shrink-0'
+                />
+              )}
               {detailPreview}
             </button>
             <DetailsDialog

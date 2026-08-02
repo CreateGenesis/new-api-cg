@@ -185,6 +185,17 @@ export interface ChannelOtherSettings {
     enabled?: boolean
     ttl_seconds?: number
     min_match_ratio?: number
+    multimodal?: {
+      enabled?: boolean
+      image_tokens_per_megapixel?: number
+      video_tokens_per_second_megapixel?: number
+      audio_tokens_per_second?: number
+      file_tokens_per_mib?: number
+      image_fallback_tokens?: number
+      video_fallback_tokens?: number
+      audio_fallback_tokens?: number
+      file_fallback_tokens?: number
+    }
   }
   status_code_retry?: {
     enabled?: boolean

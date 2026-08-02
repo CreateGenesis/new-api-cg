@@ -744,6 +744,9 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 	if nil != ctx.Err() {
 		return 0, ctx.Err()
 	}
+	if err := deleteOldRelayDebugPayloads(ctx, targetTimestamp); err != nil {
+		return 0, err
+	}
 
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		// ClickHouse DELETE is a heavy mutation that rewrites data parts, so

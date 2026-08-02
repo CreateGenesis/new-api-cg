@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -50,6 +51,8 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	common.OptionMap["RelayDebugLogEnabled"] = strconv.FormatBool(common.RelayDebugLogEnabled)
+	common.OptionMap["RelayDebugLogTextLimitMB"] = strconv.Itoa(common.RelayDebugLogTextLimitMB)
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -331,6 +334,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticEnableChannelEnabled = boolValue
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
+		case "RelayDebugLogEnabled":
+			common.RelayDebugLogEnabled = boolValue
 		case "DisplayInCurrencyEnabled":
 			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
 			// true -> USD, false -> TOKENS
@@ -390,6 +395,12 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	}
 	switch key {
+	case "RelayDebugLogTextLimitMB":
+		limit, parseErr := strconv.Atoi(value)
+		if parseErr != nil || limit < 1 || limit > 128 {
+			return errors.New("relay debug log text limit must be between 1 and 128 MB")
+		}
+		common.RelayDebugLogTextLimitMB = limit
 	case "EmailDomainWhitelist":
 		common.EmailDomainWhitelist = strings.Split(value, ",")
 	case "SMTPServer":
@@ -602,6 +613,13 @@ func updateOptionMap(key string, value string) (err error) {
 }
 
 func validateOptionBeforeWrite(key string, value string) error {
+	if key == "RelayDebugLogTextLimitMB" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > 128 {
+			return errors.New("relay debug log text limit must be between 1 and 128 MB")
+		}
+		return nil
+	}
 	if key != operation_setting.HeaderRewritePresetsOptionKey {
 		return nil
 	}

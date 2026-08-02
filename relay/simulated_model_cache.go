@@ -25,6 +25,7 @@ type simulatedModelCacheAttempt struct {
 	settings         dto.SimulatedModelCacheSettings
 	visible          bool
 	promptText       string
+	prompt           service.SimulatedModelCachePrompt
 	cacheModelName   string
 	partialMatch     simulatedModelCachePartialMatchTask
 	precomputed      *service.SimulatedModelCachePartialMatchResult
@@ -535,11 +536,23 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		settings:       settings,
 		visible:        settings.Enabled,
 		cacheModelName: simulatedModelCacheModelName(info),
-		promptText:     service.ExtractSimulatedModelCachePromptText(format, requestBody),
 	}
-	if routingActive && routingPreparation.Model == attempt.cacheModelName && strings.TrimSpace(routingPreparation.PromptText) != "" {
+	attempt.prompt = service.ExtractSimulatedModelCachePrompt(format, attempt.cacheModelName, requestBody, settings)
+	attempt.promptText = attempt.prompt.Text
+	if reason := attempt.prompt.DiagnosticReason(); reason != "" {
+		logger.LogWarn(c, fmt.Sprintf("simulated model cache multimodal prompt barrier: request_id=%s reason=%s", info.RequestId, reason))
+	}
+	routingPrompt := service.SimulatedModelCachePrompt{}
+	if routingActive {
+		routingPrompt = routingPreparation.Prompt
+		if routingPrompt.IsEmpty() && strings.TrimSpace(routingPreparation.PromptText) != "" {
+			routingPrompt = service.SimulatedModelCachePrompt{Text: routingPreparation.PromptText}
+		}
+	}
+	if routingActive && routingPreparation.Model == attempt.cacheModelName && !routingPrompt.IsEmpty() {
 		attempt.settings = routingPreparation.Settings
 		attempt.visible = settings.Enabled
+		attempt.prompt = routingPrompt
 		attempt.promptText = routingPreparation.PromptText
 		attempt.precomputed = &routingPreparation.Result
 	}
@@ -550,7 +563,14 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func startSimulatedModelCachePartialMatch(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt) {
-	if attempt == nil || info == nil || !attempt.settings.Enabled || strings.TrimSpace(attempt.promptText) == "" {
+	if attempt == nil || info == nil || !attempt.settings.Enabled {
+		return
+	}
+	prompt := attempt.prompt
+	if prompt.IsEmpty() && strings.TrimSpace(attempt.promptText) != "" {
+		prompt = service.SimulatedModelCachePrompt{Text: attempt.promptText}
+	}
+	if prompt.IsEmpty() {
 		return
 	}
 	handle, bypassReason := service.SubmitSimulatedModelCachePartialMatch(c.Request.Context(), service.SimulatedModelCachePartialMatchRequest{
@@ -558,6 +578,7 @@ func startSimulatedModelCachePartialMatch(c *gin.Context, info *relaycommon.Rela
 		UserID:        info.UserId,
 		Model:         attempt.cacheModelName,
 		PromptText:    attempt.promptText,
+		Prompt:        prompt,
 		MinMatchRatio: attempt.settings.MinMatchRatio,
 		TTLSeconds:    attempt.settings.TTLSeconds,
 		KeyDigest:     model.MultiKeyKeyDigest(info.ChannelMeta.ApiKey),
@@ -614,8 +635,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		}
 		return
 	}
-	originalInputTokens := simulatedModelCacheOriginalInputTokens(usage)
-	inputTokensEligible := originalInputTokens >= common.GetSimulatedModelCacheMinInputTokens()
+	inputTokensEligible := simulatedModelCacheInputEligible(attempt, usage)
 	if !inputTokensEligible {
 		attempt.bypassReason = service.SimulatedModelCacheBypassInputTokensLow
 	}
@@ -739,6 +759,14 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 
 func simulatedModelCacheOriginalInputTokens(usage *dto.Usage) int {
 	return service.NormalizeInputTokens(usage).TotalInputTokens
+}
+
+func simulatedModelCacheInputEligible(attempt *simulatedModelCacheAttempt, usage *dto.Usage) bool {
+	minimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	if simulatedModelCacheOriginalInputTokens(usage) >= minimumInputTokens {
+		return true
+	}
+	return attempt != nil && attempt.prompt.IsMultimodal() && attempt.prompt.EstimatedTokens() >= minimumInputTokens
 }
 
 func simulatedModelCacheModelName(info *relaycommon.RelayInfo) string {

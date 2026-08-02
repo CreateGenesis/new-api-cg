@@ -129,6 +129,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	other["admin_info"] = adminInfo
+	if common.LogConsumeEnabled {
+		AppendRelayDebugAdminInfo(ctx, other)
+	}
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)

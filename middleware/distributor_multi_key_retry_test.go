@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
@@ -76,6 +77,77 @@ func TestSetupContextCacheAwareStrategyPrefersBestMatchingKeyWhenFieldsHidden(t 
 		},
 	}
 	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"the shared prompt that should prefer key b"}]}`)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(ctx, constant.ContextKeyUserId, userID)
+
+	newAPIError := SetupContextForSelectedChannel(ctx, channel, modelName)
+
+	require.Nil(t, newAPIError)
+	assert.Equal(t, 1, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
+	assert.Equal(t, keyB, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey))
+}
+
+func TestSetupContextCacheAwareStrategyRoutesMediaOnlyPrompt(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	originalRedisEnabled := common.RedisEnabled
+	originalRDB := common.RDB
+	originalMinimumInputTokens := common.GetSimulatedModelCacheMinInputTokens()
+	common.RedisEnabled = true
+	common.RDB = client
+	common.SetSimulatedModelCacheMinInputTokens(500)
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = originalRedisEnabled
+		common.RDB = originalRDB
+		common.SetSimulatedModelCacheMinInputTokens(originalMinimumInputTokens)
+	})
+
+	imageRate := 520.0
+	videoRate := 820.0
+	audioRate := 25.0
+	fileRate := 4096.0
+	imageFallback := 1000
+	videoFallback := 8192
+	audioFallback := 256
+	fileFallback := 4096
+	settings := dto.SimulatedModelCacheSettings{
+		Multimodal: &dto.SimulatedModelCacheMultimodalSettings{
+			Enabled:                       true,
+			ImageTokensPerMegapixel:       &imageRate,
+			VideoTokensPerSecondMegapixel: &videoRate,
+			AudioTokensPerSecond:          &audioRate,
+			FileTokensPerMiB:              &fileRate,
+			ImageFallbackTokens:           &imageFallback,
+			VideoFallbackTokens:           &videoFallback,
+			AudioFallbackTokens:           &audioFallback,
+			FileFallbackTokens:            &fileFallback,
+		},
+	}
+	const channelID = 950102
+	const userID = 43
+	const modelName = "gpt-test"
+	const keyA = "key-a"
+	const keyB = "key-b"
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`)
+	prompt := service.ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, modelName, body, settings)
+	require.NoError(t, service.StoreSimulatedModelCachePromptFingerprint(context.Background(), service.SimulatedModelCachePartialMatchRequest{
+		ChannelID: channelID, UserID: userID, Model: modelName, Prompt: prompt, TTLSeconds: 60, KeyDigest: model.MultiKeyKeyDigest(keyB),
+	}))
+	threshold := 35
+	channel := &model.Channel{
+		Id:            channelID,
+		Key:           keyA + "\n" + keyB,
+		OtherSettings: `{"simulated_model_cache":{"enabled":false,"ttl_seconds":60,"min_match_ratio":0.5,"multimodal":{"enabled":true,"image_tokens_per_megapixel":520,"video_tokens_per_second_megapixel":820,"audio_tokens_per_second":25,"file_tokens_per_mib":4096,"image_fallback_tokens":1000,"video_fallback_tokens":8192,"audio_fallback_tokens":256,"file_fallback_tokens":4096}}}`,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:                            true,
+			MultiKeyMode:                          constant.MultiKeyModeCacheAffinityLeastRequests,
+			MultiKeyLeastRequestsWindowSeconds:    60,
+			MultiKeyCacheAffinityThresholdPercent: &threshold,
+		},
+	}
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")

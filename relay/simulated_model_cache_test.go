@@ -174,6 +174,39 @@ func TestSimulatedModelCacheModelNameKeepsRequestedCompactionModel(t *testing.T)
 	assert.Equal(t, "requested-compact-model", simulatedModelCacheModelName(info))
 }
 
+func TestSimulatedModelCacheMultimediaEstimatedWeightMeetsMinimumInput(t *testing.T) {
+	originalMinimum := common.GetSimulatedModelCacheMinInputTokens()
+	common.SetSimulatedModelCacheMinInputTokens(500)
+	t.Cleanup(func() { common.SetSimulatedModelCacheMinInputTokens(originalMinimum) })
+	imageRate := 520.0
+	videoRate := 820.0
+	audioRate := 25.0
+	fileRate := 4096.0
+	imageFallback := 1000
+	videoFallback := 8192
+	audioFallback := 256
+	fileFallback := 4096
+	settings := dto.SimulatedModelCacheSettings{
+		Enabled: true,
+		Multimodal: &dto.SimulatedModelCacheMultimodalSettings{
+			Enabled:                       true,
+			ImageTokensPerMegapixel:       &imageRate,
+			VideoTokensPerSecondMegapixel: &videoRate,
+			AudioTokensPerSecond:          &audioRate,
+			FileTokensPerMiB:              &fileRate,
+			ImageFallbackTokens:           &imageFallback,
+			VideoFallbackTokens:           &videoFallback,
+			AudioFallbackTokens:           &audioFallback,
+			FileFallbackTokens:            &fileFallback,
+		},
+	}
+	mediaPrompt := service.ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`), settings)
+	textPrompt := service.ExtractSimulatedModelCachePrompt(types.RelayFormatOpenAI, "gpt-test", []byte(`{"messages":[{"role":"user","content":"short"}]}`), settings)
+
+	assert.True(t, simulatedModelCacheInputEligible(&simulatedModelCacheAttempt{prompt: mediaPrompt}, &dto.Usage{PromptTokens: 1}))
+	assert.False(t, simulatedModelCacheInputEligible(&simulatedModelCacheAttempt{prompt: textPrompt}, &dto.Usage{PromptTokens: 1}))
+}
+
 func TestSimulatedModelCacheLowBudgetDoesNotCancelMatchBeforeBuffering(t *testing.T) {
 	originalBudget := common.GetSimulatedModelCacheMemoryBudgetMB()
 	common.SetSimulatedModelCacheMemoryBudgetMB(1)

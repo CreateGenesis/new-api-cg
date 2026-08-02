@@ -194,6 +194,14 @@ function addRequiredIssue(
   })
 }
 
+function readFiniteNumberProperty(
+  values: Record<string, unknown>,
+  field: string
+): number | undefined {
+  const value = values[field]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 export const DEFAULT_STATUS_CODE_RETRY_STATUS_CODES =
   '100-199,300-399,401-407,409-499,500-503,505-523,525-599'
 export const DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS = 50
@@ -359,6 +367,17 @@ export const channelFormSchema = z
     simulated_model_cache_enabled: z.boolean().optional(),
     simulated_model_cache_ttl_seconds: z.number().optional(),
     simulated_model_cache_min_match_ratio: z.number().optional(),
+    simulated_model_cache_multimodal_enabled: z.boolean().optional(),
+    simulated_model_cache_image_tokens_per_megapixel: z.number().optional(),
+    simulated_model_cache_video_tokens_per_second_megapixel: z
+      .number()
+      .optional(),
+    simulated_model_cache_audio_tokens_per_second: z.number().optional(),
+    simulated_model_cache_file_tokens_per_mib: z.number().optional(),
+    simulated_model_cache_image_fallback_tokens: z.number().optional(),
+    simulated_model_cache_video_fallback_tokens: z.number().optional(),
+    simulated_model_cache_audio_fallback_tokens: z.number().optional(),
+    simulated_model_cache_file_fallback_tokens: z.number().optional(),
     status_code_retry_enabled: z.boolean().optional(),
     status_code_retry_times: z.number().optional(),
     status_code_retry_interval_ms: z.number().optional(),
@@ -607,6 +626,52 @@ export const channelFormSchema = z
         )
       }
     }
+    if (
+      simulatedModelCacheRuntimeActive &&
+      data.simulated_model_cache_multimodal_enabled
+    ) {
+      const rateFields = [
+        'simulated_model_cache_image_tokens_per_megapixel',
+        'simulated_model_cache_video_tokens_per_second_megapixel',
+        'simulated_model_cache_audio_tokens_per_second',
+        'simulated_model_cache_file_tokens_per_mib',
+      ] as const
+      for (const fieldName of rateFields) {
+        const value = data[fieldName]
+        if (
+          !Number.isFinite(value) ||
+          Number(value) < 0.000001 ||
+          Number(value) > 1_000_000
+        ) {
+          addRequiredIssue(
+            ctx,
+            fieldName,
+            'Multimedia cache rates must be finite numbers between 0.000001 and 1000000.'
+          )
+        }
+      }
+
+      const fallbackFields = [
+        'simulated_model_cache_image_fallback_tokens',
+        'simulated_model_cache_video_fallback_tokens',
+        'simulated_model_cache_audio_fallback_tokens',
+        'simulated_model_cache_file_fallback_tokens',
+      ] as const
+      for (const fieldName of fallbackFields) {
+        const value = data[fieldName]
+        if (
+          !Number.isInteger(value) ||
+          Number(value) < 1 ||
+          Number(value) > 1_000_000
+        ) {
+          addRequiredIssue(
+            ctx,
+            fieldName,
+            'Multimedia cache fallback tokens must be integers between 1 and 1000000.'
+          )
+        }
+      }
+    }
 
     if (data.status_code_retry_enabled) {
       if (
@@ -727,6 +792,15 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   simulated_model_cache_enabled: false,
   simulated_model_cache_ttl_seconds: 86400,
   simulated_model_cache_min_match_ratio: 0.01,
+  simulated_model_cache_multimodal_enabled: false,
+  simulated_model_cache_image_tokens_per_megapixel: undefined,
+  simulated_model_cache_video_tokens_per_second_megapixel: undefined,
+  simulated_model_cache_audio_tokens_per_second: undefined,
+  simulated_model_cache_file_tokens_per_mib: undefined,
+  simulated_model_cache_image_fallback_tokens: undefined,
+  simulated_model_cache_video_fallback_tokens: undefined,
+  simulated_model_cache_audio_fallback_tokens: undefined,
+  simulated_model_cache_file_fallback_tokens: undefined,
   status_code_retry_enabled: false,
   status_code_retry_times: 10,
   status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
@@ -814,6 +888,15 @@ export function transformChannelToFormDefaults(
   let simulatedModelCacheEnabled = false
   let simulatedModelCacheTTLSeconds = 86400
   let simulatedModelCacheMinMatchRatio = 0.01
+  let simulatedModelCacheMultimodalEnabled = false
+  let simulatedModelCacheImageTokensPerMegapixel: number | undefined
+  let simulatedModelCacheVideoTokensPerSecondMegapixel: number | undefined
+  let simulatedModelCacheAudioTokensPerSecond: number | undefined
+  let simulatedModelCacheFileTokensPerMiB: number | undefined
+  let simulatedModelCacheImageFallbackTokens: number | undefined
+  let simulatedModelCacheVideoFallbackTokens: number | undefined
+  let simulatedModelCacheAudioFallbackTokens: number | undefined
+  let simulatedModelCacheFileFallbackTokens: number | undefined
   let statusCodeRetryEnabled = false
   let statusCodeRetryTimes = 10
   let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
@@ -869,6 +952,49 @@ export function transformChannelToFormDefaults(
           minMatchRatio <= 1
         ) {
           simulatedModelCacheMinMatchRatio = minMatchRatio
+        }
+        if (
+          simulatedCache.multimodal &&
+          typeof simulatedCache.multimodal === 'object'
+        ) {
+          const multimodal = simulatedCache.multimodal as Record<
+            string,
+            unknown
+          >
+          simulatedModelCacheMultimodalEnabled = multimodal.enabled === true
+          simulatedModelCacheImageTokensPerMegapixel = readFiniteNumberProperty(
+            multimodal,
+            'image_tokens_per_megapixel'
+          )
+          simulatedModelCacheVideoTokensPerSecondMegapixel =
+            readFiniteNumberProperty(
+              multimodal,
+              'video_tokens_per_second_megapixel'
+            )
+          simulatedModelCacheAudioTokensPerSecond = readFiniteNumberProperty(
+            multimodal,
+            'audio_tokens_per_second'
+          )
+          simulatedModelCacheFileTokensPerMiB = readFiniteNumberProperty(
+            multimodal,
+            'file_tokens_per_mib'
+          )
+          simulatedModelCacheImageFallbackTokens = readFiniteNumberProperty(
+            multimodal,
+            'image_fallback_tokens'
+          )
+          simulatedModelCacheVideoFallbackTokens = readFiniteNumberProperty(
+            multimodal,
+            'video_fallback_tokens'
+          )
+          simulatedModelCacheAudioFallbackTokens = readFiniteNumberProperty(
+            multimodal,
+            'audio_fallback_tokens'
+          )
+          simulatedModelCacheFileFallbackTokens = readFiniteNumberProperty(
+            multimodal,
+            'file_fallback_tokens'
+          )
         }
       }
       if (
@@ -1061,6 +1187,24 @@ export function transformChannelToFormDefaults(
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
     simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
     simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
+    simulated_model_cache_multimodal_enabled:
+      simulatedModelCacheMultimodalEnabled,
+    simulated_model_cache_image_tokens_per_megapixel:
+      simulatedModelCacheImageTokensPerMegapixel,
+    simulated_model_cache_video_tokens_per_second_megapixel:
+      simulatedModelCacheVideoTokensPerSecondMegapixel,
+    simulated_model_cache_audio_tokens_per_second:
+      simulatedModelCacheAudioTokensPerSecond,
+    simulated_model_cache_file_tokens_per_mib:
+      simulatedModelCacheFileTokensPerMiB,
+    simulated_model_cache_image_fallback_tokens:
+      simulatedModelCacheImageFallbackTokens,
+    simulated_model_cache_video_fallback_tokens:
+      simulatedModelCacheVideoFallbackTokens,
+    simulated_model_cache_audio_fallback_tokens:
+      simulatedModelCacheAudioFallbackTokens,
+    simulated_model_cache_file_fallback_tokens:
+      simulatedModelCacheFileFallbackTokens,
     status_code_retry_enabled: statusCodeRetryEnabled,
     status_code_retry_times: statusCodeRetryTimes,
     status_code_retry_interval_ms: statusCodeRetryIntervalMS,
@@ -1227,6 +1371,41 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       1,
       Math.max(0.01, Number.isFinite(minMatchRatio) ? minMatchRatio : 0.01)
     )
+    const multimodalEnabled =
+      formData.simulated_model_cache_multimodal_enabled === true
+    const multimodalValues = [
+      formData.simulated_model_cache_image_tokens_per_megapixel,
+      formData.simulated_model_cache_video_tokens_per_second_megapixel,
+      formData.simulated_model_cache_audio_tokens_per_second,
+      formData.simulated_model_cache_file_tokens_per_mib,
+      formData.simulated_model_cache_image_fallback_tokens,
+      formData.simulated_model_cache_video_fallback_tokens,
+      formData.simulated_model_cache_audio_fallback_tokens,
+      formData.simulated_model_cache_file_fallback_tokens,
+    ]
+    if (
+      multimodalEnabled ||
+      multimodalValues.some((value) => value !== undefined)
+    ) {
+      simulatedModelCache.multimodal = {
+        enabled: multimodalEnabled,
+        image_tokens_per_megapixel:
+          formData.simulated_model_cache_image_tokens_per_megapixel,
+        video_tokens_per_second_megapixel:
+          formData.simulated_model_cache_video_tokens_per_second_megapixel,
+        audio_tokens_per_second:
+          formData.simulated_model_cache_audio_tokens_per_second,
+        file_tokens_per_mib: formData.simulated_model_cache_file_tokens_per_mib,
+        image_fallback_tokens:
+          formData.simulated_model_cache_image_fallback_tokens,
+        video_fallback_tokens:
+          formData.simulated_model_cache_video_fallback_tokens,
+        audio_fallback_tokens:
+          formData.simulated_model_cache_audio_fallback_tokens,
+        file_fallback_tokens:
+          formData.simulated_model_cache_file_fallback_tokens,
+      }
+    }
     settingsObj.simulated_model_cache = simulatedModelCache
   } else if ('simulated_model_cache' in settingsObj) {
     delete settingsObj.simulated_model_cache

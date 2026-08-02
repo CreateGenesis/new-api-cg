@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"math"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -58,6 +59,50 @@ func TestChannelOtherSettingsSimulatedModelCacheKeepsExplicitValues(t *testing.T
 
 	assert.Equal(t, 60, normalized.TTLSeconds)
 	assert.Equal(t, 0.42, normalized.MinMatchRatio)
+}
+
+func TestSimulatedModelCacheMultimodalSettingsRequireExplicitWeights(t *testing.T) {
+	settings := SimulatedModelCacheSettings{
+		Multimodal: &SimulatedModelCacheMultimodalSettings{Enabled: true},
+	}
+
+	err := settings.Validate()
+
+	require.ErrorContains(t, err, "image_tokens_per_megapixel")
+}
+
+func TestSimulatedModelCacheMultimodalSettingsValidateConfiguredWeights(t *testing.T) {
+	rate := 520.5
+	fallback := 4096
+	settings := SimulatedModelCacheSettings{
+		Multimodal: &SimulatedModelCacheMultimodalSettings{
+			Enabled:                       true,
+			ImageTokensPerMegapixel:       &rate,
+			VideoTokensPerSecondMegapixel: &rate,
+			AudioTokensPerSecond:          &rate,
+			FileTokensPerMiB:              &rate,
+			ImageFallbackTokens:           &fallback,
+			VideoFallbackTokens:           &fallback,
+			AudioFallbackTokens:           &fallback,
+			FileFallbackTokens:            &fallback,
+		},
+	}
+
+	require.NoError(t, settings.Validate())
+
+	invalidRate := 0.0
+	settings.Multimodal.ImageTokensPerMegapixel = &invalidRate
+	require.ErrorContains(t, settings.Validate(), "image_tokens_per_megapixel")
+
+	settings.Multimodal.ImageTokensPerMegapixel = &rate
+	nonFiniteRate := math.Inf(1)
+	settings.Multimodal.AudioTokensPerSecond = &nonFiniteRate
+	require.ErrorContains(t, settings.Validate(), "audio_tokens_per_second")
+
+	settings.Multimodal.AudioTokensPerSecond = &rate
+	invalidFallback := 1_000_001
+	settings.Multimodal.FileFallbackTokens = &invalidFallback
+	require.ErrorContains(t, settings.Validate(), "file_fallback_tokens")
 }
 
 func TestChannelOtherSettingsStatusCodeRetryDefaults(t *testing.T) {

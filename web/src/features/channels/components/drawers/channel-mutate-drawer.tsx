@@ -192,6 +192,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  SimulatedModelCacheFields,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -313,6 +314,15 @@ const SENSITIVE_FORM_FIELDS = [
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
+  'simulated_model_cache_multimodal_enabled',
+  'simulated_model_cache_image_tokens_per_megapixel',
+  'simulated_model_cache_video_tokens_per_second_megapixel',
+  'simulated_model_cache_audio_tokens_per_second',
+  'simulated_model_cache_file_tokens_per_mib',
+  'simulated_model_cache_image_fallback_tokens',
+  'simulated_model_cache_video_fallback_tokens',
+  'simulated_model_cache_audio_fallback_tokens',
+  'simulated_model_cache_file_fallback_tokens',
   'status_code_retry_enabled',
   'status_code_retry_times',
   'status_code_retry_interval_ms',
@@ -371,6 +381,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.claude_beta_query ||
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.simulated_model_cache_enabled ||
+    values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
@@ -844,6 +855,9 @@ export function ChannelMutateDrawer({
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
+  const currentSimulatedModelCacheMultimodalEnabled = form.watch(
+    'simulated_model_cache_multimodal_enabled'
+  )
   const simulatedModelCacheRuntimeActive =
     currentSimulatedModelCacheEnabled ||
     multiKeyType === 'cache_affinity_least_requests'
@@ -1175,6 +1189,7 @@ export function ChannelMutateDrawer({
   )
   const simulatedModelCacheConfigured = Boolean(
     currentSimulatedModelCacheEnabled ||
+    currentSimulatedModelCacheMultimodalEnabled ||
     multiKeyType === 'cache_affinity_least_requests'
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
@@ -5341,102 +5356,11 @@ export function ChannelMutateDrawer({
                             title={t('Simulated Model Cache')}
                             icon={<Sparkles className='h-4 w-4' />}
                           />
-                          <fieldset
-                            disabled={sensitiveLocked}
-                            className='space-y-4 disabled:opacity-60'
-                          >
-                            <div className='divide-border space-y-0 divide-y border-y'>
-                              <FormField
-                                control={form.control}
-                                name='simulated_model_cache_enabled'
-                                render={({ field }) => (
-                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                                    <div className='space-y-0.5'>
-                                      <FormLabel className='text-sm'>
-                                        {t('Show simulated cache fields')}
-                                      </FormLabel>
-                                      <FormDescription>
-                                        {t(
-                                          'Controls whether simulated cache fields are shown in responses and logs. Cache-aware key routing continues in the background when disabled.'
-                                        )}
-                                      </FormDescription>
-                                    </div>
-                                    <FormControl>
-                                      <Switch
-                                        checked={field.value}
-                                        onCheckedChange={field.onChange}
-                                      />
-                                    </FormControl>
-                                  </FormItem>
-                                )}
-                              />
-                            </div>
-
-                            <div className='grid gap-4 sm:grid-cols-2'>
-                              <FormField
-                                control={form.control}
-                                name='simulated_model_cache_ttl_seconds'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>{t('TTL seconds')}</FormLabel>
-                                    <FormControl>
-                                      <Input
-                                        type='number'
-                                        min={1}
-                                        step={1}
-                                        disabled={
-                                          !simulatedModelCacheRuntimeActive
-                                        }
-                                        {...field}
-                                        onChange={(e) =>
-                                          field.onChange(Number(e.target.value))
-                                        }
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'How long prompt fingerprints remain available for matching'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
-
-                              <FormField
-                                control={form.control}
-                                name='simulated_model_cache_min_match_ratio'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>
-                                      {t('Minimum match ratio')}
-                                    </FormLabel>
-                                    <FormControl>
-                                      <Input
-                                        type='number'
-                                        min={0.01}
-                                        max={1}
-                                        step={0.01}
-                                        disabled={
-                                          !simulatedModelCacheRuntimeActive
-                                        }
-                                        {...field}
-                                        onChange={(e) =>
-                                          field.onChange(Number(e.target.value))
-                                        }
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'Approximate consecutive content fingerprint ratio required for partial cache usage'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
-                            </div>
-                          </fieldset>
+                          <SimulatedModelCacheFields
+                            control={form.control}
+                            runtimeActive={simulatedModelCacheRuntimeActive}
+                            sensitiveLocked={sensitiveLocked}
+                          />
                         </div>
 
                         {(currentType === 1 ||

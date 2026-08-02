@@ -2,6 +2,7 @@ package dto
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
@@ -87,9 +88,22 @@ func (s StreamInterruptionBillingSettings) Validate() error {
 }
 
 type SimulatedModelCacheSettings struct {
-	Enabled       bool    `json:"enabled,omitempty"`
-	TTLSeconds    int     `json:"ttl_seconds,omitempty"`
-	MinMatchRatio float64 `json:"min_match_ratio,omitempty"`
+	Enabled       bool                                   `json:"enabled,omitempty"`
+	TTLSeconds    int                                    `json:"ttl_seconds,omitempty"`
+	MinMatchRatio float64                                `json:"min_match_ratio,omitempty"`
+	Multimodal    *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
+}
+
+type SimulatedModelCacheMultimodalSettings struct {
+	Enabled                       bool     `json:"enabled,omitempty"`
+	ImageTokensPerMegapixel       *float64 `json:"image_tokens_per_megapixel,omitempty"`
+	VideoTokensPerSecondMegapixel *float64 `json:"video_tokens_per_second_megapixel,omitempty"`
+	AudioTokensPerSecond          *float64 `json:"audio_tokens_per_second,omitempty"`
+	FileTokensPerMiB              *float64 `json:"file_tokens_per_mib,omitempty"`
+	ImageFallbackTokens           *int     `json:"image_fallback_tokens,omitempty"`
+	VideoFallbackTokens           *int     `json:"video_fallback_tokens,omitempty"`
+	AudioFallbackTokens           *int     `json:"audio_fallback_tokens,omitempty"`
+	FileFallbackTokens            *int     `json:"file_fallback_tokens,omitempty"`
 }
 
 func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
@@ -107,6 +121,46 @@ func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
 
 func (s SimulatedModelCacheSettings) IsActive() bool {
 	return s.Enabled
+}
+
+func (s SimulatedModelCacheSettings) Validate() error {
+	if s.Multimodal == nil || !s.Multimodal.Enabled {
+		return nil
+	}
+	return s.Multimodal.Validate()
+}
+
+func (s SimulatedModelCacheMultimodalSettings) Validate() error {
+	rates := []struct {
+		name  string
+		value *float64
+	}{
+		{name: "image_tokens_per_megapixel", value: s.ImageTokensPerMegapixel},
+		{name: "video_tokens_per_second_megapixel", value: s.VideoTokensPerSecondMegapixel},
+		{name: "audio_tokens_per_second", value: s.AudioTokensPerSecond},
+		{name: "file_tokens_per_mib", value: s.FileTokensPerMiB},
+	}
+	for _, rate := range rates {
+		if rate.value == nil || math.IsNaN(*rate.value) || math.IsInf(*rate.value, 0) || *rate.value < 0.000001 || *rate.value > 1_000_000 {
+			return fmt.Errorf("simulated_model_cache.multimodal.%s must be between 0.000001 and 1000000", rate.name)
+		}
+	}
+
+	fallbacks := []struct {
+		name  string
+		value *int
+	}{
+		{name: "image_fallback_tokens", value: s.ImageFallbackTokens},
+		{name: "video_fallback_tokens", value: s.VideoFallbackTokens},
+		{name: "audio_fallback_tokens", value: s.AudioFallbackTokens},
+		{name: "file_fallback_tokens", value: s.FileFallbackTokens},
+	}
+	for _, fallback := range fallbacks {
+		if fallback.value == nil || *fallback.value < 1 || *fallback.value > 1_000_000 {
+			return fmt.Errorf("simulated_model_cache.multimodal.%s must be an integer between 1 and 1000000", fallback.name)
+		}
+	}
+	return nil
 }
 
 type InputTokenRoutingSettings struct {

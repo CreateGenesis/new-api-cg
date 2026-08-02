@@ -99,6 +99,10 @@ const OPERATIONS_SECTIONS = [
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
         defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+        defaultRelayDebugEnabled={Boolean(settings.RelayDebugLogEnabled)}
+        defaultRelayDebugTextLimitMB={Number(
+          settings.RelayDebugLogTextLimitMB ?? 16
+        )}
       />
     ),
   },

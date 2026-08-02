@@ -126,6 +126,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	if relayFormat != types.RelayFormatOpenAIRealtime {
+		service.StartRelayDebug(c)
+	}
 	layeredRetryEnabled := controllerOwnsRelayOverloadLease(relayFormat, relayInfo.RelayMode)
 	c.Set("layered_relay_retry", layeredRetryEnabled)
 	service.SetChannelOverloadLeaseControllerOwned(c, layeredRetryEnabled)
@@ -212,9 +215,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
+			service.RecordRelayDebugStageError(c, "channel_selection", service.RelayDebugAttemptMeta{}, channelErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 			break
 		}
 		if channel == nil {
+			if service.HasRelayDebugFailures(c) {
+				service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
+			}
 			break
 		}
 		actualChannelID := 0
@@ -228,6 +235,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			selectedChannel, overloadLease, acquireErr := acquireRelayOverloadLease(c, relayInfo, selectParam, channel, internalRetry)
 			if acquireErr != nil {
 				if internalRetry && acquireErr.GetErrorCode() == types.ErrorCodeChannelOverloaded {
+					service.RecordRelayDebugStageError(c, "overload_admission", relayDebugAttemptMeta(c, channel), acquireErr, service.RelayDebugDecision{Action: "stop", Reason: "same_channel_overload"})
 					// The channel became overloaded between its upstream attempts.
 					// Preserve its last upstream error and let the outer loop decide
 					// whether the independent cross-channel budget permits a switch.
@@ -236,6 +244,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				newAPIError = acquireErr
 				relayInfo.LastError = acquireErr
+				service.RecordRelayDebugStageError(c, "overload_admission", relayDebugAttemptMeta(c, channel), acquireErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 				break
 			}
 			if actualChannelID == 0 {
@@ -265,6 +274,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				} else {
 					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 				}
+				service.RecordRelayDebugStageError(c, "retry_setup", relayDebugAttemptMeta(c, channel), newAPIError, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 				break
 			}
 			c.Request.Body = io.NopCloser(bodyStorage)
@@ -279,6 +289,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				relayInfo.ClientWs = ws
 			}
 
+			service.BeginRelayDebugAttempt(c, "relay", relayDebugAttemptMeta(c, channel))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				newAPIError = relay.WssHelper(c, relayInfo)
@@ -289,6 +300,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
+			if newAPIError != nil {
+				newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			}
+			service.CompleteRelayDebugAttempt(c, newAPIError)
 			releaseOverloadLease(overloadLease)
 			service.ClearChannelOverloadLease(c)
 
@@ -297,25 +312,32 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 
-			newAPIError = service.NormalizeViolationFeeError(newAPIError)
 			relayInfo.LastError = newAPIError
 
 			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 			if upgradeInputTokenRoutingAfterUpstream400(c, newAPIError, channel, selectParam, inputTokenRoutingUpgrades, globalRetryPolicy, interChannelRetryState) {
+				service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "reroute_input_tokens", Reason: "input_token_limit"})
 				inputTokenRoutingUpgrades++
 				inputTokenRoutingUpgraded = true
 				break
 			}
 
-			if !shouldRetrySameChannelWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetryState.Count()) {
+			sameChannelDecision := evaluateRetryRelayErrorWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetryState.Count(), true, false)
+			if !sameChannelDecision.retry {
 				break
 			}
+			action := "retry_same_channel"
+			if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
+				action = "rotate_key"
+			}
+			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: action, Reason: sameChannelDecision.reason})
 			sameChannelRetryState.Increase()
 			waitBeforeRelayRetry(c, channelRetryPolicy.retryDelay)
 			channel, newAPIError = prepareMultiKeyChannelRetry(c, channel, relayInfo)
 			if newAPIError != nil {
 				relayInfo.LastError = newAPIError
+				service.RecordRelayDebugStageError(c, "retry_setup", relayDebugAttemptMeta(c, channel), newAPIError, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 				break
 			}
 		}
@@ -326,17 +348,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if internalRetryBlockedByOverload {
 			if shouldSwitchChannelAfterInternalRetryOverload(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count()) {
+				service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "switch_channel", Reason: "same_channel_overload"})
 				selectParam.ExcludeAttemptedChannel(channel)
 				interChannelRetryState.Increase()
 				continue
 			}
+			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "stop", Reason: "same_channel_overload"})
 			recordInternalRetryOverloadBlocked(c, channel, newAPIError, globalRetryPolicy, interChannelRetryState.Count())
 			break
 		}
 
-		if !shouldRetryWithPolicy(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count()) {
+		globalDecision := evaluateRetryRelayErrorWithPolicy(c, newAPIError, globalRetryPolicy, interChannelRetryState.Count(), false, true)
+		if !globalDecision.retry {
+			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "stop", Reason: globalDecision.reason})
 			break
 		}
+		service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "switch_channel", Reason: globalDecision.reason})
 		if actualChannelID > 0 {
 			selectParam.ExcludeAttemptedChannel(channel)
 		}
@@ -442,6 +469,18 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+func relayDebugAttemptMeta(c *gin.Context, channel *model.Channel) service.RelayDebugAttemptMeta {
+	meta := service.RelayDebugAttemptMeta{}
+	if channel != nil {
+		meta.ChannelId = channel.Id
+		meta.ChannelName = channel.Name
+		meta.ChannelType = channel.Type
+	}
+	meta.MultiKey = common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
+	meta.MultiKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+	return meta
 }
 
 type relayRetryPolicy struct {
@@ -773,40 +812,52 @@ func shouldRetrySameChannelWithPolicy(c *gin.Context, openaiErr *types.NewAPIErr
 }
 
 func shouldRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int, allowSpecificChannelRetry bool, respectAffinitySkip bool) bool {
+	return evaluateRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry, allowSpecificChannelRetry, respectAffinitySkip).retry
+}
+
+type relayRetryEvaluation struct {
+	retry  bool
+	reason string
+}
+
+func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int, allowSpecificChannelRetry bool, respectAffinitySkip bool) relayRetryEvaluation {
 	if openaiErr == nil {
-		return false
+		return relayRetryEvaluation{reason: "no_error"}
 	}
 	if respectAffinitySkip && service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-		return false
+		return relayRetryEvaluation{reason: "affinity_locked"}
 	}
 	if types.IsSkipRetryError(openaiErr) {
-		return false
+		return relayRetryEvaluation{reason: "skip_retry"}
 	}
 	if policy.retryTimes-currentRetry <= 0 {
-		return false
+		return relayRetryEvaluation{reason: "budget_exhausted"}
 	}
 	if !allowSpecificChannelRetry {
 		if _, ok := c.Get("specific_channel_id"); ok {
-			return false
+			return relayRetryEvaluation{reason: "specific_channel"}
 		}
 	}
 	if types.IsChannelError(openaiErr) {
 		if allowSpecificChannelRetry && c.GetBool("layered_relay_retry") {
-			return openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded
+			return relayRetryEvaluation{retry: openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded, reason: "channel_error"}
 		}
-		return true
+		return relayRetryEvaluation{retry: true, reason: "channel_error"}
 	}
 	code := openaiErr.StatusCode
 	if code >= 200 && code < 300 {
-		return false
+		return relayRetryEvaluation{reason: "status_code_excluded"}
 	}
 	if code < 100 || code > 599 {
-		return true
+		return relayRetryEvaluation{retry: true, reason: "status_code_match"}
 	}
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
-		return false
+		return relayRetryEvaluation{reason: "always_skip_code"}
 	}
-	return operation_setting.ShouldRetryByStatusCodeRanges(policy.statusCodeRanges, code)
+	if operation_setting.ShouldRetryByStatusCodeRanges(policy.statusCodeRanges, code) {
+		return relayRetryEvaluation{retry: true, reason: "status_code_match"}
+	}
+	return relayRetryEvaluation{reason: "status_code_excluded"}
 }
 
 func shouldSwitchChannelAfterInternalRetryOverload(c *gin.Context, lastUpstreamErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) bool {
@@ -936,6 +987,7 @@ func buildRelayErrorLogDetails(c *gin.Context, err *types.NewAPIError, channelId
 		adminInfo["internal_retry_overload_blocked"] = marker
 	}
 	other["admin_info"] = adminInfo
+	service.AppendRelayDebugAdminInfo(c, other)
 	return other
 }
 
@@ -1076,6 +1128,7 @@ func RelayTask(c *gin.Context) {
 		})
 		return
 	}
+	service.StartRelayDebug(c)
 
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
 		respondTaskError(c, taskErr)
@@ -1109,6 +1162,7 @@ func RelayTask(c *gin.Context) {
 			if interChannelRetryState.Count() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
+					service.RecordRelayDebugStageError(c, "retry_setup", relayDebugAttemptMeta(c, channel), setupErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 					break
 				}
 			}
@@ -1117,6 +1171,7 @@ func RelayTask(c *gin.Context) {
 			if channelErr != nil {
 				logger.LogError(c, channelErr.Error())
 				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
+				service.RecordRelayDebugStageError(c, "channel_selection", service.RelayDebugAttemptMeta{}, channelErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 				break
 			}
 			if channel == nil {
@@ -1131,6 +1186,9 @@ func RelayTask(c *gin.Context) {
 			} else {
 				taskErr = service.TaskErrorWrapperLocal(bodyErr, "read_request_body_failed", http.StatusBadRequest)
 			}
+			service.BeginRelayDebugAttempt(c, "retry_setup", relayDebugAttemptMeta(c, channel))
+			service.CompleteRelayDebugTaskAttempt(c, taskErr)
+			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -1140,11 +1198,14 @@ func RelayTask(c *gin.Context) {
 		channel, overloadLease, channelErr = acquireRelayOverloadLease(c, relayInfo, selectParam, channel, locked)
 		if channelErr != nil {
 			taskErr = service.TaskErrorWrapperLocal(channelErr.Err, string(types.ErrorCodeChannelOverloaded), http.StatusServiceUnavailable)
+			service.RecordRelayDebugStageError(c, "overload_admission", relayDebugAttemptMeta(c, channel), channelErr, service.RelayDebugDecision{Action: "stop", Reason: "same_channel_overload"})
 			break
 		}
 		service.SetChannelOverloadLease(c, overloadLease)
 		addUsedChannel(c, channel.Id)
+		service.BeginRelayDebugAttempt(c, "task_submit", relayDebugAttemptMeta(c, channel))
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
+		service.CompleteRelayDebugTaskAttempt(c, taskErr)
 		releaseOverloadLease(overloadLease)
 		service.ClearChannelOverloadLease(c)
 		if taskErr == nil {
@@ -1158,9 +1219,12 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
-		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-interChannelRetryState.Count()) {
+		taskDecision := evaluateTaskRelayRetry(c, channel.Id, taskErr, common.RetryTimes-interChannelRetryState.Count())
+		if !taskDecision.retry {
+			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "stop", Reason: taskDecision.reason})
 			break
 		}
+		service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: "switch_channel", Reason: taskDecision.reason})
 		selectParam.ExcludeAttemptedChannel(channel)
 		interChannelRetryState.Increase()
 	}
@@ -1219,46 +1283,50 @@ func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
 }
 
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError, retryTimes int) bool {
+	return evaluateTaskRelayRetry(c, channelId, taskErr, retryTimes).retry
+}
+
+func evaluateTaskRelayRetry(c *gin.Context, channelId int, taskErr *dto.TaskError, retryTimes int) relayRetryEvaluation {
 	if taskErr == nil {
-		return false
+		return relayRetryEvaluation{reason: "no_error"}
 	}
 	if taskErr.Code == string(types.ErrorCodeChannelOverloaded) {
-		return false
+		return relayRetryEvaluation{reason: "same_channel_overload"}
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-		return false
+		return relayRetryEvaluation{reason: "affinity_locked"}
 	}
 	if retryTimes <= 0 {
-		return false
+		return relayRetryEvaluation{reason: "budget_exhausted"}
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
-		return false
+		return relayRetryEvaluation{reason: "specific_channel"}
 	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
-		return true
+		return relayRetryEvaluation{retry: true, reason: "status_code_match"}
 	}
 	if taskErr.StatusCode == 307 {
-		return true
+		return relayRetryEvaluation{retry: true, reason: "status_code_match"}
 	}
 	if taskErr.StatusCode/100 == 5 {
 		// 超时不重试
 		if operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) {
-			return false
+			return relayRetryEvaluation{reason: "always_skip_code"}
 		}
-		return true
+		return relayRetryEvaluation{retry: true, reason: "status_code_match"}
 	}
 	if taskErr.StatusCode == http.StatusBadRequest {
-		return false
+		return relayRetryEvaluation{reason: "status_code_excluded"}
 	}
 	if taskErr.StatusCode == 408 {
 		// azure处理超时不重试
-		return false
+		return relayRetryEvaluation{reason: "always_skip_code"}
 	}
 	if taskErr.LocalError {
-		return false
+		return relayRetryEvaluation{reason: "task_local_error"}
 	}
 	if taskErr.StatusCode/100 == 2 {
-		return false
+		return relayRetryEvaluation{reason: "status_code_excluded"}
 	}
-	return true
+	return relayRetryEvaluation{retry: true, reason: "channel_error"}
 }

@@ -52,6 +52,9 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
 	attachQuotaSaturation(c, info, other)
+	if common.LogConsumeEnabled {
+		AppendRelayDebugAdminInfo(c, other)
+	}
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
 		ModelName: info.OriginModelName,
