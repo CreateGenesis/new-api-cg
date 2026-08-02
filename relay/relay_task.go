@@ -447,7 +447,11 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	resp, err := adaptor.FetchTask(baseURL, channelModel.Key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
-	}, proxy, channelSetting.ProxyFallbackDirect)
+	}, proxy, channelSetting.ProxyFallbackDirect, relaycommon.HeaderRewriteInput{
+		ChannelSetting: channelSetting,
+		LegacyOverride: channelModel.GetHeaderOverride(),
+		APIKey:         channelModel.Key,
+	})
 	if err != nil || resp == nil {
 		return nil
 	}

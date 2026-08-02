@@ -102,6 +102,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Tooltip,
   TooltipContent,
@@ -111,6 +112,7 @@ import {
   SecureVerificationDialog,
   useSecureVerification,
 } from '@/features/auth/secure-verification'
+import { useSystemOptions } from '@/features/system-settings/hooks/use-system-options'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useHiddenClickUnlock } from '@/hooks/use-hidden-click-unlock'
 import {
@@ -166,6 +168,7 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
+  buildChannelSettingJSON,
 } from '../../lib'
 import {
   collectInvalidStatusCodeEntries,
@@ -282,6 +285,8 @@ const SENSITIVE_FORM_FIELDS = [
   'multi_key_least_requests_window_seconds',
   'param_override',
   'header_override',
+  'header_rewrite_preset_id',
+  'header_rewrite',
   'settings',
   'setting',
   'advanced_custom',
@@ -313,7 +318,7 @@ const SENSITIVE_FORM_FIELDS = [
   'status_code_retry_interval_ms',
   'status_code_retry_status_codes',
   'input_token_routing_enabled',
-  'input_token_routing_glm_5_2_mode',
+  'input_token_routing_estimation_mode',
   'input_token_routing_ranges',
   'stream_interruption_billing_mode',
   'upstream_model_update_check_enabled',
@@ -348,6 +353,8 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
   return Boolean(
     hasConfiguredOverrideValue(values.param_override) ||
     hasConfiguredOverrideValue(values.header_override) ||
+    values.header_rewrite_preset_id?.trim() ||
+    hasConfiguredOverrideValue(values.header_rewrite) ||
     values.advanced_custom?.trim() ||
     hasConfiguredOverrideValue(values.status_code_mapping) ||
     values.tag?.trim() ||
@@ -367,7 +374,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
     values.input_token_routing_enabled ||
-    values.input_token_routing_glm_5_2_mode ||
+    values.input_token_routing_estimation_mode !== 'default' ||
     values.stream_interruption_billing_mode !== 'off' ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
@@ -635,6 +642,7 @@ export function ChannelMutateDrawer({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { setOpen } = useChannels()
+  const { data: systemOptionsData } = useSystemOptions()
   const currentUser = useAuthStore((s) => s.auth.user)
   const canEditSensitive = hasPermission(
     currentUser,
@@ -680,6 +688,25 @@ export function ChannelMutateDrawer({
   const isEditing = Boolean(currentRow)
   const channelId = currentRow?.id ?? null
   const sensitiveLocked = isEditing && !canEditSensitive
+
+  const headerRewritePresetOptions = useMemo(() => {
+    const raw = systemOptionsData?.data.find(
+      (option) => option.key === 'HeaderRewritePresets'
+    )?.value
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw) as Record<string, { name?: unknown }>
+      return Object.entries(parsed)
+        .filter(
+          ([id, preset]) =>
+            id.trim().length > 0 && typeof preset?.name === 'string'
+        )
+        .map(([id, preset]) => ({ id, name: preset.name as string }))
+        .sort((left, right) => left.name.localeCompare(right.name))
+    } catch {
+      return []
+    }
+  }, [systemOptionsData?.data])
 
   // Fetch channel details if editing
   const { data: channelData, isLoading: isChannelLoading } = useQuery({
@@ -793,6 +820,8 @@ export function ChannelMutateDrawer({
   const currentStatusCodeMapping = form.watch('status_code_mapping')
   const currentParamOverride = form.watch('param_override')
   const currentHeaderOverride = form.watch('header_override')
+  const currentHeaderRewritePresetID = form.watch('header_rewrite_preset_id')
+  const currentHeaderRewrite = form.watch('header_rewrite')
   const currentForceFormat = form.watch('force_format')
   const currentThinkingToContent = form.watch('thinking_to_content')
   const currentPassThroughBodyEnabled = form.watch('pass_through_body_enabled')
@@ -822,12 +851,24 @@ export function ChannelMutateDrawer({
   const currentInputTokenRoutingEnabled = form.watch(
     'input_token_routing_enabled'
   )
-  const currentInputTokenRoutingGLM52Mode = form.watch(
-    'input_token_routing_glm_5_2_mode'
+  const currentInputTokenRoutingEstimationMode = form.watch(
+    'input_token_routing_estimation_mode'
   )
   const currentInputTokenRoutingRanges = form.watch(
     'input_token_routing_ranges'
   )
+  let inputTokenRoutingEstimationDescription = t(
+    'Use the standard tokenizer estimate for the requested model'
+  )
+  if (currentInputTokenRoutingEstimationMode === 'glm_5_2') {
+    inputTokenRoutingEstimationDescription = t(
+      'Estimate GLM-5.2 text at about 1 token per 1.6 Unicode characters'
+    )
+  } else if (currentInputTokenRoutingEstimationMode === 'kimi_k3') {
+    inputTokenRoutingEstimationDescription = t(
+      'Estimate Kimi K3 text at about 1 token per 1.5 CJK characters or 3.1 other characters; add 5001 tokens once when the request contains media'
+    )
+  }
   const currentStreamInterruptionBillingMode = form.watch(
     'stream_interruption_billing_mode'
   )
@@ -1096,7 +1137,9 @@ export function ChannelMutateDrawer({
   const overrideRulesConfigured = Boolean(
     hasConfiguredOverrideValue(currentStatusCodeMapping) ||
     hasConfiguredOverrideValue(currentParamOverride) ||
-    hasConfiguredOverrideValue(currentHeaderOverride)
+    hasConfiguredOverrideValue(currentHeaderOverride) ||
+    currentHeaderRewritePresetID?.trim() ||
+    hasConfiguredOverrideValue(currentHeaderRewrite)
   )
   const extraSettingsConfigured = Boolean(
     currentForceFormat ||
@@ -1137,7 +1180,7 @@ export function ChannelMutateDrawer({
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
   const inputTokenRoutingConfigured = Boolean(
     currentInputTokenRoutingEnabled ||
-    currentInputTokenRoutingGLM52Mode ||
+    currentInputTokenRoutingEstimationMode !== 'default' ||
     currentInputTokenRoutingRanges?.trim()
   )
   const streamInterruptionBillingConfigured =
@@ -1587,6 +1630,7 @@ export function ChannelMutateDrawer({
       base_url: form.getValues('base_url') || '',
       advanced_custom: form.getValues('advanced_custom'),
       header_override: form.getValues('header_override'),
+      setting: buildChannelSettingJSON(form.getValues()),
       proxy: form.getValues('proxy'),
     })
     if (response.success && response.data) {
@@ -4213,29 +4257,57 @@ export function ChannelMutateDrawer({
                                 />
                                 <FormField
                                   control={form.control}
-                                  name='input_token_routing_glm_5_2_mode'
+                                  name='input_token_routing_estimation_mode'
                                   render={({ field }) => (
-                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                                      <div className='space-y-0.5'>
-                                        <FormLabel className='text-sm'>
-                                          {t('GLM-5.2 estimation mode')}
-                                        </FormLabel>
-                                        <FormDescription>
-                                          {t(
-                                            'Estimate GLM-5.2 text at about 1 token per 1.6 Unicode characters'
-                                          )}
-                                        </FormDescription>
-                                      </div>
+                                    <FormItem className='space-y-3 px-4 py-3'>
+                                      <FormLabel className='text-sm'>
+                                        {t('Estimation mode')}
+                                      </FormLabel>
                                       <FormControl>
-                                        <Switch
-                                          checked={field.value}
+                                        <ToggleGroup
+                                          value={[field.value || 'default']}
                                           disabled={
                                             !currentInputTokenRoutingEnabled ||
                                             isSubmitting
                                           }
-                                          onCheckedChange={field.onChange}
-                                        />
+                                          onValueChange={(values) => {
+                                            const currentValue =
+                                              field.value || 'default'
+                                            const nextValue = values.find(
+                                              (value) => value !== currentValue
+                                            )
+                                            if (nextValue) {
+                                              field.onChange(nextValue)
+                                            }
+                                          }}
+                                          aria-label={t('Estimation mode')}
+                                          variant='outline'
+                                          size='sm'
+                                          className='grid w-full grid-cols-3'
+                                        >
+                                          <ToggleGroupItem
+                                            value='default'
+                                            className='w-full'
+                                          >
+                                            {t('Default')}
+                                          </ToggleGroupItem>
+                                          <ToggleGroupItem
+                                            value='glm_5_2'
+                                            className='w-full'
+                                          >
+                                            {t('GLM-5.2')}
+                                          </ToggleGroupItem>
+                                          <ToggleGroupItem
+                                            value='kimi_k3'
+                                            className='w-full'
+                                          >
+                                            {t('Kimi K3')}
+                                          </ToggleGroupItem>
+                                        </ToggleGroup>
                                       </FormControl>
+                                      <FormDescription>
+                                        {inputTokenRoutingEstimationDescription}
+                                      </FormDescription>
                                     </FormItem>
                                   )}
                                 />
@@ -4472,6 +4544,192 @@ export function ChannelMutateDrawer({
                                         className='max-h-72 min-h-40 resize-y overflow-auto font-mono text-xs'
                                       />
                                     </FormControl>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='header_rewrite_preset_id'
+                                render={({ field }) => (
+                                  <FormItem className='space-y-3 border-t pt-4'>
+                                    <FormLabel>
+                                      {t('Header Rewrite Preset')}
+                                    </FormLabel>
+                                    <Select
+                                      items={[
+                                        {
+                                          value: '__none__',
+                                          label: t('No preset'),
+                                        },
+                                        ...(field.value &&
+                                        !headerRewritePresetOptions.some(
+                                          (preset) => preset.id === field.value
+                                        )
+                                          ? [
+                                              {
+                                                value: field.value,
+                                                label: field.value,
+                                              },
+                                            ]
+                                          : []),
+                                        ...headerRewritePresetOptions.map(
+                                          (preset) => ({
+                                            value: preset.id,
+                                            label: `${preset.name} (${preset.id})`,
+                                          })
+                                        ),
+                                      ]}
+                                      value={field.value || ''}
+                                      onValueChange={(value) =>
+                                        field.onChange(
+                                          value === '__none__' ? '' : value
+                                        )
+                                      }
+                                      disabled={sensitiveLocked || isSubmitting}
+                                    >
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue
+                                            placeholder={t('No preset')}
+                                          />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          <SelectItem value='__none__'>
+                                            {t('No preset')}
+                                          </SelectItem>
+                                          {field.value &&
+                                            !headerRewritePresetOptions.some(
+                                              (preset) =>
+                                                preset.id === field.value
+                                            ) && (
+                                              <SelectItem value={field.value}>
+                                                {field.value}
+                                              </SelectItem>
+                                            )}
+                                          {headerRewritePresetOptions.map(
+                                            (preset) => (
+                                              <SelectItem
+                                                key={preset.id}
+                                                value={preset.id}
+                                              >
+                                                {preset.name} ({preset.id})
+                                              </SelectItem>
+                                            )
+                                          )}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                    <FormDescription>
+                                      {t(
+                                        'Preset changes apply immediately to every channel that references it.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='header_rewrite'
+                                render={({ field }) => (
+                                  <FormItem className='space-y-3'>
+                                    <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                                      <div className='space-y-1'>
+                                        <FormLabel>
+                                          {t('Channel Header Rewrite JSON')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Channel rules run after the selected preset.'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <div className='flex flex-wrap gap-2'>
+                                        <Button
+                                          type='button'
+                                          variant='outline'
+                                          size='sm'
+                                          onClick={() =>
+                                            field.onChange(
+                                              JSON.stringify(
+                                                {
+                                                  remove: ['X-Custom-Source-*'],
+                                                  set: {
+                                                    'User-Agent':
+                                                      'codex-cli/0.146.0-custom',
+                                                  },
+                                                },
+                                                null,
+                                                2
+                                              )
+                                            )
+                                          }
+                                        >
+                                          <Code className='mr-2 h-4 w-4' />
+                                          {t('Fill Template')}
+                                        </Button>
+                                        <Button
+                                          type='button'
+                                          variant='outline'
+                                          size='sm'
+                                          onClick={() => {
+                                            try {
+                                              const parsed = JSON.parse(
+                                                field.value || '{}'
+                                              )
+                                              field.onChange(
+                                                JSON.stringify(parsed, null, 2)
+                                              )
+                                            } catch {
+                                              toast.error(
+                                                t('Invalid JSON format')
+                                              )
+                                            }
+                                          }}
+                                        >
+                                          {t('Format')}
+                                        </Button>
+                                        <Button
+                                          type='button'
+                                          variant='ghost'
+                                          size='sm'
+                                          onClick={() => field.onChange('')}
+                                        >
+                                          {t('Clear')}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                    <FormControl>
+                                      <Textarea
+                                        className='min-h-40 resize-y font-mono text-xs'
+                                        rows={7}
+                                        value={field.value || ''}
+                                        onChange={field.onChange}
+                                        disabled={
+                                          sensitiveLocked || isSubmitting
+                                        }
+                                        placeholder={t(
+                                          'Enter JSON with remove and set rules'
+                                        )}
+                                      />
+                                    </FormControl>
+                                    <FormDescription className='text-xs'>
+                                      {t('Supported variables')}:{' '}
+                                      <code className='bg-muted rounded px-1 py-0.5'>
+                                        {'{request_id}'}
+                                      </code>{' '}
+                                      <code className='bg-muted rounded px-1 py-0.5'>
+                                        {'{client_header:NAME}'}
+                                      </code>{' '}
+                                      <code className='bg-muted rounded px-1 py-0.5'>
+                                        {'{client_header:NAME|request_id}'}
+                                      </code>
+                                    </FormDescription>
                                     <FormMessage />
                                   </FormItem>
                                 )}

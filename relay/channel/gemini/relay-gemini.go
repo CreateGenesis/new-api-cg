@@ -482,7 +482,7 @@ type GeminiModelsResponse struct {
 	NextPageToken string            `json:"nextPageToken"`
 }
 
-func FetchGeminiModels(baseURL, apiKey, proxyURL string, proxyFallbackDirect bool) ([]string, error) {
+func FetchGeminiModels(baseURL string, headers http.Header, proxyURL string, proxyFallbackDirect bool) ([]string, error) {
 	client, err := service.GetHttpClientWithProxyFallback(proxyURL, proxyFallbackDirect)
 	if err != nil {
 		return nil, fmt.Errorf("创建HTTP客户端失败: %v", err)
@@ -505,7 +505,11 @@ func FetchGeminiModels(baseURL, apiKey, proxyURL string, proxyFallbackDirect boo
 			return nil, fmt.Errorf("创建请求失败: %v", err)
 		}
 
-		request.Header.Set("x-goog-api-key", apiKey)
+		for name, values := range headers {
+			for _, value := range values {
+				request.Header.Add(name, value)
+			}
+		}
 
 		response, err := client.Do(request)
 		if err != nil {

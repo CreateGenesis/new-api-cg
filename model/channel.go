@@ -1157,6 +1157,9 @@ func (channel *Channel) ValidateSettings() error {
 	if _, err := common.ParseProxyURLStrict(channelParams.Proxy); err != nil {
 		return fmt.Errorf("invalid channel proxy: %w", err)
 	}
+	if err := operation_setting.ValidateChannelHeaderRewrite(channelParams.HeaderRewrite); err != nil {
+		return err
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)
@@ -1178,6 +1181,11 @@ func (channel *Channel) ValidateSettings() error {
 		normalized := channelOtherSettings.StatusCodeRetry.Normalize()
 		if _, err := operation_setting.ParseHTTPStatusCodeRanges(normalized.StatusCodes); err != nil {
 			return fmt.Errorf("status_code_retry.status_codes: %w", err)
+		}
+	}
+	if channelOtherSettings.InputTokenRouting != nil {
+		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
+			return fmt.Errorf("input_token_routing: %w", err)
 		}
 	}
 	if channelOtherSettings.StreamInterruptionBilling != nil {
@@ -1241,6 +1249,7 @@ type InputTokenRoutingMatch struct {
 	Enabled         bool
 	Matched         bool
 	GLM52Mode       bool
+	KimiK3Mode      bool
 	EstimatedTokens int
 	MinTokens       int
 	MaxTokens       int
@@ -1260,9 +1269,12 @@ func (channel *Channel) MatchInputTokenRouting(estimates *dto.InputTokenEstimate
 		return match
 	}
 	match.Enabled = true
-	match.GLM52Mode = routing.GLM52Mode
+	match.KimiK3Mode = routing.KimiK3Mode
+	match.GLM52Mode = routing.GLM52Mode && !routing.KimiK3Mode
 	tokens := estimates.Default
-	if routing.GLM52Mode {
+	if match.KimiK3Mode {
+		tokens = estimates.KimiK3
+	} else if match.GLM52Mode {
 		tokens = estimates.GLM52
 	}
 	if tokens < 0 {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
@@ -51,7 +52,12 @@ func fetchCodexChannelModels(
 		return nil, err
 	}
 
-	statusCode, models, err := FetchCodexModels(ctx, client, baseURL, oauthKey, clientVersion)
+	headerRewriteInput := &relaycommon.HeaderRewriteInput{
+		ChannelSetting: channel.GetSetting(),
+		LegacyOverride: channel.GetHeaderOverride(),
+		APIKey:         channel.Key,
+	}
+	statusCode, models, err := FetchCodexModels(ctx, client, baseURL, oauthKey, clientVersion, headerRewriteInput)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +76,7 @@ func fetchCodexChannelModels(
 		statusCode, models, err = FetchCodexModels(ctx, client, baseURL, &CodexOAuthKey{
 			AccessToken: refreshedKey.AccessToken,
 			AccountID:   refreshedKey.AccountID,
-		}, clientVersion)
+		}, clientVersion, headerRewriteInput)
 		if err != nil {
 			return nil, err
 		}

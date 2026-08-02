@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
 func getGeminiVideoURL(channel *model.Channel, task *model.Task, apiKey string) (string, error) {
@@ -40,7 +41,11 @@ func getGeminiVideoURL(channel *model.Channel, task *model.Task, apiKey string) 
 	resp, err := adaptor.FetchTask(baseURL, apiKey, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
-	}, proxy, channelSetting.ProxyFallbackDirect)
+	}, proxy, channelSetting.ProxyFallbackDirect, relaycommon.HeaderRewriteInput{
+		ChannelSetting: channelSetting,
+		LegacyOverride: channel.GetHeaderOverride(),
+		APIKey:         apiKey,
+	})
 	if err != nil {
 		return "", fmt.Errorf("fetch task failed: %w", err)
 	}
@@ -176,7 +181,11 @@ func getVertexVideoURL(channel *model.Channel, task *model.Task) (string, error)
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
-	}, channelSetting.Proxy, channelSetting.ProxyFallbackDirect)
+	}, channelSetting.Proxy, channelSetting.ProxyFallbackDirect, relaycommon.HeaderRewriteInput{
+		ChannelSetting: channelSetting,
+		LegacyOverride: channel.GetHeaderOverride(),
+		APIKey:         key,
+	})
 	if err != nil {
 		return "", fmt.Errorf("fetch task failed: %w", err)
 	}

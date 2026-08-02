@@ -334,6 +334,41 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+func buildHeaderRewriteInput(info *common.RelayInfo, c *gin.Context) common.HeaderRewriteInput {
+	input := common.HeaderRewriteInput{}
+	if info != nil {
+		input.ChannelSetting = info.ChannelSetting
+		input.LegacyOverride = common.GetEffectiveHeaderOverride(info)
+		input.APIKey = info.ApiKey
+		input.RequestID = info.RequestId
+		input.IsChannelTest = info.IsChannelTest
+	}
+	if c != nil && c.Request != nil {
+		input.IncomingHeaders = c.Request.Header
+		input.AllowClientHeader = true
+		if input.RequestID == "" {
+			input.RequestID = c.GetString(common2.RequestIdKey)
+		}
+	}
+	return input
+}
+
+func ApplyHeaderRewrite(headers http.Header, info *common.RelayInfo, c *gin.Context) error {
+	err := common.ResolveAndApplyHeaderRewrite(headers, buildHeaderRewriteInput(info, c))
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeChannelHeaderOverrideInvalid)
+	}
+	return nil
+}
+
+func applyHeaderRewriteToRequest(req *http.Request, info *common.RelayInfo, c *gin.Context) error {
+	err := common.ResolveAndApplyHeaderRewriteToRequest(req, buildHeaderRewriteInput(info, c))
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeChannelHeaderOverrideInvalid)
+	}
+	return nil
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -350,13 +385,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
+	if err := applyHeaderRewriteToRequest(req, info, c); err != nil {
 		return nil, err
 	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
@@ -390,13 +421,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
+	if err := applyHeaderRewriteToRequest(req, info, c); err != nil {
 		return nil, err
 	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
@@ -422,16 +449,10 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
+	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	if err := ApplyHeaderRewrite(targetHeader, info, c); err != nil {
 		return nil, err
 	}
-	for key, value := range headerOverride {
-		targetHeader.Set(key, value)
-	}
-	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}
@@ -595,6 +616,9 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	err = a.BuildRequestHeader(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
+	}
+	if err := applyHeaderRewriteToRequest(req, info, c); err != nil {
+		return nil, err
 	}
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())

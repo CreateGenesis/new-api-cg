@@ -74,7 +74,7 @@ type TaskAdaptor interface {
 
 	// ── Polling ──────────────────────────────────────────────────────
 
-	FetchTask(baseUrl, key string, body map[string]any, proxy string, proxyFallbackDirect bool) (*http.Response, error)
+	FetchTask(baseUrl, key string, body map[string]any, proxy string, proxyFallbackDirect bool, headerRewrite relaycommon.HeaderRewriteInput) (*http.Response, error)
 	ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error)
 }
 

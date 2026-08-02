@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
 const (
@@ -98,6 +99,7 @@ func FetchCodexModels(
 	baseURL string,
 	oauthKey *CodexOAuthKey,
 	clientVersion string,
+	headerRewriteInput *relaycommon.HeaderRewriteInput,
 ) (statusCode int, models []string, err error) {
 	if client == nil {
 		return 0, nil, fmt.Errorf("nil http client")
@@ -139,6 +141,11 @@ func FetchCodexModels(
 	req.Header.Set("ChatGPT-Account-Id", accountID)
 	req.Header.Set("User-Agent", "codex-cli/"+clientVersion)
 	req.Header.Set("Accept", "application/json")
+	if headerRewriteInput != nil {
+		if err := relaycommon.ResolveAndApplyHeaderRewriteToRequest(req, *headerRewriteInput); err != nil {
+			return 0, nil, err
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

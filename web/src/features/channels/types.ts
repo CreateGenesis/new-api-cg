@@ -195,6 +195,7 @@ export interface ChannelOtherSettings {
   input_token_routing?: {
     enabled?: boolean
     glm_5_2_mode?: boolean
+    kimi_k3_mode?: boolean
     min_tokens?: number
     max_tokens?: number
     ranges?: Array<{
@@ -470,6 +471,8 @@ export interface ChannelFormData {
   setting?: string
   param_override?: string
   header_override?: string
+  header_rewrite_preset_id?: string
+  header_rewrite?: string
   settings?: string
   other?: string
   // Multi-key specific

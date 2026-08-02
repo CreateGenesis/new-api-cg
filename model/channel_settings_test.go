@@ -48,6 +48,17 @@ func TestChannelValidateSettingsAcceptsStreamInterruptionBillingModes(t *testing
 	}
 }
 
+func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
+	channel := &Channel{
+		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,
+	}
+
+	err := channel.ValidateSettings()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input_token_routing")
+}
+
 func TestChannelMatchesInputTokenRouting(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -116,7 +127,7 @@ func TestChannelMatchesInputTokenRouting(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "default and glm modes can coexist",
+			name:      "glm mode uses its own estimate",
 			settings:  `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":500000}]}}`,
 			estimates: inputTokenEstimates(520000, 350000),
 			want:      true,
@@ -133,6 +144,18 @@ func TestChannelMatchesInputTokenRouting(t *testing.T) {
 			estimates: inputTokenEstimates(100, 500000),
 			want:      true,
 		},
+		{
+			name:      "kimi k3 mode uses its own estimate",
+			settings:  `{"input_token_routing":{"enabled":true,"kimi_k3_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":300000}]}}`,
+			estimates: inputTokenEstimates(520000, 350000, 250000),
+			want:      true,
+		},
+		{
+			name:      "default mode ignores kimi k3 estimate",
+			settings:  `{"input_token_routing":{"enabled":true,"ranges":[{"min_tokens":200001,"max_tokens":300000}]}}`,
+			estimates: inputTokenEstimates(520000, 350000, 250000),
+			want:      false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -144,8 +167,12 @@ func TestChannelMatchesInputTokenRouting(t *testing.T) {
 	}
 }
 
-func inputTokenEstimates(defaultTokens int, glm52Tokens int) *dto.InputTokenEstimates {
-	return &dto.InputTokenEstimates{Default: defaultTokens, GLM52: glm52Tokens}
+func inputTokenEstimates(defaultTokens int, glm52Tokens int, kimiK3Tokens ...int) *dto.InputTokenEstimates {
+	kimiK3 := defaultTokens
+	if len(kimiK3Tokens) > 0 {
+		kimiK3 = kimiK3Tokens[0]
+	}
+	return &dto.InputTokenEstimates{Default: defaultTokens, GLM52: glm52Tokens, KimiK3: kimiK3}
 }
 
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {

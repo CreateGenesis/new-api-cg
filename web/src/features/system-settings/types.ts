@@ -236,6 +236,7 @@ export type ModelSettings = {
   'global.chat_completions_to_responses_policy': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
+  HeaderRewritePresets: string
   'gemini.safety_settings': string
   'gemini.version_settings': string
   'gemini.supported_imagine_models': string

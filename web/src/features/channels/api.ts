@@ -554,6 +554,7 @@ export async function fetchModels(data: {
   channel_id?: number
   advanced_custom?: string
   header_override?: string
+  setting?: string
   proxy?: string
 }): Promise<FetchModelsResponse> {
   const res = await api.post(

@@ -35,7 +35,7 @@ type sunoFailurePollingAdaptor struct {
 
 func (a *sunoFailurePollingAdaptor) Init(_ *relaycommon.RelayInfo) {}
 
-func (a *sunoFailurePollingAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string, _ bool) (*http.Response, error) {
+func (a *sunoFailurePollingAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string, _ bool, _ relaycommon.HeaderRewriteInput) (*http.Response, error) {
 	taskIDs, _ := body["ids"].([]string)
 	items := make([]dto.SunoDataResponse, 0, len(taskIDs))
 	for _, taskID := range taskIDs {
@@ -70,7 +70,7 @@ func (a *sunoFailurePollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *re
 
 func (a *taskPollingFetchAdaptor) Init(_ *relaycommon.RelayInfo) {}
 
-func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string, _ bool) (*http.Response, error) {
+func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string, _ bool, _ relaycommon.HeaderRewriteInput) (*http.Response, error) {
 	taskID, _ := body["task_id"].(string)
 	if taskID == a.blockTaskID && a.releaseBlock != nil {
 		a.blockOnce.Do(func() {

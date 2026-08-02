@@ -37,6 +37,7 @@ import {
 import {
   formatInputTokenRoutingRanges,
   parseInputTokenRoutingRanges,
+  type InputTokenRoutingEstimationMode,
   type InputTokenRoutingRange,
 } from './input-token-routing'
 
@@ -89,6 +90,31 @@ function isOptionalJsonObject(value: string | undefined): boolean {
   try {
     const parsed = parseOptionalJson(value)
     return parsed === undefined || isJsonObjectValue(parsed)
+  } catch {
+    return false
+  }
+}
+
+function isOptionalHeaderRewriteRule(value: string | undefined): boolean {
+  try {
+    const parsed = parseOptionalJson(value)
+    if (parsed === undefined) return true
+    if (!isJsonObjectValue(parsed)) return false
+    if (Object.keys(parsed).some((key) => key !== 'remove' && key !== 'set')) {
+      return false
+    }
+    if (
+      parsed.remove !== undefined &&
+      (!Array.isArray(parsed.remove) ||
+        parsed.remove.some((item) => typeof item !== 'string'))
+    ) {
+      return false
+    }
+    return (
+      parsed.set === undefined ||
+      (isJsonObjectValue(parsed.set) &&
+        Object.values(parsed.set).every((item) => typeof item === 'string'))
+    )
   } catch {
     return false
   }
@@ -266,6 +292,11 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
+    header_rewrite_preset_id: z.string().max(64).optional(),
+    header_rewrite: z
+      .string()
+      .optional()
+      .refine(isOptionalHeaderRewriteRule, ERROR_MESSAGES.INVALID_JSON),
     settings: z
       .string()
       .optional()
@@ -333,7 +364,9 @@ export const channelFormSchema = z
     status_code_retry_interval_ms: z.number().optional(),
     status_code_retry_status_codes: z.string().optional(),
     input_token_routing_enabled: z.boolean().optional(),
-    input_token_routing_glm_5_2_mode: z.boolean().optional(),
+    input_token_routing_estimation_mode: z
+      .enum(['default', 'glm_5_2', 'kimi_k3'])
+      .optional(),
     input_token_routing_ranges: z.string().optional(),
     stream_interruption_billing_mode: z
       .enum(['off', 'input_only_free', 'all_interrupted_free'])
@@ -646,6 +679,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   setting: '',
   param_override: '',
   header_override: '',
+  header_rewrite_preset_id: '',
+  header_rewrite: '',
   settings: '{}',
   other: '',
   multi_key_mode: 'single',
@@ -697,7 +732,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
   status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
   input_token_routing_enabled: false,
-  input_token_routing_glm_5_2_mode: false,
+  input_token_routing_estimation_mode: 'default',
   input_token_routing_ranges: '',
   stream_interruption_billing_mode: 'off',
   upstream_model_update_check_enabled: false,
@@ -725,6 +760,8 @@ export function transformChannelToFormDefaults(
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    header_rewrite_preset_id: '',
+    header_rewrite: '',
   }
 
   if (channel.setting) {
@@ -738,6 +775,22 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        header_rewrite_preset_id: parsed.header_rewrite?.preset_id || '',
+        header_rewrite:
+          parsed.header_rewrite?.remove || parsed.header_rewrite?.set
+            ? JSON.stringify(
+                {
+                  ...(parsed.header_rewrite.remove
+                    ? { remove: parsed.header_rewrite.remove }
+                    : {}),
+                  ...(parsed.header_rewrite.set
+                    ? { set: parsed.header_rewrite.set }
+                    : {}),
+                },
+                null,
+                2
+              )
+            : '',
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -766,7 +819,8 @@ export function transformChannelToFormDefaults(
   let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
   let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
   let inputTokenRoutingEnabled = false
-  let inputTokenRoutingGLM52Mode = false
+  let inputTokenRoutingEstimationMode: InputTokenRoutingEstimationMode =
+    'default'
   let inputTokenRoutingRanges = ''
   let streamInterruptionBillingMode:
     | 'off'
@@ -850,7 +904,11 @@ export function transformChannelToFormDefaults(
           unknown
         >
         inputTokenRoutingEnabled = inputTokenRouting.enabled === true
-        inputTokenRoutingGLM52Mode = inputTokenRouting.glm_5_2_mode === true
+        if (inputTokenRouting.kimi_k3_mode === true) {
+          inputTokenRoutingEstimationMode = 'kimi_k3'
+        } else if (inputTokenRouting.glm_5_2_mode === true) {
+          inputTokenRoutingEstimationMode = 'glm_5_2'
+        }
         const ranges: InputTokenRoutingRange[] = []
         if (Array.isArray(inputTokenRouting.ranges)) {
           for (const item of inputTokenRouting.ranges) {
@@ -1008,7 +1066,7 @@ export function transformChannelToFormDefaults(
     status_code_retry_interval_ms: statusCodeRetryIntervalMS,
     status_code_retry_status_codes: statusCodeRetryStatusCodes,
     input_token_routing_enabled: inputTokenRoutingEnabled,
-    input_token_routing_glm_5_2_mode: inputTokenRoutingGLM52Mode,
+    input_token_routing_estimation_mode: inputTokenRoutingEstimationMode,
     input_token_routing_ranges: inputTokenRoutingRanges,
     stream_interruption_billing_mode: streamInterruptionBillingMode,
     allow_safety_identifier: allowSafetyIdentifier,
@@ -1022,8 +1080,8 @@ export function transformChannelToFormDefaults(
 /**
  * Build the setting JSON string from form extra settings
  */
-function buildSettingJSON(formData: ChannelFormValues): string {
-  const settingObj = {
+export function buildChannelSettingJSON(formData: ChannelFormValues): string {
+  const settingObj: Record<string, unknown> = {
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
@@ -1031,6 +1089,21 @@ function buildSettingJSON(formData: ChannelFormValues): string {
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+  }
+
+  let channelHeaderRewrite: Record<string, unknown> = {}
+  if (formData.header_rewrite?.trim()) {
+    try {
+      channelHeaderRewrite = JSON.parse(formData.header_rewrite)
+    } catch {
+      channelHeaderRewrite = {}
+    }
+  }
+  if (formData.header_rewrite_preset_id?.trim()) {
+    channelHeaderRewrite.preset_id = formData.header_rewrite_preset_id.trim()
+  }
+  if (Object.keys(channelHeaderRewrite).length > 0) {
+    settingObj.header_rewrite = channelHeaderRewrite
   }
   return JSON.stringify(settingObj)
 }
@@ -1193,11 +1266,16 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.input_token_routing_ranges
     )
     if (parsedRanges.ok) {
-      settingsObj.input_token_routing = {
+      const inputTokenRouting: Record<string, unknown> = {
         enabled: true,
-        glm_5_2_mode: formData.input_token_routing_glm_5_2_mode === true,
         ranges: parsedRanges.ranges,
       }
+      if (formData.input_token_routing_estimation_mode === 'glm_5_2') {
+        inputTokenRouting.glm_5_2_mode = true
+      } else if (formData.input_token_routing_estimation_mode === 'kimi_k3') {
+        inputTokenRouting.kimi_k3_mode = true
+      }
+      settingsObj.input_token_routing = inputTokenRouting
     }
   } else if ('input_token_routing' in settingsObj) {
     delete settingsObj.input_token_routing
@@ -1296,7 +1374,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
-    setting: buildSettingJSON(formData),
+    setting: buildChannelSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
@@ -1368,7 +1446,7 @@ export function transformFormDataToUpdatePayload(
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
-    setting: buildSettingJSON(formData),
+    setting: buildChannelSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),

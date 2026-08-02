@@ -25,9 +25,12 @@ import (
 // https://platform.minimaxi.com/docs/api-reference/video-generation-intro
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	ChannelType int
-	apiKey      string
-	baseURL     string
+	ChannelType         int
+	apiKey              string
+	baseURL             string
+	proxy               string
+	proxyFallbackDirect bool
+	headerRewrite       relaycommon.HeaderRewriteInput
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -111,11 +114,17 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	return hResp.TaskID, responseBody, nil
 }
 
-func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string, proxyFallbackDirect bool) (*http.Response, error) {
+func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string, proxyFallbackDirect bool, headerRewrite relaycommon.HeaderRewriteInput) (*http.Response, error) {
 	taskID, ok := body["task_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid task_id")
 	}
+	a.apiKey = key
+	a.baseURL = baseUrl
+	a.proxy = proxy
+	a.proxyFallbackDirect = proxyFallbackDirect
+	headerRewrite.APIKey = key
+	a.headerRewrite = headerRewrite
 
 	uri := fmt.Sprintf("%s%s?task_id=%s", baseUrl, QueryTaskEndpoint, taskID)
 
@@ -127,6 +136,9 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
+	if err := relaycommon.ResolveAndApplyHeaderRewriteToRequest(req, headerRewrite); err != nil {
+		return nil, err
+	}
 	client, err := service.GetHttpClientWithProxyFallback(proxy, proxyFallbackDirect)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
@@ -259,8 +271,15 @@ func (a *TaskAdaptor) buildVideoURL(_, fileID string) string {
 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
+	if err := relaycommon.ResolveAndApplyHeaderRewriteToRequest(req, a.headerRewrite); err != nil {
+		return ""
+	}
 
-	resp, err := service.GetHttpClient().Do(req)
+	client, err := service.GetHttpClientWithProxyFallback(a.proxy, a.proxyFallbackDirect)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}

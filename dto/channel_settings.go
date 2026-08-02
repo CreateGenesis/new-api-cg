@@ -8,17 +8,22 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/types"
 )
 
 type ChannelSettings struct {
-	ForceFormat            bool   `json:"force_format,omitempty"`
-	ThinkingToContent      bool   `json:"thinking_to_content,omitempty"`
-	Proxy                  string `json:"proxy"`
-	ProxyFallbackDirect    bool   `json:"proxy_fallback_direct,omitempty"`
-	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
-	SystemPrompt           string `json:"system_prompt,omitempty"`
-	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	ForceFormat            bool                          `json:"force_format,omitempty"`
+	ThinkingToContent      bool                          `json:"thinking_to_content,omitempty"`
+	Proxy                  string                        `json:"proxy"`
+	ProxyFallbackDirect    bool                          `json:"proxy_fallback_direct,omitempty"`
+	PassThroughBodyEnabled bool                          `json:"pass_through_body_enabled,omitempty"`
+	SystemPrompt           string                        `json:"system_prompt,omitempty"`
+	SystemPromptOverride   bool                          `json:"system_prompt_override,omitempty"`
+	HeaderRewrite          *ChannelHeaderRewriteSettings `json:"header_rewrite,omitempty"`
 }
+
+type HeaderRewriteRule = types.HeaderRewriteRule
+type ChannelHeaderRewriteSettings = types.ChannelHeaderRewriteSettings
 
 type VertexKeyType string
 
@@ -105,16 +110,18 @@ func (s SimulatedModelCacheSettings) IsActive() bool {
 }
 
 type InputTokenRoutingSettings struct {
-	Enabled   bool                     `json:"enabled,omitempty"`
-	GLM52Mode bool                     `json:"glm_5_2_mode,omitempty"`
-	MinTokens int                      `json:"min_tokens,omitempty"`
-	MaxTokens int                      `json:"max_tokens,omitempty"`
-	Ranges    []InputTokenRoutingRange `json:"ranges,omitempty"`
+	Enabled    bool                     `json:"enabled,omitempty"`
+	GLM52Mode  bool                     `json:"glm_5_2_mode,omitempty"`
+	KimiK3Mode bool                     `json:"kimi_k3_mode,omitempty"`
+	MinTokens  int                      `json:"min_tokens,omitempty"`
+	MaxTokens  int                      `json:"max_tokens,omitempty"`
+	Ranges     []InputTokenRoutingRange `json:"ranges,omitempty"`
 }
 
 type InputTokenEstimates struct {
 	Default int
 	GLM52   int
+	KimiK3  int
 }
 
 type InputTokenRoutingRange struct {
@@ -150,6 +157,13 @@ func (s InputTokenRoutingSettings) Normalize() InputTokenRoutingSettings {
 	}
 	s.Ranges = ranges
 	return s
+}
+
+func (s InputTokenRoutingSettings) Validate() error {
+	if s.GLM52Mode && s.KimiK3Mode {
+		return fmt.Errorf("glm_5_2_mode and kimi_k3_mode cannot both be enabled")
+	}
+	return nil
 }
 
 const (

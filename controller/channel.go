@@ -214,17 +214,10 @@ func applyFetchModelsHeaderOverrides(channel *model.Channel, key string, headers
 		ChannelMeta: &relaycommon.ChannelMeta{
 			ApiKey:          key,
 			HeadersOverride: channel.GetHeaderOverride(),
+			ChannelSetting:  channel.GetSetting(),
 		},
 	}
-	overrides, err := relaychannel.ResolveHeaderOverride(info, nil)
-	if err != nil {
-		return err
-	}
-	for name, value := range overrides {
-		headers.Set(name, value)
-	}
-
-	return nil
+	return relaychannel.ApplyHeaderRewrite(headers, info, nil)
 }
 
 func FetchUpstreamModels(c *gin.Context) {
@@ -1292,7 +1285,37 @@ type fetchModelsRequest struct {
 	Key            string  `json:"key"`
 	AdvancedCustom *string `json:"advanced_custom"`
 	HeaderOverride *string `json:"header_override"`
+	Setting        *string `json:"setting"`
 	Proxy          *string `json:"proxy"`
+}
+
+func applyFetchModelsRequestOverrides(channel *model.Channel, req fetchModelsRequest) error {
+	if req.HeaderOverride != nil {
+		rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
+		if rawHeaderOverride != "" {
+			var headerOverride map[string]any
+			if err := common.UnmarshalJsonStr(rawHeaderOverride, &headerOverride); err != nil {
+				return fmt.Errorf("header_override must be a JSON object: %w", err)
+			}
+		}
+		channel.HeaderOverride = &rawHeaderOverride
+	}
+	if req.Setting != nil {
+		rawSetting := strings.TrimSpace(*req.Setting)
+		if rawSetting != "" {
+			var channelSetting dto.ChannelSettings
+			if err := common.UnmarshalJsonStr(rawSetting, &channelSetting); err != nil {
+				return fmt.Errorf("setting must be a JSON object: %w", err)
+			}
+		}
+		channel.Setting = &rawSetting
+	}
+	if req.Proxy != nil {
+		channelSettings := channel.GetSetting()
+		channelSettings.Proxy = strings.TrimSpace(*req.Proxy)
+		channel.SetSetting(channelSettings)
+	}
+	return nil
 }
 
 func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
@@ -1341,20 +1364,8 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	}
 	channel.SetOtherSettings(settings)
 
-	if req.HeaderOverride != nil {
-		rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
-		if rawHeaderOverride != "" {
-			var headerOverride map[string]any
-			if err := common.UnmarshalJsonStr(rawHeaderOverride, &headerOverride); err != nil {
-				return nil, fmt.Errorf("header_override must be a JSON object: %w", err)
-			}
-		}
-		channel.HeaderOverride = &rawHeaderOverride
-	}
-	if req.Proxy != nil {
-		channelSettings := channel.GetSetting()
-		channelSettings.Proxy = strings.TrimSpace(*req.Proxy)
-		channel.SetSetting(channelSettings)
+	if err := applyFetchModelsRequestOverrides(channel, req); err != nil {
+		return nil, err
 	}
 
 	if err := validateChannel(channel, false); err != nil {
@@ -1402,6 +1413,20 @@ func FetchModels(c *gin.Context) {
 			Type:    req.Type,
 			Key:     key,
 			BaseURL: &baseURL,
+		}
+		if err := applyFetchModelsRequestOverrides(channel, req); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		if err := channel.ValidateSettings(); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
 		}
 	}
 

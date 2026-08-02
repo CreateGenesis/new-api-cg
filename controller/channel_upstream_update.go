@@ -340,7 +340,14 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 
 	if channel.Type == constant.ChannelTypeOllama {
 		key := strings.TrimSpace(strings.Split(channel.Key, "\n")[0])
-		models, err := ollama.FetchOllamaModels(baseURL, key)
+		headers := http.Header{}
+		if key != "" {
+			headers.Set("Authorization", "Bearer "+key)
+		}
+		if err := applyFetchModelsHeaderOverrides(channel, key, headers); err != nil {
+			return nil, sanitizeFetchModelsError(err, key)
+		}
+		models, err := ollama.FetchOllamaModels(baseURL, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -356,7 +363,11 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		}
 		key = strings.TrimSpace(key)
 		channelSetting := channel.GetSetting()
-		models, err := gemini.FetchGeminiModels(baseURL, key, channelSetting.Proxy, channelSetting.ProxyFallbackDirect)
+		headers := http.Header{"X-Goog-Api-Key": []string{key}}
+		if err := applyFetchModelsHeaderOverrides(channel, key, headers); err != nil {
+			return nil, sanitizeFetchModelsError(err, key)
+		}
+		models, err := gemini.FetchGeminiModels(baseURL, headers, channelSetting.Proxy, channelSetting.ProxyFallbackDirect)
 		if err != nil {
 			return nil, err
 		}

@@ -207,7 +207,7 @@ describe('channel form input token routing settings', () => {
     )
 
     assert.equal(form.input_token_routing_enabled, true)
-    assert.equal(form.input_token_routing_glm_5_2_mode, true)
+    assert.equal(form.input_token_routing_estimation_mode, 'glm_5_2')
     assert.equal(form.input_token_routing_ranges, '50000-')
 
     const payload = transformFormDataToCreatePayload({

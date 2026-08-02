@@ -1,11 +1,13 @@
 package model
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -140,6 +142,7 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
+	common.OptionMap[operation_setting.HeaderRewritePresetsOptionKey] = operation_setting.HeaderRewritePresets2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
 	common.OptionMap["CacheRatio"] = ratio_setting.CacheRatio2JSONString()
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
@@ -206,6 +209,9 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
+	if err := validateOptionBeforeWrite(key, value); err != nil {
+		return err
+	}
 	// Save to database first
 	option := Option{
 		Key: key,
@@ -229,6 +235,11 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for key, value := range values {
+		if err := validateOptionBeforeWrite(key, value); err != nil {
+			return err
+		}
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
@@ -260,6 +271,11 @@ func updateOptionMap(key string, value string) (err error) {
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
 		return nil
+	}
+	if key == operation_setting.HeaderRewritePresetsOptionKey {
+		if err := operation_setting.UpdateHeaderRewritePresetsByJSONString(value); err != nil {
+			return err
+		}
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
@@ -583,6 +599,37 @@ func updateOptionMap(key string, value string) (err error) {
 		// No additional in-memory variable to update.
 	}
 	return err
+}
+
+func validateOptionBeforeWrite(key string, value string) error {
+	if key != operation_setting.HeaderRewritePresetsOptionKey {
+		return nil
+	}
+	presets, err := operation_setting.ParseHeaderRewritePresetsJSONString(value)
+	if err != nil {
+		return err
+	}
+
+	var channels []Channel
+	if err := DB.Select("id", "setting").Where("setting IS NOT NULL AND setting <> ?", "").Find(&channels).Error; err != nil {
+		return fmt.Errorf("check header rewrite preset references: %w", err)
+	}
+	for _, channel := range channels {
+		settings := dto.ChannelSettings{}
+		if channel.Setting == nil {
+			continue
+		}
+		if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
+			continue
+		}
+		if settings.HeaderRewrite == nil || settings.HeaderRewrite.PresetID == "" {
+			continue
+		}
+		if _, ok := presets[settings.HeaderRewrite.PresetID]; !ok {
+			return fmt.Errorf("header rewrite preset %q is referenced by channel #%d", settings.HeaderRewrite.PresetID, channel.Id)
+		}
+	}
+	return nil
 }
 
 // handleConfigUpdate 处理分层配置更新，返回是否已处理

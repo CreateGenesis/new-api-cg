@@ -454,7 +454,7 @@ func TestShouldRetryWithPolicyKeepsExistingSkipRules(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusTooManyRequests), policy, 0))
 }
 
-func TestInputTokenEstimatesForRoutingKeepsDefaultAndGLM52ModesSeparate(t *testing.T) {
+func TestInputTokenEstimatesForRoutingKeepsEstimationModesSeparate(t *testing.T) {
 	text := strings.Repeat("routingtoken ", 1000)
 	meta := &types.TokenCountMeta{
 		TokenType:   types.TokenTypeTokenizer,
@@ -472,10 +472,13 @@ func TestInputTokenEstimatesForRoutingKeepsDefaultAndGLM52ModesSeparate(t *testi
 	require.NotNil(t, estimates)
 	assert.GreaterOrEqual(t, estimates.Default, 3001)
 	assert.Equal(t, 8128, estimates.GLM52)
+	assert.Equal(t, 4197, estimates.KimiK3)
 	defaultChannel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"ranges":[{"min_tokens":3001,"max_tokens":5000}]}}`}
 	glmChannel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":8000,"max_tokens":9000}]}}`}
+	kimiChannel := &model.Channel{OtherSettings: `{"input_token_routing":{"enabled":true,"kimi_k3_mode":true,"ranges":[{"min_tokens":4000,"max_tokens":4500}]}}`}
 	assert.True(t, defaultChannel.MatchesInputTokenRouting(estimates))
 	assert.True(t, glmChannel.MatchesInputTokenRouting(estimates))
+	assert.True(t, kimiChannel.MatchesInputTokenRouting(estimates))
 }
 
 func TestGLM52InputTokensForRoutingUsesUnicodeCharactersAndExistingOverhead(t *testing.T) {
@@ -494,6 +497,24 @@ func TestGLM52InputTokensForRoutingUsesUnicodeCharactersAndExistingOverhead(t *t
 	// 20 tokens, and the image/audio estimates add 776.
 	assert.Equal(t, 801, glm52InputTokensForRouting(types.RelayFormatOpenAI, meta))
 	assert.Equal(t, 781, glm52InputTokensForRouting(types.RelayFormatClaude, meta))
+}
+
+func TestKimiK3InputTokensForRoutingUsesScriptRatiosAndSingleMediaOverhead(t *testing.T) {
+	meta := &types.TokenCountMeta{
+		CombineText:   strings.Repeat("a", 31) + "中文日",
+		MessagesCount: 2,
+		ToolsCount:    1,
+		NameCount:     1,
+		Files: []*types.FileMeta{
+			{FileType: types.FileTypeImage},
+			{FileType: types.FileTypeVideo},
+		},
+	}
+
+	// 31 Latin characters become 10 tokens and three CJK characters become
+	// two. OpenAI framing adds 20, while all media adds 5001 only once.
+	assert.Equal(t, 5033, kimiK3InputTokensForRouting(types.RelayFormatOpenAI, meta))
+	assert.Equal(t, 5013, kimiK3InputTokensForRouting(types.RelayFormatClaude, meta))
 }
 
 func TestUpgradeInputTokenRoutingAfterUpstream400(t *testing.T) {
@@ -533,6 +554,36 @@ func TestUpgradeInputTokenRoutingAfterUpstream400(t *testing.T) {
 	))
 	assert.Equal(t, 750001, param.InputTokenEstimates.GLM52)
 	assert.Equal(t, 1, retryState.Count(), "further upgrades consume the global inter-channel retry budget")
+}
+
+func TestUpgradeInputTokenRoutingAfterUpstream400UpdatesOnlyKimiK3Estimate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	channel := &model.Channel{
+		Id:            14,
+		OtherSettings: `{"input_token_routing":{"enabled":true,"kimi_k3_mode":true,"ranges":[{"min_tokens":200001,"max_tokens":500000}]}}`,
+	}
+	param := &service.ChannelSelectParam{InputTokenEstimates: &dto.InputTokenEstimates{
+		Default: 520000,
+		GLM52:   350000,
+		KimiK3:  300000,
+	}}
+
+	upgraded := upgradeInputTokenRoutingAfterUpstream400(
+		ctx,
+		upstreamStatusCodeError(http.StatusBadRequest),
+		channel,
+		param,
+		0,
+		relayRetryPolicy{},
+		&service.InterChannelRetryState{},
+	)
+
+	assert.True(t, upgraded)
+	assert.Equal(t, 520000, param.InputTokenEstimates.Default)
+	assert.Equal(t, 350000, param.InputTokenEstimates.GLM52)
+	assert.Equal(t, 500001, param.InputTokenEstimates.KimiK3)
 }
 
 func TestUpgradeInputTokenRoutingAfterUpstream400RejectsIneligibleErrorsAndChannels(t *testing.T) {

@@ -21,6 +21,8 @@ export type InputTokenRoutingRange = {
   max_tokens: number
 }
 
+export type InputTokenRoutingEstimationMode = 'default' | 'glm_5_2' | 'kimi_k3'
+
 export type ParseInputTokenRoutingRangesResult =
   | { ok: true; ranges: InputTokenRoutingRange[] }
   | { ok: false }

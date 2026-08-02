@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -597,6 +598,7 @@ func inputTokenEstimatesForRouting(relayFormat types.RelayFormat, relayMode int,
 	return &dto.InputTokenEstimates{
 		Default: tokens,
 		GLM52:   glm52InputTokensForRouting(relayFormat, meta),
+		KimiK3:  kimiK3InputTokensForRouting(relayFormat, meta),
 	}
 }
 
@@ -626,17 +628,38 @@ func glm52InputTokensForRouting(relayFormat types.RelayFormat, meta *types.Token
 	return textTokens + inputTokenRoutingOverhead(relayFormat, meta)
 }
 
+func kimiK3InputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
+	if meta == nil {
+		return 0
+	}
+
+	denseScriptCharacters := 0
+	otherCharacters := 0
+	for _, character := range meta.CombineText {
+		if unicode.In(character, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) ||
+			(character >= 0xFF00 && character <= 0xFFEF) {
+			denseScriptCharacters++
+		} else {
+			otherCharacters++
+		}
+	}
+	denseScriptTokens := denseScriptCharacters/3*2 + (denseScriptCharacters%3*2+2)/3
+	otherTokens := otherCharacters/31*10 + (otherCharacters%31*10+30)/31
+	tokens := denseScriptTokens + otherTokens + inputTokenRoutingFramingOverhead(relayFormat, meta)
+	for _, file := range meta.Files {
+		if file != nil {
+			tokens += 5001
+			break
+		}
+	}
+	return tokens
+}
+
 func inputTokenRoutingOverhead(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
 	if meta == nil {
 		return 0
 	}
-	tokens := 0
-	if relayFormat == types.RelayFormatOpenAI {
-		tokens += meta.ToolsCount * 8
-		tokens += meta.MessagesCount * 3
-		tokens += meta.NameCount * 3
-		tokens += 3
-	}
+	tokens := inputTokenRoutingFramingOverhead(relayFormat, meta)
 	for _, file := range meta.Files {
 		if file == nil {
 			continue
@@ -651,6 +674,20 @@ func inputTokenRoutingOverhead(relayFormat types.RelayFormat, meta *types.TokenC
 		case types.FileTypeFile:
 			tokens += 4096
 		}
+	}
+	return tokens
+}
+
+func inputTokenRoutingFramingOverhead(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
+	if meta == nil {
+		return 0
+	}
+	tokens := 0
+	if relayFormat == types.RelayFormatOpenAI {
+		tokens += meta.ToolsCount * 8
+		tokens += meta.MessagesCount * 3
+		tokens += meta.NameCount * 3
+		tokens += 3
 	}
 	return tokens
 }
@@ -686,7 +723,10 @@ func upgradeInputTokenRoutingAfterUpstream400(
 
 	upgradedEstimate := match.MaxTokens + 1
 	mode := "default"
-	if match.GLM52Mode {
+	if match.KimiK3Mode {
+		selectParam.InputTokenEstimates.KimiK3 = upgradedEstimate
+		mode = "kimi_k3"
+	} else if match.GLM52Mode {
 		selectParam.InputTokenEstimates.GLM52 = upgradedEstimate
 		mode = "glm_5_2"
 	} else {

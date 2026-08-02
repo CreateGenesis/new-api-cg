@@ -47,6 +47,20 @@ func newAwsInvokeContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), time.Duration(common.RelayTimeout)*time.Second)
 }
 
+type headerRewriteRoundTripper struct {
+	base  http.RoundTripper
+	input relaycommon.HeaderRewriteInput
+}
+
+func (transport *headerRewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	if err := relaycommon.ResolveAndApplyHeaderRewriteToRequest(cloned, transport.input); err != nil {
+		return nil, err
+	}
+	return transport.base.RoundTrip(cloned)
+}
+
 func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.Client, error) {
 	var (
 		httpClient *http.Client
@@ -60,6 +74,33 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 	} else {
 		httpClient = service.GetHttpClient()
 	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	var incomingHeaders http.Header
+	allowClientHeader := false
+	if c != nil && c.Request != nil {
+		incomingHeaders = c.Request.Header
+		allowClientHeader = true
+	}
+	clientCopy := *httpClient
+	clientCopy.Transport = &headerRewriteRoundTripper{
+		base: transport,
+		input: relaycommon.HeaderRewriteInput{
+			ChannelSetting:    info.ChannelSetting,
+			LegacyOverride:    relaycommon.GetEffectiveHeaderOverride(info),
+			IncomingHeaders:   incomingHeaders,
+			APIKey:            info.ApiKey,
+			RequestID:         info.RequestId,
+			AllowClientHeader: allowClientHeader,
+			IsChannelTest:     info.IsChannelTest,
+		},
+	}
+	httpClient = &clientCopy
 
 	awsSecret := strings.Split(info.ApiKey, "|")
 	var client *bedrockruntime.Client
@@ -107,12 +148,8 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 	// init empty request.header
 	requestHeader := http.Header{}
 	a.SetupRequestHeader(c, &requestHeader, info)
-	headerOverride, err := channel.ResolveHeaderOverride(info, c)
-	if err != nil {
+	if err := channel.ApplyHeaderRewrite(requestHeader, info, c); err != nil {
 		return nil, err
-	}
-	for key, value := range headerOverride {
-		requestHeader.Set(key, value)
 	}
 
 	if isNovaModel(awsModelId) {
