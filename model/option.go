@@ -144,6 +144,8 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
+	common.OptionMap["UserConcurrentRequestLimit"] = strconv.Itoa(setting.GetUserConcurrentRequestLimit())
+	common.OptionMap["UserTokensPerMinuteLimit"] = strconv.Itoa(setting.GetUserTokensPerMinuteLimit())
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap[operation_setting.HeaderRewritePresetsOptionKey] = operation_setting.HeaderRewritePresets2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
@@ -552,6 +554,12 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.ModelRequestRateLimitSuccessCount, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
+	case "UserConcurrentRequestLimit":
+		limit, _ := strconv.Atoi(value)
+		setting.SetUserConcurrentRequestLimit(limit)
+	case "UserTokensPerMinuteLimit":
+		limit, _ := strconv.Atoi(value)
+		setting.SetUserTokensPerMinuteLimit(limit)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
 	case "DataExportInterval":
@@ -613,6 +621,13 @@ func updateOptionMap(key string, value string) (err error) {
 }
 
 func validateOptionBeforeWrite(key string, value string) error {
+	if key == "UserConcurrentRequestLimit" || key == "UserTokensPerMinuteLimit" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 0 || limit > setting.MaxUserRequestLimit {
+			return fmt.Errorf("%s must be an integer between 0 and %d", key, setting.MaxUserRequestLimit)
+		}
+		return nil
+	}
 	if key == "RelayDebugLogTextLimitMB" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 || limit > 128 {

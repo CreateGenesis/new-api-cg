@@ -72,6 +72,8 @@ const createRateLimitSchema = (t: (key: string) => string) =>
     ModelRequestRateLimitDurationMinutes: z.number().min(0),
     ModelRequestRateLimitCount: z.number().min(0).max(100000000),
     ModelRequestRateLimitSuccessCount: z.number().min(1).max(100000000),
+    UserConcurrentRequestLimit: z.number().min(0).max(100000000),
+    UserTokensPerMinuteLimit: z.number().min(0).max(100000000),
     ModelRequestRateLimitGroup: z
       .string()
       .optional()
@@ -132,7 +134,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                   <FormLabel>{t('Enable rate limiting')}</FormLabel>
                   <FormDescription>
                     {t(
-                      'This controls model request rate limiting. Web/API route throttling is configured by environment variables and may still return 429.'
+                      'This switch controls only period request-count limits. Per-user concurrency and TPM limits below are independent. Web/API route throttling is configured by environment variables and may still return 429.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>
@@ -161,7 +163,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                         step={1}
                         {...field}
                         onChange={(e) =>
-                          field.onChange(parseInt(e.target.value) || 0)
+                          field.onChange(Number.parseInt(e.target.value) || 0)
                         }
                       />
                       <span className='text-muted-foreground text-sm'>
@@ -192,7 +194,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                         step={1}
                         {...field}
                         onChange={(e) =>
-                          field.onChange(parseInt(e.target.value) || 0)
+                          field.onChange(Number.parseInt(e.target.value) || 0)
                         }
                       />
                       <span className='text-muted-foreground text-sm'>
@@ -223,7 +225,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                         step={1}
                         {...field}
                         onChange={(e) =>
-                          field.onChange(parseInt(e.target.value) || 1)
+                          field.onChange(Number.parseInt(e.target.value) || 1)
                         }
                       />
                       <span className='text-muted-foreground text-sm'>
@@ -233,6 +235,64 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                   </FormControl>
                   <FormDescription>
                     {t('Only successful requests')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className='grid gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='UserConcurrentRequestLimit'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Per-user concurrent requests')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={100000000}
+                      step={1}
+                      {...field}
+                      onChange={(event) =>
+                        field.onChange(Number.parseInt(event.target.value) || 0)
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Maximum active model relay requests per user, 0 = unlimited'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='UserTokensPerMinuteLimit'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Per-user TPM')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={100000000}
+                      step={1}
+                      {...field}
+                      onChange={(event) =>
+                        field.onChange(Number.parseInt(event.target.value) || 0)
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Maximum settled tokens in the last 60 seconds per user, 0 = unlimited'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

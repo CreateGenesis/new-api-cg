@@ -40,6 +40,20 @@ func TestStreamInterruptionBillingSettingsJSONCompatibility(t *testing.T) {
 	}
 }
 
+func TestChannelOtherSettingsCacheUsageValidationSplitJSONCompatibility(t *testing.T) {
+	var disabled ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(`{}`, &disabled))
+	assert.False(t, disabled.CacheUsageValidationSplit)
+
+	var enabled ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(`{"cache_usage_validation_split":true}`, &enabled))
+	assert.True(t, enabled.CacheUsageValidationSplit)
+
+	encoded, err := common.Marshal(enabled)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"cache_usage_validation_split":true}`, string(encoded))
+}
+
 func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

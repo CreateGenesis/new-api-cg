@@ -65,6 +65,8 @@ const (
 	ErrorCodeReadRequestBodyFailed ErrorCode = "read_request_body_failed"
 	ErrorCodeConvertRequestFailed  ErrorCode = "convert_request_failed"
 	ErrorCodeAccessDenied          ErrorCode = "access_denied"
+	ErrorCodeUserConcurrencyLimit  ErrorCode = "user_concurrency_limit_exceeded"
+	ErrorCodeUserTPMLimit          ErrorCode = "user_tpm_limit_exceeded"
 
 	// request error
 	ErrorCodeBadRequestBody ErrorCode = "bad_request_body"

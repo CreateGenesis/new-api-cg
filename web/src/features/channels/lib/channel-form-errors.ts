@@ -53,6 +53,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'claude_beta_query',
   'disable_task_polling_sleep',
   'deepseek_v4_request_sanitization_enabled',
+  'cache_usage_validation_split',
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',

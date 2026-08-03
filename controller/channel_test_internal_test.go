@@ -171,6 +171,52 @@ func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
 	require.Equal(t, "stream", result.MatchedTier)
 }
 
+func TestSettleTestQuotaSeparatesUpstreamCacheUsage(t *testing.T) {
+	quota, result := settleTestQuota(&relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+	}, types.PriceData{
+		ModelRatio:         1,
+		CompletionRatio:    2,
+		CacheRatio:         0.1,
+		CacheCreationRatio: 1.25,
+	}, &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+		UsageSemantic:    service.UsageSemanticOpenAI,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         30,
+			CachedCreationTokens: 10,
+		},
+	})
+
+	// 60 uncached + 30*0.1 cache read + 10*1.25 cache creation + 20*2 output.
+	require.Equal(t, 116, quota)
+	require.Nil(t, result)
+}
+
+func TestSettleTestQuotaKeepsLegacyBillingWhenCacheValidationSplitDisabled(t *testing.T) {
+	quota, result := settleTestQuota(&relaycommon.RelayInfo{}, types.PriceData{
+		ModelRatio:         1,
+		CompletionRatio:    2,
+		CacheRatio:         0.1,
+		CacheCreationRatio: 1.25,
+	}, &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         30,
+			CachedCreationTokens: 10,
+		},
+	})
+
+	require.Equal(t, 140, quota)
+	require.Nil(t, result)
+}
+
 func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -180,12 +226,17 @@ func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 			BillingMode: "tiered_expr",
 			ExprString:  `tier("base", p * 2)`,
 		},
-		ChannelMeta: &relaycommon.ChannelMeta{},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
 	}
 	priceData := types.PriceData{
 		GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
 	}
 	usage := &dto.Usage{
+		PromptTokens:  100,
+		TotalTokens:   100,
+		UsageSemantic: service.UsageSemanticOpenAI,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedTokens: 12,
 		},
@@ -198,6 +249,13 @@ func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 	require.Equal(t, "tiered_expr", other["billing_mode"])
 	require.Equal(t, "base", other["matched_tier"])
 	require.NotEmpty(t, other["expr_b64"])
+	require.Equal(t, 100, other["input_tokens_total"])
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	audit, ok := adminInfo["usage_normalization"].(service.UsageNormalizationAudit)
+	require.True(t, ok)
+	require.Equal(t, service.UsageAccountingModeIncluded, audit.Mode)
+	require.Equal(t, 88, audit.NormalizedUncachedInputTokens)
 }
 
 func TestResolveChannelTestUserIDUsesRequestUser(t *testing.T) {

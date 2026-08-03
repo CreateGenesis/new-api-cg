@@ -208,6 +208,24 @@ export const USAGE_BILLING_PATH = {
 export type UsageBillingPath =
   (typeof USAGE_BILLING_PATH)[keyof typeof USAGE_BILLING_PATH]
 
+export interface UsageNormalizationAudit {
+  mode: 'included' | 'separate'
+  source:
+    | 'billing_usage'
+    | 'usage_source'
+    | 'usage_semantic'
+    | 'total_tokens'
+    | 'fallback'
+  status: 'matched' | 'not_checked' | 'mismatch'
+  reported_input_tokens: number
+  reported_output_tokens: number
+  reported_total_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  normalized_uncached_input_tokens: number
+  normalized_total_input_tokens: number
+}
+
 export interface LogOtherData {
   admin_info?: {
     is_multi_key?: boolean
@@ -239,6 +257,7 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
+    usage_normalization?: UsageNormalizationAudit
     relay_retry?: RelayRetrySummary
   }
   // Language-independent operation descriptor (audit/login logs).
@@ -274,6 +293,8 @@ export interface LogOtherData {
   cache_creation_tokens?: number
   cache_creation_tokens_5m?: number
   cache_creation_tokens_1h?: number
+  cache_write_tokens?: number
+  input_tokens_total?: number
   claude?: boolean
   model_ratio?: number
   completion_ratio?: number

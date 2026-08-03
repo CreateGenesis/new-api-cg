@@ -49,3 +49,13 @@ export function hasAnyCacheTokens(
 ): boolean {
   return getCacheBillingUsage(other).hasAny
 }
+
+export function shouldShowCacheBillingPrices(
+  other: LogOtherData | null | undefined
+): boolean {
+  return (
+    other?.billing_mode !== 'tiered_expr' &&
+    getCacheBillingUsage(other).hasAny &&
+    (other?.claude === true || other?.admin_info?.usage_normalization != null)
+  )
+}

@@ -210,6 +210,10 @@ type SimulatedModelCacheInfo struct {
 	BypassReason          string  `json:"bypass_reason,omitempty"`
 }
 
+func (info *RelayInfo) CacheUsageValidationSplitEnabled() bool {
+	return info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.CacheUsageValidationSplit
+}
+
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)

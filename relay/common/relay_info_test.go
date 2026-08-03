@@ -3,6 +3,7 @@ package common
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +38,17 @@ func TestRelayInfoGetFinalRequestRelayFormatFallsBackToRelayFormat(t *testing.T)
 func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
+}
+
+func TestRelayInfoCacheUsageValidationSplitEnabledIsChannelScoped(t *testing.T) {
+	var nilInfo *RelayInfo
+	require.False(t, nilInfo.CacheUsageValidationSplitEnabled())
+	require.False(t, (&RelayInfo{}).CacheUsageValidationSplitEnabled())
+	require.True(t, (&RelayInfo{
+		ChannelMeta: &ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+	}).CacheUsageValidationSplitEnabled())
 }
 
 func TestRelayInfoConsumesStreamProtocolEndRequirementPerHandler(t *testing.T) {

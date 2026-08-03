@@ -14,7 +14,7 @@ The expression is the billing contract between the administrator and the system.
 
 3. **Prices are real prices** — Expression coefficients are actual $/1M tokens prices as published by providers. No ratio conversion, no `/2` convention. `p * 2.5` means $2.50 per 1M prompt tokens.
 
-4. **Upstream-agnostic** — The expression doesn't need to know whether the upstream API is OpenAI-format (prompt_tokens includes cache) or Claude-format (input_tokens excludes cache). The system normalizes token counts before evaluation based on the upstream response format.
+4. **Upstream-agnostic when enabled** — A channel can enable `cache_usage_validation_split`（缓存校验拆分）to normalize whether upstream input includes cache tokens before evaluation. Channels that leave it disabled retain the legacy protocol-semantic behavior.
 
 5. **Version-aware** — Expressions carry a version tag (`v1:`, default when omitted). The version controls the compile environment, token normalization, and quota conversion formula, enabling future evolution without breaking existing expressions.
 
@@ -69,7 +69,7 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `p * 3 + c * 15` | 500 | 没用 `ao`，音频输出包含在 `c` 里按 $15 计费 |
 | `p * 3 + c * 15 + ao * 50` | 400 | 用了 `ao`，音频 100 从 `c` 中扣除按 $50 计费 |
 
-> **注意：** 这个自动排除仅针对 GPT/OpenAI 格式的 API（prompt_tokens 包含所有子类别）。Claude 格式的 API（input_tokens 本身就只包含纯文本）不做任何减法。系统根据上游返回格式自动判断，表达式作者无需关心。
+> **注意：** 渠道开启“缓存校验拆分”后，自动排除基于统一后的总输入执行，不再依赖最终请求格式。未开启的渠道继续使用原有的协议语义判断，以保持历史计费行为。
 
 ### Built-in Functions
 
@@ -167,10 +167,11 @@ When a request arrives and the model uses `tiered_expr` billing:
 
 After the upstream response returns with actual token usage:
 
-1. `BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars)`:
-   - Reads actual token counts from `dto.Usage`
-   - For GPT-format APIs (prompt_tokens includes everything): subtracts sub-categories from P/C **only when** the expression uses their variables (detected via AST introspection of the compiled expression)
-   - For Claude-format APIs (input_tokens is text-only): no adjustment needed
+1. `BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars, cacheUsageValidationSplit)`:
+   - When the channel switch is enabled, normalizes actual upstream usage into `uncached input + cache read + cache creation + output`
+   - In that mode, starts `P` and `len` from the canonical total input for every protocol
+   - When disabled, preserves the legacy Claude/OpenAI semantic path
+   - Subtracts sub-categories from P/C **only when** the expression uses their variables (detected via AST introspection of the compiled expression)
 
 2. `TryTieredSettle(relayInfo, params)`:
    - Uses the frozen `BillingSnapshot` from pre-consume
@@ -192,11 +193,21 @@ Frontend: Detects `billing_mode === "tiered_expr"`, decodes `expr_b64`, parses t
 
 ### Token Normalization via AST Introspection
 
-Different upstream APIs report `prompt_tokens` differently:
-- **OpenAI/GPT**: `prompt_tokens` = total (text + cache + image + audio)
-- **Claude**: `input_tokens` = text only (cache reported separately)
+Different upstream APIs report input tokens differently:
+- **OpenAI/GPT and Gemini**: reported input includes cache reads
+- **Claude**: reported input excludes cache reads and cache creation
 
-The system normalizes `p` to mean "tokens not separately priced" by subtracting sub-categories **only when the expression references them**. This is determined by walking the compiled AST to find `IdentifierNode` references — zero runtime cost after first compilation (cached).
+When `cache_usage_validation_split` is enabled for the selected channel, the
+gateway resolves that contract from preserved `BillingUsage` metadata,
+recognized usage source/semantic markers, and the upstream total-token equation.
+When the total-token equation uniquely identifies one contract, it takes
+precedence over protocol metadata. Metadata is used when the total is missing or
+cannot distinguish the contracts. If metadata is also unavailable, the gateway
+falls back to the included-cache contract. Missing or inconsistent evidence is
+recorded in an administrator-visible audit marker. Disabled channels do not run
+this validation and keep the legacy billing and logging path.
+
+The normalized `p` starts at canonical total input and means "tokens not separately priced" after subtracting sub-categories **only when the expression references them**. This is determined by walking the compiled AST to find `IdentifierNode` references — zero runtime cost after first compilation (cached).
 
 Example: `p * 2.5 + c * 15 + cr * 0.25`
 - Expression uses `cr` → cache read tokens subtracted from `p`

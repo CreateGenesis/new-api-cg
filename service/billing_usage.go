@@ -1,9 +1,14 @@
 package service
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -70,6 +75,47 @@ func appendUsageBillingPathForLog(other map[string]interface{}, isLocalCountToke
 	adminInfo["usage_billing_path"] = usageBillingPathForLog(isLocalCountTokens, usage)
 }
 
+func AttachUsageNormalizationAudit(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}, normalization BillingUsageNormalization) {
+	if other == nil || !relayInfo.CacheUsageValidationSplitEnabled() {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = make(map[string]interface{})
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["usage_normalization"] = normalization.Audit
+
+	if normalization.Audit.Source != UsageNormalizationSourceFallback &&
+		normalization.Audit.Status != UsageNormalizationStatusMismatch {
+		return
+	}
+	requestID := ""
+	channelID := 0
+	modelName := ""
+	if relayInfo != nil {
+		requestID = relayInfo.RequestId
+		channelID = relayInfo.ChannelId
+		modelName = relayInfo.OriginModelName
+	}
+	logger.LogWarn(ctx, fmt.Sprintf(
+		"upstream usage normalization fallback or mismatch: request_id=%s channel_id=%d model=%s mode=%s source=%s status=%s input=%d output=%d total=%d cache_read=%d cache_creation=%d normalized_input=%d normalized_total_input=%d",
+		requestID,
+		channelID,
+		modelName,
+		normalization.Audit.Mode,
+		normalization.Audit.Source,
+		normalization.Audit.Status,
+		normalization.Audit.ReportedInputTokens,
+		normalization.Audit.ReportedOutputTokens,
+		normalization.Audit.ReportedTotalTokens,
+		normalization.Audit.CacheReadInputTokens,
+		normalization.Audit.CacheCreationInputTokens,
+		normalization.Audit.NormalizedUncachedInputTokens,
+		normalization.Audit.NormalizedTotalInputTokens,
+	))
+}
+
 func usageFromBillingUsage(usage *dto.Usage) (*dto.Usage, bool) {
 	if usage == nil || usage.BillingUsage == nil {
 		return nil, false
@@ -115,7 +161,7 @@ func usageFromOpenAIBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 		usage.OutputTokens = usage.CompletionTokens
 	}
 	if usage.TotalTokens == 0 {
-		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		usage.TotalTokens = saturatingTokenAdd(usage.PromptTokens, usage.CompletionTokens)
 	}
 	usage.UsageSemantic = dto.BillingUsageSemanticOpenAI
 	usage.UsageSource = billingUsage.Source
@@ -158,10 +204,10 @@ func usageFromClaudeBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 
 func usageFromGeminiBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 	metadata := *billingUsage.GeminiUsageMetadata
-	promptTokens := metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount
+	promptTokens := saturatingTokenAdd(metadata.PromptTokenCount, metadata.ToolUsePromptTokenCount)
 	usage := &dto.Usage{
 		PromptTokens:     promptTokens,
-		CompletionTokens: metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount,
+		CompletionTokens: saturatingTokenAdd(metadata.CandidatesTokenCount, metadata.ThoughtsTokenCount),
 		TotalTokens:      metadata.TotalTokenCount,
 		UsageSemantic:    dto.BillingUsageSemanticGemini,
 		UsageSource:      dto.BillingUsageSourceGeminiChat,
@@ -179,16 +225,16 @@ func usageFromGeminiBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 	for _, detail := range metadata.CandidatesTokensDetails {
 		switch detail.Modality {
 		case "IMAGE":
-			usage.CompletionTokenDetails.ImageTokens += detail.TokenCount
+			usage.CompletionTokenDetails.ImageTokens = saturatingTokenAdd(usage.CompletionTokenDetails.ImageTokens, detail.TokenCount)
 		case "AUDIO":
-			usage.CompletionTokenDetails.AudioTokens += detail.TokenCount
+			usage.CompletionTokenDetails.AudioTokens = saturatingTokenAdd(usage.CompletionTokenDetails.AudioTokens, detail.TokenCount)
 		case "TEXT":
-			usage.CompletionTokenDetails.TextTokens += detail.TokenCount
+			usage.CompletionTokenDetails.TextTokens = saturatingTokenAdd(usage.CompletionTokenDetails.TextTokens, detail.TokenCount)
 		}
 	}
 
 	if usage.TotalTokens == 0 {
-		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		usage.TotalTokens = saturatingTokenAdd(usage.PromptTokens, usage.CompletionTokens)
 	} else if usage.CompletionTokens <= 0 {
 		usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
 	}
@@ -201,10 +247,10 @@ func usageFromGeminiBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 func addGeminiInputTokenDetail(details *dto.InputTokenDetails, detail dto.GeminiPromptTokensDetails) {
 	switch detail.Modality {
 	case "AUDIO":
-		details.AudioTokens += detail.TokenCount
+		details.AudioTokens = saturatingTokenAdd(details.AudioTokens, detail.TokenCount)
 	case "IMAGE":
-		details.ImageTokens += detail.TokenCount
+		details.ImageTokens = saturatingTokenAdd(details.ImageTokens, detail.TokenCount)
 	case "TEXT":
-		details.TextTokens += detail.TokenCount
+		details.TextTokens = saturatingTokenAdd(details.TextTokens, detail.TokenCount)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -33,6 +32,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 type testResult struct {
@@ -495,7 +495,16 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: types.NewOpenAIError(bodyErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
 		}
 	}
-	info.SetEstimatePromptTokens(usage.PromptTokens)
+	promptTokens := usage.PromptTokens
+	completionTokens := usage.CompletionTokens
+	if info.CacheUsageValidationSplitEnabled() {
+		normalizedUsage := service.NormalizeUsageForBilling(usage)
+		promptTokens = normalizedUsage.InputTokens.UncachedInputTokens
+		completionTokens = normalizedUsage.OutputTokens
+		info.SetEstimatePromptTokens(normalizedUsage.InputTokens.TotalInputTokens)
+	} else {
+		info.SetEstimatePromptTokens(usage.PromptTokens)
+	}
 
 	quota, tieredResult := settleTestQuota(info, priceData, usage)
 	tok := time.Now()
@@ -504,8 +513,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	other := buildTestLogOther(c, info, priceData, usage, tieredResult)
 	model.RecordConsumeLog(c, testUserID, model.RecordConsumeLogParams{
 		ChannelId:        channel.Id,
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
 		ModelName:        info.OriginModelName,
 		TokenName:        "模型测试",
 		Quota:            quota,
@@ -538,29 +547,85 @@ func attachTestBillingRequestInput(info *relaycommon.RelayInfo, request dto.Requ
 
 func settleTestQuota(info *relaycommon.RelayInfo, priceData types.PriceData, usage *dto.Usage) (int, *billingexpr.TieredResult) {
 	if usage != nil && info != nil && info.TieredBillingSnapshot != nil {
-		isClaudeUsageSemantic := usage.UsageSemantic == "anthropic" || info.GetFinalRequestRelayFormat() == types.RelayFormatClaude
+		isClaudeUsageSemantic := usage.UsageSemantic == service.UsageSemanticAnthropic || info.GetFinalRequestRelayFormat() == types.RelayFormatClaude
 		usedVars := billingexpr.UsedVars(info.TieredBillingSnapshot.ExprString)
-		if ok, quota, result := service.TryTieredSettle(info, service.BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars)); ok {
+		if ok, quota, result := service.TryTieredSettle(info, service.BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars, info.CacheUsageValidationSplitEnabled())); ok {
 			return quota, result
 		}
 	}
 
 	quota := 0
 	if !priceData.UsePrice {
-		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
-		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
+		if !info.CacheUsageValidationSplitEnabled() {
+			completionQuota := decimal.NewFromInt(int64(usage.CompletionTokens)).
+				Mul(decimal.NewFromFloat(priceData.CompletionRatio)).
+				Round(0)
+			quotaDecimal := decimal.NewFromInt(int64(usage.PromptTokens)).
+				Add(completionQuota).
+				Mul(decimal.NewFromFloat(priceData.ModelRatio)).
+				Round(0)
+			quota, _ = common.QuotaFromDecimalChecked(quotaDecimal)
+			if priceData.ModelRatio != 0 && quota <= 0 {
+				quota = 1
+			}
+			return quota, nil
+		}
+
+		normalized := service.NormalizeUsageForBilling(usage)
+		input := normalized.InputTokens
+		cacheCreation5m := input.CacheCreation5mInputTokens
+		cacheCreation1h := input.CacheCreation1hInputTokens
+		remainingCacheCreation := input.CacheCreationInputTokens - cacheCreation5m - cacheCreation1h
+		if remainingCacheCreation < 0 {
+			remainingCacheCreation = 0
+		}
+		quotaDecimal := decimal.NewFromInt(int64(input.UncachedInputTokens)).
+			Add(decimal.NewFromInt(int64(input.CacheReadInputTokens)).Mul(decimal.NewFromFloat(priceData.CacheRatio))).
+			Add(decimal.NewFromInt(int64(remainingCacheCreation)).Mul(decimal.NewFromFloat(priceData.CacheCreationRatio))).
+			Add(decimal.NewFromInt(int64(cacheCreation5m)).Mul(decimal.NewFromFloat(priceData.CacheCreation5mRatio))).
+			Add(decimal.NewFromInt(int64(cacheCreation1h)).Mul(decimal.NewFromFloat(priceData.CacheCreation1hRatio))).
+			Add(decimal.NewFromInt(int64(normalized.OutputTokens)).Mul(decimal.NewFromFloat(priceData.CompletionRatio))).
+			Mul(decimal.NewFromFloat(priceData.ModelRatio))
+		quota, _ = common.QuotaFromDecimalChecked(quotaDecimal)
 		if priceData.ModelRatio != 0 && quota <= 0 {
 			quota = 1
 		}
 		return quota, nil
 	}
 
-	return int(priceData.ModelPrice * common.QuotaPerUnit), nil
+	quota, _ = common.QuotaFromFloatChecked(priceData.ModelPrice * common.QuotaPerUnit)
+	return quota, nil
 }
 
 func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData types.PriceData, usage *dto.Usage, tieredResult *billingexpr.TieredResult) map[string]interface{} {
+	if !info.CacheUsageValidationSplitEnabled() {
+		other := service.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
+			usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
+		if tieredResult != nil {
+			service.InjectTieredBillingInfo(other, info, tieredResult)
+		}
+		return other
+	}
+
+	normalized := service.NormalizeUsageForBilling(usage)
+	input := normalized.InputTokens
 	other := service.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
-		usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
+		input.CacheReadInputTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
+	if input.CacheCreationInputTokens > 0 {
+		other["cache_creation_tokens"] = input.CacheCreationInputTokens
+		other["cache_creation_ratio"] = priceData.CacheCreationRatio
+		other["cache_write_tokens"] = input.CacheCreationInputTokens
+	}
+	if input.CacheCreation5mInputTokens > 0 {
+		other["cache_creation_tokens_5m"] = input.CacheCreation5mInputTokens
+		other["cache_creation_ratio_5m"] = priceData.CacheCreation5mRatio
+	}
+	if input.CacheCreation1hInputTokens > 0 {
+		other["cache_creation_tokens_1h"] = input.CacheCreation1hInputTokens
+		other["cache_creation_ratio_1h"] = priceData.CacheCreation1hRatio
+	}
+	other["input_tokens_total"] = input.TotalInputTokens
+	service.AttachUsageNormalizationAudit(c, info, other, normalized)
 	if tieredResult != nil {
 		service.InjectTieredBillingInfo(other, info, tieredResult)
 	}

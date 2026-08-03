@@ -14,43 +14,51 @@ type TieredResultWrapper = billingexpr.TieredResult
 // expression". Sub-categories (cache, image, audio) are only subtracted
 // when the expression references them via their own variable.
 //
-// GPT-format APIs report prompt_tokens / completion_tokens as totals that
-// include all sub-categories (cache, image, audio). Claude-format APIs
-// report them as text-only. This function normalizes to text-only when
-// sub-categories are separately priced.
-func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
+// When cacheUsageValidationSplit is enabled, P starts from canonical total
+// input for every upstream protocol. Otherwise this preserves the legacy
+// protocol-semantic behavior.
+func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool, cacheUsageValidationSplit bool) billingexpr.TokenParams {
 	semantic := UsageSemanticOpenAI
-	if usage != nil {
-		if usage.UsageSemantic == UsageSemanticAnthropic ||
-			usage.UsageSemantic == "" && isClaudeUsageSemantic {
-			semantic = UsageSemanticAnthropic
-		}
+	if usage != nil && (usage.UsageSemantic == UsageSemanticAnthropic ||
+		usage.UsageSemantic == "" && isClaudeUsageSemantic) {
+		semantic = UsageSemanticAnthropic
 	}
-	normalized := NormalizeUsageForSemantic(usage, semantic)
-	input := NormalizeInputTokens(&normalized)
+
+	var normalizedUsage dto.Usage
+	var input NormalizedInputTokens
+	var p, c, img, ai, imgO, ao float64
+	if cacheUsageValidationSplit {
+		normalized := NormalizeUsageForBilling(usage)
+		input = normalized.InputTokens
+		p = float64(input.TotalInputTokens)
+		c = float64(normalized.OutputTokens)
+		img = float64(normalized.InputImageTokens)
+		ai = float64(normalized.InputAudioTokens)
+		imgO = float64(normalized.OutputImageTokens)
+		ao = float64(normalized.OutputAudioTokens)
+	} else {
+		normalizedUsage = NormalizeUsageForSemantic(usage, semantic)
+		input = NormalizeInputTokens(&normalizedUsage)
+		p = float64(normalizedUsage.PromptTokens)
+		c = float64(normalizedUsage.CompletionTokens)
+		img = float64(normalizedUsage.PromptTokensDetails.ImageTokens)
+		ai = float64(normalizedUsage.PromptTokensDetails.AudioTokens)
+		imgO = float64(normalizedUsage.CompletionTokenDetails.ImageTokens)
+		ao = float64(normalizedUsage.CompletionTokenDetails.AudioTokens)
+	}
 	cacheCreation5m, cacheCreation1h := NormalizeCacheCreationSplit(
 		input.CacheCreationInputTokens,
 		input.CacheCreation5mInputTokens,
 		input.CacheCreation1hInputTokens,
 	)
 
-	p := float64(normalized.PromptTokens)
-	c := float64(normalized.CompletionTokens)
 	cr := float64(input.CacheReadInputTokens)
 	cc5m := float64(cacheCreation5m)
 	cc1h := float64(cacheCreation1h)
 
-	img := float64(normalized.PromptTokensDetails.ImageTokens)
-	ai := float64(normalized.PromptTokensDetails.AudioTokens)
-	imgO := float64(normalized.CompletionTokenDetails.ImageTokens)
-	ao := float64(normalized.CompletionTokenDetails.AudioTokens)
-
-	// len = total input context length for tier condition evaluation.
-	// Non-Claude: prompt_tokens already includes everything.
-	// Claude: input_tokens is text-only, so add cache read + cache creation.
 	inputLen := float64(input.TotalInputTokens)
 
-	if semantic != UsageSemanticAnthropic {
+	if cacheUsageValidationSplit || semantic != UsageSemanticAnthropic {
 		if usedVars["cr"] {
 			p -= cr
 		}

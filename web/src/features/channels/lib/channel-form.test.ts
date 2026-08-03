@@ -348,6 +348,47 @@ describe('channel form simulated model cache settings', () => {
   })
 })
 
+describe('channel form cache validation split setting', () => {
+  test('loads and saves the enabled channel setting', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel('{"cache_usage_validation_split":true}')
+    )
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(form.cache_usage_validation_split, true)
+    assert.equal(settings.cache_usage_validation_split, true)
+  })
+
+  test('keeps the setting disabled and removes stale JSON by default', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      settings: '{"cache_usage_validation_split":true}',
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(
+      CHANNEL_FORM_DEFAULT_VALUES.cache_usage_validation_split,
+      false
+    )
+    assert.equal(settings.cache_usage_validation_split, undefined)
+  })
+})
+
 describe('channel form multi-key affinity settings', () => {
   test('saves affinity strategy and ttl for multi-key create payload', () => {
     const payload = transformFormDataToCreatePayload({

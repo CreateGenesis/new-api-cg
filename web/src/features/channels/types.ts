@@ -181,6 +181,7 @@ export interface ChannelOtherSettings {
   claude_beta_query?: boolean
   disable_task_polling_sleep?: boolean
   deepseek_v4_request_sanitization?: boolean
+  cache_usage_validation_split?: boolean
   simulated_model_cache?: {
     enabled?: boolean
     ttl_seconds?: number

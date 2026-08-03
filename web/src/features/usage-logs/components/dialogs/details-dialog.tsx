@@ -68,7 +68,10 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import type { UsageLog } from '../../data/schema'
-import { getCacheBillingUsage } from '../../lib/cache-billing'
+import {
+  getCacheBillingUsage,
+  shouldShowCacheBillingPrices,
+} from '../../lib/cache-billing'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -81,11 +84,21 @@ import {
   renderAuditContent,
 } from '../../lib/format'
 import {
+  getUsageAccountingModeLabelKey,
+  getUsageNormalizationSourceLabelKey,
+  getUsageNormalizationStatusLabelKey,
+  isUsageNormalizationWarning,
+} from '../../lib/usage-normalization'
+import {
   getLogTypeConfig,
   isPerCallBilling,
   isTimingLogType,
 } from '../../lib/utils'
-import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import {
+  USAGE_BILLING_PATH,
+  type LogOtherData,
+  type UsageNormalizationAudit,
+} from '../../types'
 import { RelayRetrySummarySection } from './relay-retry-summary'
 
 const RelayDebugViewer = lazy(() =>
@@ -226,6 +239,73 @@ function quotaSaturationKindLabel(
   return t('Invalid (NaN)')
 }
 
+function UsageNormalizationDetails(props: { audit: UsageNormalizationAudit }) {
+  const { t } = useTranslation()
+  const warning = isUsageNormalizationWarning(props.audit)
+
+  return (
+    <DetailSection
+      icon={
+        warning ? (
+          <AlertTriangle className='size-3.5' aria-hidden='true' />
+        ) : (
+          <Info className='size-3.5' aria-hidden='true' />
+        )
+      }
+      label={t('Cache Validation Split')}
+      variant={warning ? 'danger' : 'default'}
+    >
+      <DetailRow
+        label={t('Mode')}
+        value={t(getUsageAccountingModeLabelKey(props.audit.mode))}
+      />
+      <DetailRow
+        label={t('Source')}
+        value={t(getUsageNormalizationSourceLabelKey(props.audit.source))}
+      />
+      <DetailRow
+        label={t('Status')}
+        value={t(getUsageNormalizationStatusLabelKey(props.audit.status))}
+      />
+      <DetailRow
+        label={t('Reported Input')}
+        value={props.audit.reported_input_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Reported Output')}
+        value={props.audit.reported_output_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Reported Total')}
+        value={props.audit.reported_total_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Cache Read')}
+        value={props.audit.cache_read_input_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Cache Creation')}
+        value={props.audit.cache_creation_input_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Normalized Input')}
+        value={props.audit.normalized_uncached_input_tokens.toLocaleString()}
+        mono
+      />
+      <DetailRow
+        label={t('Total Input')}
+        value={props.audit.normalized_total_input_tokens.toLocaleString()}
+        mono
+      />
+    </DetailSection>
+  )
+}
+
 function BillingBreakdown(props: {
   log: UsageLog
   other: LogOtherData
@@ -234,7 +314,6 @@ function BillingBreakdown(props: {
   const { t } = useTranslation()
   const { log, other, isAdmin } = props
   const isPerCall = isPerCallBilling(other.model_price)
-  const isClaude = other.claude === true
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
   const cacheBillingUsage = getCacheBillingUsage(other)
@@ -302,7 +381,7 @@ function BillingBreakdown(props: {
     })
   }
 
-  if (!isTieredExpr && isClaude && cacheBillingUsage.hasAny) {
+  if (shouldShowCacheBillingPrices(other)) {
     if (
       cacheBillingUsage.read &&
       other.cache_ratio != null &&
@@ -918,6 +997,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           </DetailSection>
         )}
+
+        {props.isAdmin && other?.admin_info?.usage_normalization ? (
+          <UsageNormalizationDetails
+            audit={other.admin_info.usage_normalization}
+          />
+        ) : null}
 
         {/* Reject reason (admin only) */}
         {props.isAdmin && other?.reject_reason && (

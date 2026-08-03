@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,6 +22,37 @@ func recordMultiKeyOverloadRealtimeUsage(ctx *gin.Context, relayInfo *relaycommo
 		return
 	}
 	recordMultiKeyOverloadTokens(ctx, relayInfo, normalizedRealtimeUsageTotal(usage))
+}
+
+func recordUserRequestLimitUsage(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) {
+	if ctx == nil || relayInfo == nil || setting.GetUserTokensPerMinuteLimit() <= 0 || usage == nil {
+		return
+	}
+	recordUserRequestLimitTokensForRelay(ctx, relayInfo, int64(NormalizeUsageForBilling(usage).TotalTokens))
+}
+
+func recordUserRequestLimitRealtimeUsage(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) {
+	if ctx == nil || relayInfo == nil || setting.GetUserTokensPerMinuteLimit() <= 0 || usage == nil {
+		return
+	}
+	recordUserRequestLimitTokensForRelay(ctx, relayInfo, normalizedRealtimeUsageTotal(usage))
+}
+
+func recordUserRequestLimitTokensForRelay(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, tokens int64) {
+	if common.GetContextKeyBool(ctx, constant.ContextKeyUserRateLimitTokens) {
+		return
+	}
+	if tokens <= 0 {
+		return
+	}
+	common.SetContextKey(ctx, constant.ContextKeyUserRateLimitTokens, true)
+	recordContext := context.Background()
+	if ctx.Request != nil {
+		recordContext = ctx.Request.Context()
+	}
+	if err := RecordUserRequestLimitTokens(recordContext, relayInfo.UserId, tokens); err != nil {
+		common.SysError(fmt.Sprintf("record user request limit tokens failed: user_id=%d, err=%v", relayInfo.UserId, err))
+	}
 }
 
 func recordMultiKeyOverloadTokens(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, tokens int64) {

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
 )
+
+const MaxUserRequestLimit = 100000000
 
 var ModelRequestRateLimitEnabled = false
 var ModelRequestRateLimitDurationMinutes = 1
@@ -15,6 +18,24 @@ var ModelRequestRateLimitCount = 0
 var ModelRequestRateLimitSuccessCount = 1000
 var ModelRequestRateLimitGroup = map[string][2]int{}
 var ModelRequestRateLimitMutex sync.RWMutex
+var userConcurrentRequestLimit atomic.Int64
+var userTokensPerMinuteLimit atomic.Int64
+
+func GetUserConcurrentRequestLimit() int {
+	return int(userConcurrentRequestLimit.Load())
+}
+
+func SetUserConcurrentRequestLimit(limit int) {
+	userConcurrentRequestLimit.Store(int64(limit))
+}
+
+func GetUserTokensPerMinuteLimit() int {
+	return int(userTokensPerMinuteLimit.Load())
+}
+
+func SetUserTokensPerMinuteLimit(limit int) {
+	userTokensPerMinuteLimit.Store(int64(limit))
+}
 
 func ModelRequestRateLimitGroup2JSONString() string {
 	ModelRequestRateLimitMutex.RLock()

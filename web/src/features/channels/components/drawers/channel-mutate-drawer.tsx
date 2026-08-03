@@ -28,6 +28,7 @@ import {
   ClipboardPaste,
   HelpCircle,
   KeyRound,
+  ListChecks,
   Loader2,
   Server,
   Sparkles,
@@ -266,6 +267,8 @@ const ADVANCED_SETTINGS_SECTION_IDS = {
   statusCodeRetry: 'channel-section-advanced-status-code-retry',
   streamInterruptionBilling:
     'channel-section-advanced-stream-interruption-billing',
+  cacheUsageValidationSplit:
+    'channel-section-advanced-cache-usage-validation-split',
   simulatedModelCache: 'channel-section-advanced-simulated-model-cache',
   upstreamModelDetection: 'channel-section-advanced-upstream-model-detection',
 } as const
@@ -311,6 +314,7 @@ const SENSITIVE_FORM_FIELDS = [
   'claude_beta_query',
   'disable_task_polling_sleep',
   'deepseek_v4_request_sanitization_enabled',
+  'cache_usage_validation_split',
   'simulated_model_cache_enabled',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
@@ -380,6 +384,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.system_prompt_override ||
     values.claude_beta_query ||
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
+    values.cache_usage_validation_split ||
     values.simulated_model_cache_enabled ||
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
@@ -852,6 +857,9 @@ export function ChannelMutateDrawer({
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
+  const currentCacheUsageValidationSplit = form.watch(
+    'cache_usage_validation_split'
+  )
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
@@ -1192,6 +1200,9 @@ export function ChannelMutateDrawer({
     currentSimulatedModelCacheMultimodalEnabled ||
     multiKeyType === 'cache_affinity_least_requests'
   )
+  const cacheUsageValidationSplitConfigured = Boolean(
+    currentCacheUsageValidationSplit
+  )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
   const inputTokenRoutingConfigured = Boolean(
     currentInputTokenRoutingEnabled ||
@@ -1209,6 +1220,7 @@ export function ChannelMutateDrawer({
     fieldPassthroughConfigured ||
     statusCodeRetryConfigured ||
     streamInterruptionBillingConfigured ||
+    cacheUsageValidationSplitConfigured ||
     simulatedModelCacheConfigured ||
     upstreamModelDetectionConfigured
   )
@@ -1256,6 +1268,11 @@ export function ChannelMutateDrawer({
       configured: fieldPassthroughConfigured,
     })
   }
+  advancedNavChildren.push({
+    id: ADVANCED_SETTINGS_SECTION_IDS.cacheUsageValidationSplit,
+    title: t('Cache Validation Split'),
+    configured: cacheUsageValidationSplitConfigured,
+  })
   advancedNavChildren.push({
     id: ADVANCED_SETTINGS_SECTION_IDS.simulatedModelCache,
     title: t('Simulated Model Cache'),
@@ -5328,6 +5345,54 @@ export function ChannelMutateDrawer({
                                     <FormDescription>
                                       {t(
                                         'Concatenate channel system prompt with user&apos;s prompt'
+                                      )}
+                                    </FormDescription>
+                                  </div>
+                                  <FormControl>
+                                    <Switch
+                                      checked={field.value}
+                                      onCheckedChange={field.onChange}
+                                    />
+                                  </FormControl>
+                                </FormItem>
+                              )}
+                            />
+                          </fieldset>
+                        </div>
+
+                        <div
+                          id={
+                            ADVANCED_SETTINGS_SECTION_IDS.cacheUsageValidationSplit
+                          }
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              cacheUsageValidationSplitConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Cache Validation Split')}
+                            icon={<ListChecks className='h-4 w-4' />}
+                          />
+                          <fieldset
+                            disabled={sensitiveLocked}
+                            className='disabled:opacity-60'
+                          >
+                            <FormField
+                              control={form.control}
+                              name='cache_usage_validation_split'
+                              render={({ field }) => (
+                                <FormItem
+                                  className={sideDrawerSwitchItemClassName()}
+                                >
+                                  <div className='space-y-0.5'>
+                                    <FormLabel>
+                                      {t('Cache Validation Split')}
+                                    </FormLabel>
+                                    <FormDescription>
+                                      {t(
+                                        'Validate whether upstream input usage includes cache tokens, then bill cached and uncached input separately.'
                                       )}
                                     </FormDescription>
                                   </div>

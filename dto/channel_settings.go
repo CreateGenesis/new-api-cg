@@ -60,6 +60,7 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastRemovedModels  []string                           `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string                           `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig              `json:"advanced_custom,omitempty"`
+	CacheUsageValidationSplit             bool                               `json:"cache_usage_validation_split,omitempty"`
 	SimulatedModelCache                   *SimulatedModelCacheSettings       `json:"simulated_model_cache,omitempty"`
 	StatusCodeRetry                       *StatusCodeRetrySettings           `json:"status_code_retry,omitempty"`
 	InputTokenRouting                     *InputTokenRoutingSettings         `json:"input_token_routing,omitempty"`

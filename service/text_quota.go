@@ -22,39 +22,41 @@ import (
 )
 
 type textQuotaSummary struct {
-	PromptTokens             int
-	CompletionTokens         int
-	TotalTokens              int
-	CacheTokens              int
-	CacheCreationTokens      int
-	CacheCreationTokens5m    int
-	CacheCreationTokens1h    int
-	ImageTokens              int
-	AudioTokens              int
-	ModelName                string
-	TokenName                string
-	UseTimeSeconds           int64
-	CompletionRatio          float64
-	CacheRatio               float64
-	ImageRatio               float64
-	ModelRatio               float64
-	GroupRatio               float64
-	ModelPrice               float64
-	CacheCreationRatio       float64
-	CacheCreationRatio5m     float64
-	CacheCreationRatio1h     float64
-	Quota                    int
-	IsClaudeUsageSemantic    bool
-	UsageSemantic            string
-	WebSearchPrice           float64
-	WebSearchCallCount       int
-	ClaudeWebSearchPrice     float64
-	ClaudeWebSearchCallCount int
-	FileSearchPrice          float64
-	FileSearchCallCount      int
-	AudioInputPrice          float64
-	ImageGenerationCallPrice float64
-	ToolCallSurchargeQuota   decimal.Decimal
+	PromptTokens              int
+	CompletionTokens          int
+	TotalTokens               int
+	CacheTokens               int
+	CacheCreationTokens       int
+	CacheCreationTokens5m     int
+	CacheCreationTokens1h     int
+	ImageTokens               int
+	AudioTokens               int
+	ModelName                 string
+	TokenName                 string
+	UseTimeSeconds            int64
+	CompletionRatio           float64
+	CacheRatio                float64
+	ImageRatio                float64
+	ModelRatio                float64
+	GroupRatio                float64
+	ModelPrice                float64
+	CacheCreationRatio        float64
+	CacheCreationRatio5m      float64
+	CacheCreationRatio1h      float64
+	Quota                     int
+	IsClaudeUsageSemantic     bool
+	UsageSemantic             string
+	WebSearchPrice            float64
+	WebSearchCallCount        int
+	ClaudeWebSearchPrice      float64
+	ClaudeWebSearchCallCount  int
+	FileSearchPrice           float64
+	FileSearchCallCount       int
+	AudioInputPrice           float64
+	ImageGenerationCallPrice  float64
+	ToolCallSurchargeQuota    decimal.Decimal
+	UsageNormalization        BillingUsageNormalization
+	CacheUsageValidationSplit bool
 }
 
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
@@ -167,21 +169,20 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 // the result with tiered billing, affinity observation and logging.
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
 	summary := textQuotaSummary{
-		ModelName:            relayInfo.OriginModelName,
-		TokenName:            ctx.GetString("token_name"),
-		UseTimeSeconds:       time.Now().Unix() - relayInfo.StartTime.Unix(),
-		CompletionRatio:      relayInfo.PriceData.CompletionRatio,
-		CacheRatio:           relayInfo.PriceData.CacheRatio,
-		ImageRatio:           relayInfo.PriceData.ImageRatio,
-		ModelRatio:           relayInfo.PriceData.ModelRatio,
-		GroupRatio:           relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-		ModelPrice:           relayInfo.PriceData.ModelPrice,
-		CacheCreationRatio:   relayInfo.PriceData.CacheCreationRatio,
-		CacheCreationRatio5m: relayInfo.PriceData.CacheCreation5mRatio,
-		CacheCreationRatio1h: relayInfo.PriceData.CacheCreation1hRatio,
-		UsageSemantic:        usageSemanticFromUsage(relayInfo, usage),
+		ModelName:                 relayInfo.OriginModelName,
+		TokenName:                 ctx.GetString("token_name"),
+		UseTimeSeconds:            time.Now().Unix() - relayInfo.StartTime.Unix(),
+		CompletionRatio:           relayInfo.PriceData.CompletionRatio,
+		CacheRatio:                relayInfo.PriceData.CacheRatio,
+		ImageRatio:                relayInfo.PriceData.ImageRatio,
+		ModelRatio:                relayInfo.PriceData.ModelRatio,
+		GroupRatio:                relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		ModelPrice:                relayInfo.PriceData.ModelPrice,
+		CacheCreationRatio:        relayInfo.PriceData.CacheCreationRatio,
+		CacheCreationRatio5m:      relayInfo.PriceData.CacheCreation5mRatio,
+		CacheCreationRatio1h:      relayInfo.PriceData.CacheCreation1hRatio,
+		CacheUsageValidationSplit: relayInfo.CacheUsageValidationSplitEnabled(),
 	}
-	summary.IsClaudeUsageSemantic = summary.UsageSemantic == "anthropic"
 
 	if usage == nil {
 		usage = &dto.Usage{
@@ -191,16 +192,33 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 	}
 
-	normalizedUsage := NormalizeUsageForSemantic(usage, summary.UsageSemantic)
-	summary.PromptTokens = normalizedUsage.PromptTokens
-	summary.CompletionTokens = normalizedUsage.CompletionTokens
-	summary.TotalTokens = normalizedUsage.TotalTokens
-	summary.CacheTokens = normalizedUsage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = normalizedUsage.PromptTokensDetails.CacheCreationTokensTotal()
-	summary.CacheCreationTokens5m = normalizedUsage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = normalizedUsage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = normalizedUsage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = normalizedUsage.PromptTokensDetails.AudioTokens
+	if summary.CacheUsageValidationSplit {
+		summary.UsageNormalization = NormalizeUsageForBilling(usage)
+		summary.UsageSemantic = summary.UsageNormalization.UsageSemantic
+		summary.IsClaudeUsageSemantic = summary.UsageSemantic == UsageSemanticAnthropic
+		summary.PromptTokens = summary.UsageNormalization.InputTokens.UncachedInputTokens
+		summary.CompletionTokens = summary.UsageNormalization.OutputTokens
+		summary.TotalTokens = summary.UsageNormalization.TotalTokens
+		summary.CacheTokens = summary.UsageNormalization.InputTokens.CacheReadInputTokens
+		summary.CacheCreationTokens = summary.UsageNormalization.InputTokens.CacheCreationInputTokens
+		summary.CacheCreationTokens5m = summary.UsageNormalization.InputTokens.CacheCreation5mInputTokens
+		summary.CacheCreationTokens1h = summary.UsageNormalization.InputTokens.CacheCreation1hInputTokens
+		summary.ImageTokens = summary.UsageNormalization.InputImageTokens
+		summary.AudioTokens = summary.UsageNormalization.InputAudioTokens
+	} else {
+		summary.UsageSemantic = usageSemanticFromUsage(relayInfo, usage)
+		summary.IsClaudeUsageSemantic = summary.UsageSemantic == UsageSemanticAnthropic
+		normalizedUsage := NormalizeUsageForSemantic(usage, summary.UsageSemantic)
+		summary.PromptTokens = normalizedUsage.PromptTokens
+		summary.CompletionTokens = normalizedUsage.CompletionTokens
+		summary.TotalTokens = normalizedUsage.TotalTokens
+		summary.CacheTokens = normalizedUsage.PromptTokensDetails.CachedTokens
+		summary.CacheCreationTokens = normalizedUsage.PromptTokensDetails.CacheCreationTokensTotal()
+		summary.CacheCreationTokens5m = normalizedUsage.ClaudeCacheCreation5mTokens
+		summary.CacheCreationTokens1h = normalizedUsage.ClaudeCacheCreation1hTokens
+		summary.ImageTokens = normalizedUsage.PromptTokensDetails.ImageTokens
+		summary.AudioTokens = normalizedUsage.PromptTokensDetails.AudioTokens
+	}
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic
@@ -242,7 +260,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 		var cachedTokensWithRatio decimal.Decimal
 		if !dCacheTokens.IsZero() {
-			if !summary.IsClaudeUsageSemantic {
+			if !summary.CacheUsageValidationSplit && !summary.IsClaudeUsageSemantic {
 				baseTokens = baseTokens.Sub(dCacheTokens)
 			}
 			cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio)
@@ -251,7 +269,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		var cachedCreationTokensWithRatio decimal.Decimal
 		hasSplitCacheCreationTokens := summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0
 		if !dCachedCreationTokens.IsZero() || hasSplitCacheCreationTokens {
-			if !summary.IsClaudeUsageSemantic {
+			if !summary.CacheUsageValidationSplit && !summary.IsClaudeUsageSemantic {
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
 			}
 			remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
@@ -323,14 +341,15 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 		return usage.UsageSemantic
 	}
 	if relayInfo != nil && relayInfo.GetFinalRequestRelayFormat() == types.RelayFormatClaude {
-		return "anthropic"
+		return UsageSemanticAnthropic
 	}
-	return "openai"
+	return UsageSemanticOpenAI
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	recordMultiKeyOverloadUsage(ctx, relayInfo, originUsage)
+	recordUserRequestLimitUsage(ctx, relayInfo, originUsage)
 	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
@@ -349,7 +368,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		if snap := relayInfo.TieredBillingSnapshot; snap != nil {
 			tieredUsedVars = billingexpr.UsedVars(snap.ExprString)
 		}
-		tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, BuildTieredTokenParams(billingUsage, summary.IsClaudeUsageSemantic, tieredUsedVars))
+		tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, BuildTieredTokenParams(billingUsage, summary.IsClaudeUsageSemantic, tieredUsedVars, summary.CacheUsageValidationSplit))
 		if tieredOk {
 			tieredBillingApplied = true
 			tieredResult = tieredRes
@@ -412,6 +431,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
 	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
+	if summary.CacheUsageValidationSplit {
+		AttachUsageNormalizationAudit(ctx, relayInfo, other, summary.UsageNormalization)
+	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
 	}
@@ -462,11 +484,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		// to cache_creation_tokens.
 		other["cache_write_tokens"] = cacheWriteTokens
 	}
-	if relayInfo.GetFinalRequestRelayFormat() != types.RelayFormatClaude && billingUsage != nil && billingUsage.UsageSource != "" && billingUsage.InputTokens > 0 {
-		// input_tokens_total: explicit normalized total input used by the usage log UI.
-		// Only write this field when upstream/current conversion has already provided a
-		// reliable total input value and tagged the usage source. Do not infer it from
-		// prompt/cache fields here, otherwise old upstream payloads may be double-counted.
+	if summary.CacheUsageValidationSplit && billingUsage != nil {
+		other["input_tokens_total"] = summary.UsageNormalization.InputTokens.TotalInputTokens
+	} else if relayInfo.GetFinalRequestRelayFormat() != types.RelayFormatClaude && billingUsage != nil && billingUsage.UsageSource != "" && billingUsage.InputTokens > 0 {
 		other["input_tokens_total"] = billingUsage.InputTokens
 	}
 	if tieredBillingApplied {

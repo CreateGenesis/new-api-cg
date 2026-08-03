@@ -364,6 +364,7 @@ export const channelFormSchema = z
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     disable_task_polling_sleep: z.boolean().optional(),
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
+    cache_usage_validation_split: z.boolean().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
     simulated_model_cache_ttl_seconds: z.number().optional(),
     simulated_model_cache_min_match_ratio: z.number().optional(),
@@ -789,6 +790,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   claude_beta_query: false,
   disable_task_polling_sleep: false,
   deepseek_v4_request_sanitization_enabled: false,
+  cache_usage_validation_split: false,
   simulated_model_cache_enabled: false,
   simulated_model_cache_ttl_seconds: 86400,
   simulated_model_cache_min_match_ratio: 0.01,
@@ -885,6 +887,7 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
+  let cacheUsageValidationSplit = false
   let simulatedModelCacheEnabled = false
   let simulatedModelCacheTTLSeconds = 86400
   let simulatedModelCacheMinMatchRatio = 0.01
@@ -930,6 +933,7 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       deepSeekV4RequestSanitizationEnabled =
         parsed.deepseek_v4_request_sanitization === true
       if (
@@ -1184,6 +1188,7 @@ export function transformChannelToFormDefaults(
     disable_task_polling_sleep: disableTaskPollingSleep,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
+    cache_usage_validation_split: cacheUsageValidationSplit,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
     simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
     simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
@@ -1351,6 +1356,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.deepseek_v4_request_sanitization = true
   } else if ('deepseek_v4_request_sanitization' in settingsObj) {
     delete settingsObj.deepseek_v4_request_sanitization
+  }
+
+  if (formData.cache_usage_validation_split === true) {
+    settingsObj.cache_usage_validation_split = true
+  } else if ('cache_usage_validation_split' in settingsObj) {
+    delete settingsObj.cache_usage_validation_split
   }
 
   const simulatedModelCacheEnabled =
