@@ -59,10 +59,11 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 		FirstResponseTime: now,
 		ChannelMeta:       &relaycommon.ChannelMeta{},
 		SimulatedModelCacheInfo: &relaycommon.SimulatedModelCacheInfo{
-			FingerprintVersion: SimulatedModelCacheFingerprintVersion,
-			CandidateCount:     100,
-			MatchDurationMS:    3,
-			BypassReason:       "memory_budget",
+			FingerprintVersion:          SimulatedModelCacheFingerprintVersion,
+			CandidateCount:              100,
+			MatchDurationMS:             3,
+			BypassReason:                "memory_budget",
+			MissingInputEstimatedTokens: 321,
 		},
 	}
 
@@ -73,6 +74,7 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 	cacheInfo, ok := adminInfo["simulated_model_cache"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "memory_budget", cacheInfo["bypass_reason"])
+	assert.Equal(t, 321, cacheInfo["missing_input_estimated_tokens"])
 	assert.NotContains(t, cacheInfo, "mode")
 	assert.NotContains(t, cacheInfo, "match_ratio")
 	assert.NotContains(t, cacheInfo, "simulated_cached_tokens")

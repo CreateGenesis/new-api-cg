@@ -207,6 +207,63 @@ func patchGeminiUsageMetadataMap(metadata map[string]any, usage *dto.Usage) {
 	metadata["cachedContentTokenCount"] = normalized.PromptTokensDetails.CachedTokens
 }
 
+// ApplySimulatedModelCacheMissingInputEstimate fills an upstream usage record
+// only when it contains no input or cache tokens at all.
+func ApplySimulatedModelCacheMissingInputEstimate(usage *dto.Usage, estimatedTokens int) bool {
+	if usage == nil || estimatedTokens <= 0 {
+		return false
+	}
+	if estimatedTokens > math.MaxInt32 {
+		estimatedTokens = math.MaxInt32
+	}
+
+	reportedInput := NormalizeInputTokens(usage)
+	if reportedInput.TotalInputTokens > 0 ||
+		reportedInput.CacheReadInputTokens > 0 ||
+		reportedInput.CacheCreationInputTokens > 0 {
+		return false
+	}
+	normalized := NormalizeUsageForBilling(usage)
+	if normalized.InputTokens.TotalInputTokens > 0 ||
+		normalized.InputTokens.CacheReadInputTokens > 0 ||
+		normalized.InputTokens.CacheCreationInputTokens > 0 {
+		return false
+	}
+
+	usage.PromptTokens = estimatedTokens
+	usage.InputTokens = estimatedTokens
+	usage.TotalTokens = saturatingTokenAdd(estimatedTokens, normalized.OutputTokens)
+	usage.Estimated = true
+
+	if usage.BillingUsage == nil {
+		return true
+	}
+	usage.BillingUsage.Estimated = true
+	switch {
+	case usage.BillingUsage.OpenAIUsage != nil:
+		openAIUsage := usage.BillingUsage.OpenAIUsage
+		openAIUsage.PromptTokens = estimatedTokens
+		openAIUsage.InputTokens = estimatedTokens
+		outputTokens := positiveTokenCount(openAIUsage.CompletionTokens)
+		if openAIUsage.OutputTokens > outputTokens {
+			outputTokens = openAIUsage.OutputTokens
+		}
+		openAIUsage.TotalTokens = saturatingTokenAdd(estimatedTokens, outputTokens)
+		openAIUsage.Estimated = true
+	case usage.BillingUsage.ClaudeUsage != nil:
+		usage.BillingUsage.ClaudeUsage.InputTokens = estimatedTokens
+	case usage.BillingUsage.GeminiUsageMetadata != nil:
+		metadata := usage.BillingUsage.GeminiUsageMetadata
+		metadata.PromptTokenCount = estimatedTokens
+		outputTokens := saturatingTokenAdd(
+			positiveTokenCount(metadata.CandidatesTokenCount),
+			positiveTokenCount(metadata.ThoughtsTokenCount),
+		)
+		metadata.TotalTokenCount = saturatingTokenAdd(estimatedTokens, outputTokens)
+	}
+	return true
+}
+
 func ApplySimulatedModelCacheUsageRewrite(usage *dto.Usage, rewrite SimulatedModelCacheUsageRewrite) *relaycommon.SimulatedModelCacheInfo {
 	if usage == nil {
 		return nil

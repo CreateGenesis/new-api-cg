@@ -61,6 +61,28 @@ func TestChannelOtherSettingsSimulatedModelCacheKeepsExplicitValues(t *testing.T
 	assert.Equal(t, 0.42, normalized.MinMatchRatio)
 }
 
+func TestChannelOtherSettingsSimulatedModelCacheMissingInputEstimateIsOptIn(t *testing.T) {
+	var disabled ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(`{"simulated_model_cache":{}}`, &disabled))
+	require.NotNil(t, disabled.SimulatedModelCache)
+	assert.False(t, disabled.SimulatedModelCache.EstimateMissingInputTokens)
+	assert.False(t, disabled.SimulatedModelCache.IsActive())
+
+	var enabled ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(`{
+		"simulated_model_cache":{"estimate_missing_input_tokens":true}
+	}`, &enabled))
+	require.NotNil(t, enabled.SimulatedModelCache)
+	assert.True(t, enabled.SimulatedModelCache.EstimateMissingInputTokens)
+	assert.True(t, enabled.SimulatedModelCache.IsActive())
+
+	encoded, err := common.Marshal(enabled)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"simulated_model_cache":{"estimate_missing_input_tokens":true}
+	}`, string(encoded))
+}
+
 func TestSimulatedModelCacheMultimodalSettingsRequireExplicitWeights(t *testing.T) {
 	settings := SimulatedModelCacheSettings{
 		Multimodal: &SimulatedModelCacheMultimodalSettings{Enabled: true},

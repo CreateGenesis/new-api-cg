@@ -113,6 +113,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			"candidate_count":     info.CandidateCount,
 			"match_duration_ms":   info.MatchDurationMS,
 		}
+		if info.MissingInputEstimatedTokens > 0 {
+			cacheInfo["missing_input_estimated_tokens"] = info.MissingInputEstimatedTokens
+		}
 		if info.BypassReason != "" {
 			cacheInfo["bypass_reason"] = info.BypassReason
 		} else {

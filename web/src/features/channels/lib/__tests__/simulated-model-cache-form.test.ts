@@ -118,6 +118,7 @@ describe('simulated model cache multimedia form settings', () => {
   test('loads and saves all nested multimedia settings', () => {
     const nestedSettings = {
       enabled: true,
+      estimate_missing_input_tokens: true,
       ttl_seconds: 120,
       min_match_ratio: 0.25,
       multimodal: {
@@ -139,6 +140,7 @@ describe('simulated model cache multimedia form settings', () => {
     )
 
     assert.equal(form.simulated_model_cache_multimodal_enabled, true)
+    assert.equal(form.simulated_model_cache_estimate_missing_input_tokens, true)
     for (const [field, value] of Object.entries(multimodalValues)) {
       assert.equal(form[field as keyof ChannelFormValues], value)
     }
@@ -210,7 +212,27 @@ describe('simulated model cache multimedia form settings', () => {
       undefined
     )
     assert.equal(
+      legacy.simulated_model_cache_estimate_missing_input_tokens,
+      false
+    )
+    assert.equal(
       channelFormSchema.safeParse(validChannelForm(legacy)).success,
+      true
+    )
+  })
+
+  test('saves missing input estimation without enabling cache field simulation', () => {
+    const payload = transformFormDataToCreatePayload(
+      validChannelForm({
+        simulated_model_cache_enabled: false,
+        simulated_model_cache_estimate_missing_input_tokens: true,
+      })
+    )
+    const saved = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(saved.simulated_model_cache.enabled, false)
+    assert.equal(
+      saved.simulated_model_cache.estimate_missing_input_tokens,
       true
     )
   })

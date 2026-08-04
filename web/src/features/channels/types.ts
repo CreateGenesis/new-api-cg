@@ -184,6 +184,7 @@ export interface ChannelOtherSettings {
   cache_usage_validation_split?: boolean
   simulated_model_cache?: {
     enabled?: boolean
+    estimate_missing_input_tokens?: boolean
     ttl_seconds?: number
     min_match_ratio?: number
     multimodal?: {

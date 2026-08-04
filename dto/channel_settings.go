@@ -89,10 +89,11 @@ func (s StreamInterruptionBillingSettings) Validate() error {
 }
 
 type SimulatedModelCacheSettings struct {
-	Enabled       bool                                   `json:"enabled,omitempty"`
-	TTLSeconds    int                                    `json:"ttl_seconds,omitempty"`
-	MinMatchRatio float64                                `json:"min_match_ratio,omitempty"`
-	Multimodal    *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
+	Enabled                    bool                                   `json:"enabled,omitempty"`
+	EstimateMissingInputTokens bool                                   `json:"estimate_missing_input_tokens,omitempty"`
+	TTLSeconds                 int                                    `json:"ttl_seconds,omitempty"`
+	MinMatchRatio              float64                                `json:"min_match_ratio,omitempty"`
+	Multimodal                 *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
 }
 
 type SimulatedModelCacheMultimodalSettings struct {
@@ -121,7 +122,7 @@ func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
 }
 
 func (s SimulatedModelCacheSettings) IsActive() bool {
-	return s.Enabled
+	return s.Enabled || s.EstimateMissingInputTokens
 }
 
 func (s SimulatedModelCacheSettings) Validate() error {

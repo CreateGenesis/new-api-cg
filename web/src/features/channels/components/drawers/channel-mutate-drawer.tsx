@@ -316,6 +316,7 @@ const SENSITIVE_FORM_FIELDS = [
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'simulated_model_cache_enabled',
+  'simulated_model_cache_estimate_missing_input_tokens',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
   'simulated_model_cache_multimodal_enabled',
@@ -386,6 +387,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
     values.simulated_model_cache_enabled ||
+    values.simulated_model_cache_estimate_missing_input_tokens ||
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
@@ -863,11 +865,15 @@ export function ChannelMutateDrawer({
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
+  const currentSimulatedModelCacheEstimateMissingInputTokens = form.watch(
+    'simulated_model_cache_estimate_missing_input_tokens'
+  )
   const currentSimulatedModelCacheMultimodalEnabled = form.watch(
     'simulated_model_cache_multimodal_enabled'
   )
   const simulatedModelCacheRuntimeActive =
     currentSimulatedModelCacheEnabled ||
+    currentSimulatedModelCacheEstimateMissingInputTokens ||
     multiKeyType === 'cache_affinity_least_requests'
   const currentStatusCodeRetryEnabled = form.watch('status_code_retry_enabled')
   const currentInputTokenRoutingEnabled = form.watch(
@@ -1197,6 +1203,7 @@ export function ChannelMutateDrawer({
   )
   const simulatedModelCacheConfigured = Boolean(
     currentSimulatedModelCacheEnabled ||
+    currentSimulatedModelCacheEstimateMissingInputTokens ||
     currentSimulatedModelCacheMultimodalEnabled ||
     multiKeyType === 'cache_affinity_least_requests'
   )

@@ -366,6 +366,7 @@ export const channelFormSchema = z
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
+    simulated_model_cache_estimate_missing_input_tokens: z.boolean().optional(),
     simulated_model_cache_ttl_seconds: z.number().optional(),
     simulated_model_cache_min_match_ratio: z.number().optional(),
     simulated_model_cache_multimodal_enabled: z.boolean().optional(),
@@ -600,6 +601,7 @@ export const channelFormSchema = z
 
     const simulatedModelCacheRuntimeActive =
       data.simulated_model_cache_enabled ||
+      data.simulated_model_cache_estimate_missing_input_tokens ||
       data.multi_key_type === 'cache_affinity_least_requests'
     if (simulatedModelCacheRuntimeActive) {
       if (
@@ -792,6 +794,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
   simulated_model_cache_enabled: false,
+  simulated_model_cache_estimate_missing_input_tokens: false,
   simulated_model_cache_ttl_seconds: 86400,
   simulated_model_cache_min_match_ratio: 0.01,
   simulated_model_cache_multimodal_enabled: false,
@@ -889,6 +892,7 @@ export function transformChannelToFormDefaults(
   let disableTaskPollingSleep = false
   let cacheUsageValidationSplit = false
   let simulatedModelCacheEnabled = false
+  let simulatedModelCacheEstimateMissingInputTokens = false
   let simulatedModelCacheTTLSeconds = 86400
   let simulatedModelCacheMinMatchRatio = 0.01
   let simulatedModelCacheMultimodalEnabled = false
@@ -945,6 +949,8 @@ export function transformChannelToFormDefaults(
           unknown
         >
         simulatedModelCacheEnabled = simulatedCache.enabled === true
+        simulatedModelCacheEstimateMissingInputTokens =
+          simulatedCache.estimate_missing_input_tokens === true
         const ttlSeconds = Number(simulatedCache.ttl_seconds)
         if (Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
           simulatedModelCacheTTLSeconds = ttlSeconds
@@ -1190,6 +1196,8 @@ export function transformChannelToFormDefaults(
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
+    simulated_model_cache_estimate_missing_input_tokens:
+      simulatedModelCacheEstimateMissingInputTokens,
     simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
     simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
     simulated_model_cache_multimodal_enabled:
@@ -1366,8 +1374,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   const simulatedModelCacheEnabled =
     formData.simulated_model_cache_enabled === true
+  const simulatedModelCacheEstimateMissingInputTokens =
+    formData.simulated_model_cache_estimate_missing_input_tokens === true
   const simulatedModelCacheRuntimeActive =
     simulatedModelCacheEnabled ||
+    simulatedModelCacheEstimateMissingInputTokens ||
     formData.multi_key_type === 'cache_affinity_least_requests'
   if (simulatedModelCacheRuntimeActive) {
     const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
@@ -1377,6 +1388,9 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
         1,
         Math.trunc(Number(formData.simulated_model_cache_ttl_seconds) || 86400)
       ),
+    }
+    if (simulatedModelCacheEstimateMissingInputTokens) {
+      simulatedModelCache.estimate_missing_input_tokens = true
     }
     simulatedModelCache.min_match_ratio = Math.min(
       1,

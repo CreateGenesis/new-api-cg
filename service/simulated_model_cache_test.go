@@ -1179,6 +1179,111 @@ func TestPatchSimulatedModelCacheResponseBodyProductionUsageContracts(t *testing
 	assert.Equal(t, 1026, openAIPayload.Usage.PromptTokensDetails.CachedTokens)
 }
 
+func TestApplySimulatedModelCacheMissingInputEstimateUpdatesClaudeBillingUsage(t *testing.T) {
+	usage := &dto.Usage{
+		CompletionTokens: 62,
+		OutputTokens:     62,
+		UsageSemantic:    UsageSemanticAnthropic,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			OutputTokens: 62,
+		}),
+	}
+	require.NotNil(t, usage.BillingUsage)
+
+	applied := ApplySimulatedModelCacheMissingInputEstimate(usage, 1234)
+
+	assert.True(t, applied)
+	assert.True(t, usage.Estimated)
+	assert.Equal(t, 1234, usage.PromptTokens)
+	assert.Equal(t, 1234, usage.InputTokens)
+	assert.Equal(t, 1296, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage.ClaudeUsage)
+	assert.True(t, usage.BillingUsage.Estimated)
+	assert.Equal(t, 1234, usage.BillingUsage.ClaudeUsage.InputTokens)
+	assert.Equal(t, 62, usage.BillingUsage.ClaudeUsage.OutputTokens)
+
+	billingUsage := effectiveBillingUsage(usage)
+	assert.Equal(t, 1234, billingUsage.PromptTokens)
+	assert.Equal(t, 62, billingUsage.CompletionTokens)
+	assert.Equal(t, usageBillingPathAnthropicEstimated, usageBillingPathForLog(false, usage))
+}
+
+func TestApplySimulatedModelCacheMissingInputEstimatePreservesReportedInput(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 8,
+		TotalTokens:      108,
+		UsageSemantic:    UsageSemanticAnthropic,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:  100,
+			OutputTokens: 8,
+		}),
+	}
+
+	applied := ApplySimulatedModelCacheMissingInputEstimate(usage, 50)
+
+	assert.False(t, applied)
+	assert.False(t, usage.Estimated)
+	assert.Equal(t, 100, usage.PromptTokens)
+	assert.Equal(t, 100, usage.BillingUsage.ClaudeUsage.InputTokens)
+}
+
+func TestApplySimulatedModelCacheMissingInputEstimatePreservesCacheOnlyInput(t *testing.T) {
+	usage := &dto.Usage{
+		CompletionTokens: 8,
+		UsageSemantic:    UsageSemanticAnthropic,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			CacheReadInputTokens: 100,
+			OutputTokens:         8,
+		}),
+	}
+
+	applied := ApplySimulatedModelCacheMissingInputEstimate(usage, 50)
+
+	assert.False(t, applied)
+	assert.Zero(t, usage.PromptTokens)
+	assert.Equal(t, 100, usage.BillingUsage.ClaudeUsage.CacheReadInputTokens)
+}
+
+func TestApplySimulatedModelCacheMissingInputEstimateUpdatesOpenAIAndGeminiBillingUsage(t *testing.T) {
+	t.Run("openai", func(t *testing.T) {
+		usage := &dto.Usage{
+			CompletionTokens: 4,
+			OutputTokens:     4,
+			UsageSemantic:    UsageSemanticOpenAI,
+			BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+				CompletionTokens: 4,
+				OutputTokens:     4,
+				TotalTokens:      4,
+			}),
+		}
+
+		require.True(t, ApplySimulatedModelCacheMissingInputEstimate(usage, 30))
+		require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+		assert.True(t, usage.BillingUsage.Estimated)
+		assert.Equal(t, 30, usage.BillingUsage.OpenAIUsage.PromptTokens)
+		assert.Equal(t, 34, usage.BillingUsage.OpenAIUsage.TotalTokens)
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		usage := &dto.Usage{
+			CompletionTokens: 7,
+			UsageSemantic:    UsageSemanticGemini,
+			BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+				CandidatesTokenCount: 5,
+				ThoughtsTokenCount:   2,
+				TotalTokenCount:      7,
+			}),
+		}
+
+		require.True(t, ApplySimulatedModelCacheMissingInputEstimate(usage, 30))
+		require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
+		assert.True(t, usage.BillingUsage.Estimated)
+		assert.Equal(t, 30, usage.BillingUsage.GeminiUsageMetadata.PromptTokenCount)
+		assert.Equal(t, 37, usage.BillingUsage.GeminiUsageMetadata.TotalTokenCount)
+	})
+}
+
 func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIModelInSSE(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     2,
