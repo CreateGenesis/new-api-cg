@@ -75,10 +75,10 @@ func ExtendWriteDeadline(c *gin.Context) {
 	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
 
-func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) *types.NewAPIError {
 
 	if resp == nil || dataHandler == nil {
-		return
+		return nil
 	}
 
 	// 无条件新建 StreamStatus
@@ -100,6 +100,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		wg          sync.WaitGroup // 用于等待所有 goroutine 退出
 		cleanupOnce sync.Once
 		stopOnce    sync.Once
+		payloadSent bool
 	)
 
 	stop := func() {
@@ -218,8 +219,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
+				// Only adapter payload writes block retry; headers and keepalive pings do not.
+				responseSize := c.Writer.Size()
 				ExtendWriteDeadline(c)
 				dataHandler(data, sr)
+				if c.Writer.Size() > responseSize {
+					payloadSent = true
+				}
 			}()
 			if sr.IsStopped() {
 				return
@@ -314,4 +320,16 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	} else {
 		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	}
+
+	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF &&
+		info.StreamStatus.IsInterrupted() &&
+		!payloadSent &&
+		c.Request.Context().Err() == nil {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("upstream stream ended unexpectedly: %s", info.StreamStatus.Summary()),
+			types.ErrorCodeChannelStreamError,
+			http.StatusBadGateway,
+		)
+	}
+	return nil
 }

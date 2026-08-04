@@ -406,8 +406,6 @@ func TestStreamScannerHandler_StreamStatus_DoneReason(t *testing.T) {
 }
 
 func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
-	t.Parallel()
-
 	var b strings.Builder
 	for i := 0; i < 5; i++ {
 		fmt.Fprintf(&b, "data: {\"id\":%d}\n", i)
@@ -417,12 +415,31 @@ func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
 	info.RelayFormat = types.RelayFormatOpenAI
 	info.RequireStreamProtocolEnd()
 
-	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	streamErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 
+	require.NotNil(t, streamErr)
+	assert.Equal(t, types.ErrorCodeChannelStreamError, streamErr.GetErrorCode())
+	assert.Equal(t, http.StatusBadGateway, streamErr.StatusCode)
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
 	assert.True(t, info.StreamStatus.IsInterrupted())
 	assert.False(t, info.StreamStatus.Snapshot().ProtocolEndReceived)
+}
+
+func TestStreamScannerHandler_StreamStatus_EOFWithPayloadDoesNotRetry(t *testing.T) {
+	c, resp, info := setupStreamTest(t, strings.NewReader("data: {\"id\":1}\n"))
+	info.IsStream = true
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.RequireStreamProtocolEnd()
+
+	streamErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		_, _ = c.Writer.Write([]byte(data))
+	})
+
+	assert.Nil(t, streamErr)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.IsInterrupted())
 }
 
 func TestStreamScannerHandler_StreamStatus_HandlerStop(t *testing.T) {

@@ -184,7 +184,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 	var err *types.NewAPIError
 	info.RequireStreamProtocolEnd()
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
@@ -192,6 +192,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	})
 	if err != nil {
 		return nil, err
+	}
+	if streamRetryErr != nil {
+		return nil, streamRetryErr
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)

@@ -359,6 +359,23 @@ func TestPermanentChannelErrorCanSwitchChannelUnlessSkipRetry(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, invalidOverride, policy, 0))
 }
 
+func TestStreamErrorRetriesOnlyAcrossChannels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	streamErr := types.NewErrorWithStatusCode(
+		errors.New("upstream stream ended unexpectedly"),
+		types.ErrorCodeChannelStreamError,
+		http.StatusBadGateway,
+	)
+
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, streamErr, policy, 0))
+	ctx.Set("layered_relay_retry", true)
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, streamErr, policy, 0))
+	assert.True(t, shouldRetryWithPolicy(ctx, streamErr, policy, 0))
+	assert.False(t, shouldRetryWithPolicy(ctx, streamErr, policy, 1))
+}
+
 func TestInternalRetryOverloadForcesChannelSwitchWithoutStatusMatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

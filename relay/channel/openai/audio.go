@@ -18,13 +18,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) *dto.Usage {
-	// the status code has been judged before, if there is a body reading failure,
-	// it should be regarded as a non-recoverable error, so it should not return err for external retry.
-	// Analogous to nginx's load balancing, it will only retry if it can't be requested or
-	// if the upstream returns a specific status code, once the upstream has already written the header,
-	// the subsequent failure of the response body should be regarded as a non-recoverable error,
-	// and can be terminated directly.
+func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	// Non-streaming body read failures remain non-retryable after upstream headers.
+	// SSE streams may retry only when an interrupted EOF occurs before any payload is sent.
 	defer service.CloseResponseBodyGracefully(resp)
 	usage := &dto.Usage{Estimated: true}
 	usage.PromptTokens = info.GetEstimatePromptTokens()
@@ -38,7 +34,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	c.Writer.WriteHeader(resp.StatusCode)
 
 	if info.IsStream {
-		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if service.SundaySearch(data, "usage") {
 				var simpleResponse dto.SimpleResponse
 				if err := common.Unmarshal([]byte(data), &simpleResponse); err != nil {
@@ -55,6 +51,9 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 				sr.Error(err)
 			}
 		})
+		if streamRetryErr != nil {
+			return nil, streamRetryErr
+		}
 	} else {
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		// 读取响应体到缓冲区
@@ -62,7 +61,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		if err != nil {
 			logger.LogError(c, fmt.Sprintf("failed to read TTS response body: %v", err))
 			c.Writer.WriteHeaderNow()
-			return usage
+			return usage, nil
 		}
 
 		// 写入响应到客户端
@@ -113,7 +112,7 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 
-	return usage
+	return usage, nil
 }
 
 func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, responseFormat string) (*types.NewAPIError, *dto.Usage) {

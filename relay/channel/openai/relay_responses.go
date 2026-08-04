@@ -85,7 +85,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var streamErr *types.NewAPIError
 
 	info.RequireStreamProtocolEnd()
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
@@ -156,6 +156,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	})
 	if streamErr != nil {
 		return nil, streamErr
+	}
+	if streamRetryErr != nil {
+		return nil, streamRetryErr
 	}
 
 	if usage.CompletionTokens == 0 {

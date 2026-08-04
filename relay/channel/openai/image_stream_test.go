@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -410,9 +411,36 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 	})
 }
 
+func TestOpenaiImageStreamHandlerReturnsChannelErrorForInitialErrorEvent(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`event: error`,
+		`data: {"type":"upstream_error","error":{"message":"stream error: INTERNAL_ERROR"}}`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCodeChannelStreamError, err.GetErrorCode())
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Empty(t, recorder.Body.String())
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	require.True(t, info.StreamStatus.HasErrors())
+}
+
 // TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent verifies that an error
-// event inside the SSE stream is recorded as a soft error while the payload is
-// still forwarded to the client.
+// event remains visible and does not trigger retry after a partial payload was
+// already sent to the client.
 func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)

@@ -30,6 +30,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		attempts              []string
 		succeedOnAttempt      int
 		routeOnBoundedHTTP400 bool
+		streamFallback        bool
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptsMu.Lock()
@@ -41,7 +42,19 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 			shouldSucceed = true
 		}
 		boundedHTTP400 := routeOnBoundedHTTP400 && channelKey == "channel-1"
+		useStreamFallback := streamFallback
 		attemptsMu.Unlock()
+		if useStreamFallback {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if channelKey == "channel-1" {
+				_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"first stream failed\",\"type\":\"upstream_error\",\"code\":\"stream_failed\"}}\n\n"))
+				return
+			}
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream-retry\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream fallback ok\"},\"finish_reason\":null}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream-retry\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if shouldSucceed {
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-retry-success","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
@@ -128,6 +141,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	originalRelayDebugLogEnabled := common.RelayDebugLogEnabled
 	originalRelayDebugLogTextLimitMB := common.RelayDebugLogTextLimitMB
 	originalErrorLogEnabled := constant.ErrorLogEnabled
+	originalStreamingTimeout := constant.StreamingTimeout
 	originalRetryRanges := append([]operation_setting.StatusCodeRange(nil), operation_setting.AutomaticRetryStatusCodeRanges...)
 	originalModelRatios := ratio_setting.ModelRatio2JSONString()
 	originalFreeModelPreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
@@ -136,6 +150,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	common.RelayDebugLogEnabled = true
 	common.RelayDebugLogTextLimitMB = 1
 	constant.ErrorLogEnabled = true
+	constant.StreamingTimeout = 30
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 503, End: 503}}
 	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{"%s":0}`, modelName)))
@@ -145,6 +160,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		common.RelayDebugLogEnabled = originalRelayDebugLogEnabled
 		common.RelayDebugLogTextLimitMB = originalRelayDebugLogTextLimitMB
 		constant.ErrorLogEnabled = originalErrorLogEnabled
+		constant.StreamingTimeout = originalStreamingTimeout
 		operation_setting.AutomaticRetryStatusCodeRanges = originalRetryRanges
 		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = originalFreeModelPreConsume
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
@@ -268,6 +284,46 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	assert.True(t, recoveredTrace.Attempts[2].Succeeded)
 	require.NotEmpty(t, recoveredTrace.Attempts[2].Exchanges)
 	assert.NotNil(t, recoveredTrace.Attempts[2].Exchanges[0].Request.Body)
+
+	attemptsMu.Lock()
+	attempts = nil
+	succeedOnAttempt = 0
+	streamFallback = true
+	attemptsMu.Unlock()
+
+	streamRecorder := httptest.NewRecorder()
+	streamCtx, _ := gin.CreateTestContext(streamRecorder)
+	streamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true}`, modelName)),
+	)
+	streamCtx.Request.Header.Set("Content-Type", "application/json")
+	streamCtx.Set(common.RequestIdKey, "relay-debug-stream-recovered")
+	common.SetContextKey(streamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(streamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(streamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(streamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(streamCtx, &channels[0], modelName))
+
+	Relay(streamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	streamAttempts := append([]string(nil), attempts...)
+	streamFallback = false
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, streamAttempts)
+	assert.Equal(t, []string{"1", "2"}, streamCtx.GetStringSlice("use_channel"))
+	assert.Contains(t, streamRecorder.Body.String(), "stream fallback ok")
+	assert.NotContains(t, streamRecorder.Body.String(), "first stream failed")
+	var streamConsumeLogCount int64
+	require.NoError(t, db.Model(&model.Log{}).
+		Where("request_id = ? AND type = ?", "relay-debug-stream-recovered", model.LogTypeConsume).
+		Count(&streamConsumeLogCount).Error)
+	assert.Equal(t, int64(1), streamConsumeLogCount)
+	var firstChannelStatus int
+	require.NoError(t, db.Model(&model.Channel{}).Select("status").Where("id = ?", channels[0].Id).Scan(&firstChannelStatus).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, firstChannelStatus)
 
 	channels[0].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":1,"max_tokens":500000}]}}`
 	channels[1].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":0}]}}`
