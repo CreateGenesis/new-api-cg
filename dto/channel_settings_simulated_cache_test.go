@@ -180,6 +180,32 @@ func TestChannelOtherSettingsStatusCodeRetryPreservesExplicitZeroRetries(t *test
 	assert.Equal(t, "429", normalized.StatusCodes)
 }
 
+func TestChannelOtherSettingsResponseHeaderTimeoutDefaults(t *testing.T) {
+	var settings ChannelOtherSettings
+	err := common.UnmarshalJsonStr(`{"response_header_timeout":{"enabled":true}}`, &settings)
+	require.NoError(t, err)
+	require.NotNil(t, settings.ResponseHeaderTimeout)
+
+	normalized := settings.ResponseHeaderTimeout.Normalize()
+
+	assert.True(t, normalized.Enabled)
+	assert.Equal(t, 180, normalized.TimeoutSeconds)
+}
+
+func TestChannelOtherSettingsResponseHeaderTimeoutPreservesConfiguredValue(t *testing.T) {
+	var settings ChannelOtherSettings
+	err := common.UnmarshalJsonStr(`{
+		"response_header_timeout":{"enabled":true,"timeout_seconds":180}
+	}`, &settings)
+	require.NoError(t, err)
+	require.NotNil(t, settings.ResponseHeaderTimeout)
+
+	normalized := settings.ResponseHeaderTimeout.Normalize()
+
+	assert.True(t, normalized.Enabled)
+	assert.Equal(t, 180, normalized.TimeoutSeconds)
+}
+
 func TestChannelOtherSettingsInputTokenRoutingDefaults(t *testing.T) {
 	var settings ChannelOtherSettings
 	err := common.UnmarshalJsonStr(`{"input_token_routing":{"enabled":true}}`, &settings)

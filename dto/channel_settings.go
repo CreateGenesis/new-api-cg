@@ -63,6 +63,7 @@ type ChannelOtherSettings struct {
 	CacheUsageValidationSplit             bool                               `json:"cache_usage_validation_split,omitempty"`
 	SimulatedModelCache                   *SimulatedModelCacheSettings       `json:"simulated_model_cache,omitempty"`
 	StatusCodeRetry                       *StatusCodeRetrySettings           `json:"status_code_retry,omitempty"`
+	ResponseHeaderTimeout                 *ResponseHeaderTimeoutSettings     `json:"response_header_timeout,omitempty"`
 	InputTokenRouting                     *InputTokenRoutingSettings         `json:"input_token_routing,omitempty"`
 	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
@@ -240,6 +241,50 @@ type NormalizedStatusCodeRetrySettings struct {
 	RetryTimes      int
 	RetryIntervalMS int
 	StatusCodes     string
+}
+
+const (
+	DefaultResponseHeaderTimeoutSeconds = 180
+	MinResponseHeaderTimeoutSeconds     = 1
+	MaxResponseHeaderTimeoutSeconds     = 86400
+)
+
+type ResponseHeaderTimeoutSettings struct {
+	Enabled        bool `json:"enabled,omitempty"`
+	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+}
+
+type NormalizedResponseHeaderTimeoutSettings struct {
+	Enabled        bool
+	TimeoutSeconds int
+}
+
+func (s ResponseHeaderTimeoutSettings) Normalize() NormalizedResponseHeaderTimeoutSettings {
+	timeoutSeconds := DefaultResponseHeaderTimeoutSeconds
+	if s.TimeoutSeconds != nil {
+		timeoutSeconds = *s.TimeoutSeconds
+		if timeoutSeconds < MinResponseHeaderTimeoutSeconds || timeoutSeconds > MaxResponseHeaderTimeoutSeconds {
+			timeoutSeconds = DefaultResponseHeaderTimeoutSeconds
+		}
+	}
+	return NormalizedResponseHeaderTimeoutSettings{
+		Enabled:        s.Enabled,
+		TimeoutSeconds: timeoutSeconds,
+	}
+}
+
+func (s ResponseHeaderTimeoutSettings) Validate() error {
+	if !s.Enabled || s.TimeoutSeconds == nil {
+		return nil
+	}
+	if *s.TimeoutSeconds < MinResponseHeaderTimeoutSeconds || *s.TimeoutSeconds > MaxResponseHeaderTimeoutSeconds {
+		return fmt.Errorf(
+			"timeout_seconds must be between %d and %d",
+			MinResponseHeaderTimeoutSeconds,
+			MaxResponseHeaderTimeoutSeconds,
+		)
+	}
+	return nil
 }
 
 func (s StatusCodeRetrySettings) Normalize() NormalizedStatusCodeRetrySettings {

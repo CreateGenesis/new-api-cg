@@ -549,6 +549,81 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
+
+var errResponseHeaderTimeout = errors.New("upstream response header timeout")
+
+type responseBodyCancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelCauseFunc
+}
+
+func (b *responseBodyCancelReadCloser) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel(nil)
+	return err
+}
+
+func doRequestWithResponseHeaderTimeout(client *http.Client, req *http.Request, timeout time.Duration) (*http.Response, error) {
+	if timeout <= 0 {
+		return client.Do(req)
+	}
+
+	timeoutContext, cancel := context.WithCancelCause(req.Context())
+	timerDone := make(chan struct{})
+	timer := time.AfterFunc(timeout, func() {
+		cancel(errResponseHeaderTimeout)
+		close(timerDone)
+	})
+
+	resp, err := client.Do(req.WithContext(timeoutContext))
+	if timer.Stop() {
+		if err != nil || resp == nil || resp.Body == nil {
+			cancel(nil)
+			return resp, err
+		}
+		resp.Body = &responseBodyCancelReadCloser{
+			ReadCloser: resp.Body,
+			cancel:     cancel,
+		}
+		return resp, nil
+	}
+
+	<-timerDone
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if errors.Is(context.Cause(timeoutContext), errResponseHeaderTimeout) {
+		return nil, errResponseHeaderTimeout
+	}
+	cancel(nil)
+	return resp, err
+}
+
+func responseHeaderTimeoutForRelay(info *common.RelayInfo) time.Duration {
+	if info == nil || info.ChannelMeta == nil || info.ChannelOtherSettings.ResponseHeaderTimeout == nil {
+		return 0
+	}
+
+	switch info.RelayFormat {
+	case types.RelayFormatOpenAI:
+		if info.RelayMode != constant.RelayModeChatCompletions && info.RelayMode != constant.RelayModeCompletions {
+			return 0
+		}
+	case types.RelayFormatOpenAIResponses,
+		types.RelayFormatOpenAIResponsesCompaction,
+		types.RelayFormatClaude,
+		types.RelayFormatGemini:
+	default:
+		return 0
+	}
+
+	settings := info.ChannelOtherSettings.ResponseHeaderTimeout.Normalize()
+	if !settings.Enabled {
+		return 0
+	}
+	return time.Duration(settings.TimeoutSeconds) * time.Second
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	service.CaptureRelayDebugHTTPRequest(c, req)
 	var client *http.Client
@@ -582,8 +657,19 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
-	resp, err := client.Do(req)
+	responseHeaderTimeout := responseHeaderTimeoutForRelay(info)
+	resp, err := doRequestWithResponseHeaderTimeout(client, req, responseHeaderTimeout)
 	if err != nil {
+		if errors.Is(err, errResponseHeaderTimeout) {
+			timeoutSeconds := int(responseHeaderTimeout / time.Second)
+			timeoutErr := fmt.Errorf("upstream response headers were not received within %d seconds", timeoutSeconds)
+			logger.LogWarn(c, timeoutErr.Error())
+			return nil, types.NewErrorWithStatusCode(
+				timeoutErr,
+				types.ErrorCodeChannelResponseHeaderTimeout,
+				http.StatusGatewayTimeout,
+			)
+		}
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}

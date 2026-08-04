@@ -25,3 +25,17 @@ func TestShouldDisableChannelExcludesStreamRetryError(t *testing.T) {
 	assert.False(t, ShouldDisableChannel(streamErr))
 	assert.True(t, ShouldDisableChannel(permanentErr))
 }
+
+func TestShouldDisableChannelExcludesResponseHeaderTimeout(t *testing.T) {
+	originalEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = originalEnabled })
+
+	timeoutErr := types.NewErrorWithStatusCode(
+		errors.New("upstream response headers timed out"),
+		types.ErrorCodeChannelResponseHeaderTimeout,
+		http.StatusGatewayTimeout,
+	)
+
+	assert.False(t, ShouldDisableChannel(timeoutErr))
+}

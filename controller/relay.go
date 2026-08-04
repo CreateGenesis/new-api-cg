@@ -844,6 +844,12 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 		}
 		return relayRetryEvaluation{retry: true, reason: "stream_error"}
 	}
+	if openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseHeaderTimeout {
+		if allowSpecificChannelRetry {
+			return relayRetryEvaluation{retry: policy.channelOverride, reason: "response_header_timeout"}
+		}
+		return relayRetryEvaluation{retry: true, reason: "response_header_timeout"}
+	}
 	if types.IsChannelError(openaiErr) {
 		if allowSpecificChannelRetry && c.GetBool("layered_relay_retry") {
 			return relayRetryEvaluation{retry: openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded, reason: "channel_error"}

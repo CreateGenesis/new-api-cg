@@ -376,6 +376,25 @@ func TestStreamErrorRetriesOnlyAcrossChannels(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, streamErr, policy, 1))
 }
 
+func TestResponseHeaderTimeoutUsesChannelOverrideBeforeSwitching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("layered_relay_retry", true)
+	timeoutErr := types.NewErrorWithStatusCode(
+		errors.New("upstream response headers timed out"),
+		types.ErrorCodeChannelResponseHeaderTimeout,
+		http.StatusGatewayTimeout,
+	)
+
+	withoutOverride := relayRetryPolicy{retryTimes: 1}
+	assert.False(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withoutOverride, 0, true, false).retry)
+	assert.True(t, shouldRetryWithPolicy(ctx, timeoutErr, withoutOverride, 0))
+
+	withOverride := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	assert.True(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withOverride, 0, true, false).retry)
+	assert.False(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withOverride, 1, true, false).retry)
+}
+
 func TestInternalRetryOverloadForcesChannelSwitchWithoutStatusMatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

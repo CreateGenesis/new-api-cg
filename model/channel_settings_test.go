@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/QuantumNous/new-api/constant"
@@ -26,6 +27,27 @@ func TestChannelValidateSettingsRejectsInvalidStatusCodeRetryRules(t *testing.T)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status_code_retry.status_codes")
+}
+
+func TestChannelValidateSettingsAcceptsResponseHeaderTimeoutDefault(t *testing.T) {
+	channel := &Channel{
+		OtherSettings: `{"response_header_timeout":{"enabled":true}}`,
+	}
+
+	require.NoError(t, channel.ValidateSettings())
+}
+
+func TestChannelValidateSettingsRejectsInvalidResponseHeaderTimeout(t *testing.T) {
+	for _, timeoutSeconds := range []int{0, 86401} {
+		channel := &Channel{
+			OtherSettings: fmt.Sprintf(`{"response_header_timeout":{"enabled":true,"timeout_seconds":%d}}`, timeoutSeconds),
+		}
+
+		err := channel.ValidateSettings()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "response_header_timeout.timeout_seconds")
+	}
 }
 
 func TestChannelValidateSettingsRejectsUnknownStreamInterruptionBillingMode(t *testing.T) {

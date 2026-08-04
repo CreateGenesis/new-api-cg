@@ -1,14 +1,118 @@
 package channel
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type responseHeaderTimeoutRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestDoRequestWithResponseHeaderTimeoutCancelsBeforeHeaders(t *testing.T) {
+	client := &http.Client{Transport: responseHeaderTimeoutRoundTripper(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, context.Cause(req.Context())
+	})}
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	require.NoError(t, err)
+
+	resp, err := doRequestWithResponseHeaderTimeout(client, req, 10*time.Millisecond)
+
+	require.Nil(t, resp)
+	require.ErrorIs(t, err, errResponseHeaderTimeout)
+}
+
+func TestDoRequestWithResponseHeaderTimeoutStopsAfterHeaders(t *testing.T) {
+	var upstreamContext context.Context
+	client := &http.Client{Transport: responseHeaderTimeoutRoundTripper(func(req *http.Request) (*http.Response, error) {
+		upstreamContext = req.Context()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("complete body")),
+			Request:    req,
+		}, nil
+	})}
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	require.NoError(t, err)
+
+	resp, err := doRequestWithResponseHeaderTimeout(client, req, time.Hour)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	content, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "complete body", string(content))
+	select {
+	case <-upstreamContext.Done():
+		require.Fail(t, "response context canceled before the response body closed")
+	default:
+	}
+	require.NoError(t, resp.Body.Close())
+	require.ErrorIs(t, upstreamContext.Err(), context.Canceled)
+}
+
+func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
+	timeoutSeconds := 180
+	settings := dto.ChannelOtherSettings{
+		ResponseHeaderTimeout: &dto.ResponseHeaderTimeoutSettings{
+			Enabled:        true,
+			TimeoutSeconds: &timeoutSeconds,
+		},
+	}
+	tests := []struct {
+		name   string
+		format types.RelayFormat
+		mode   int
+		want   time.Duration
+	}{
+		{name: "chat completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeChatCompletions, want: 3 * time.Minute},
+		{name: "completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeCompletions, want: 3 * time.Minute},
+		{name: "responses", format: types.RelayFormatOpenAIResponses, mode: relayconstant.RelayModeResponses, want: 3 * time.Minute},
+		{name: "responses compact", format: types.RelayFormatOpenAIResponsesCompaction, mode: relayconstant.RelayModeResponsesCompact, want: 3 * time.Minute},
+		{name: "claude", format: types.RelayFormatClaude, mode: relayconstant.RelayModeChatCompletions, want: 3 * time.Minute},
+		{name: "gemini", format: types.RelayFormatGemini, mode: relayconstant.RelayModeGemini, want: 3 * time.Minute},
+		{name: "embeddings excluded", format: types.RelayFormatEmbedding, mode: relayconstant.RelayModeEmbeddings},
+		{name: "images excluded", format: types.RelayFormatOpenAIImage, mode: relayconstant.RelayModeImagesGenerations},
+		{name: "realtime excluded", format: types.RelayFormatOpenAIRealtime, mode: relayconstant.RelayModeRealtime},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{
+				RelayFormat: testCase.format,
+				RelayMode:   testCase.mode,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: settings},
+			}
+
+			require.Equal(t, testCase.want, responseHeaderTimeoutForRelay(info))
+		})
+	}
+
+	disabledInfo := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			ResponseHeaderTimeout: &dto.ResponseHeaderTimeoutSettings{Enabled: false},
+		}},
+	}
+	require.Zero(t, responseHeaderTimeoutForRelay(disabledInfo))
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()

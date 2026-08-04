@@ -205,6 +205,7 @@ function readFiniteNumberProperty(
 export const DEFAULT_STATUS_CODE_RETRY_STATUS_CODES =
   '100-199,300-399,401-407,409-499,500-503,505-523,525-599'
 export const DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS = 50
+export const DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS = 180
 
 const CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO: Channel['channel_info'] = {
   is_multi_key: false,
@@ -384,6 +385,8 @@ export const channelFormSchema = z
     status_code_retry_times: z.number().optional(),
     status_code_retry_interval_ms: z.number().optional(),
     status_code_retry_status_codes: z.string().optional(),
+    response_header_timeout_enabled: z.boolean().optional(),
+    response_header_timeout_seconds: z.number().optional(),
     input_token_routing_enabled: z.boolean().optional(),
     input_token_routing_estimation_mode: z
       .enum(['default', 'glm_5_2', 'kimi_k3'])
@@ -710,6 +713,19 @@ export const channelFormSchema = z
     }
 
     if (
+      data.response_header_timeout_enabled &&
+      (!Number.isInteger(data.response_header_timeout_seconds) ||
+        Number(data.response_header_timeout_seconds) < 1 ||
+        Number(data.response_header_timeout_seconds) > 86400)
+    ) {
+      addRequiredIssue(
+        ctx,
+        'response_header_timeout_seconds',
+        'Response header timeout must be an integer between 1 and 86400.'
+      )
+    }
+
+    if (
       data.input_token_routing_enabled &&
       !parseInputTokenRoutingRanges(data.input_token_routing_ranges).ok
     ) {
@@ -810,6 +826,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   status_code_retry_times: 10,
   status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
   status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
+  response_header_timeout_enabled: false,
+  response_header_timeout_seconds: DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS,
   input_token_routing_enabled: false,
   input_token_routing_estimation_mode: 'default',
   input_token_routing_ranges: '',
@@ -908,6 +926,8 @@ export function transformChannelToFormDefaults(
   let statusCodeRetryTimes = 10
   let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
   let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
+  let responseHeaderTimeoutEnabled = false
+  let responseHeaderTimeoutSeconds = DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
   let inputTokenRoutingEnabled = false
   let inputTokenRoutingEstimationMode: InputTokenRoutingEstimationMode =
     'default'
@@ -1029,6 +1049,24 @@ export function transformChannelToFormDefaults(
           statusCodeRetry.status_codes.trim()
         ) {
           statusCodeRetryStatusCodes = statusCodeRetry.status_codes
+        }
+      }
+      if (
+        parsed.response_header_timeout &&
+        typeof parsed.response_header_timeout === 'object'
+      ) {
+        const responseHeaderTimeout = parsed.response_header_timeout as Record<
+          string,
+          unknown
+        >
+        responseHeaderTimeoutEnabled = responseHeaderTimeout.enabled === true
+        const timeoutSeconds = Number(responseHeaderTimeout.timeout_seconds)
+        if (
+          Number.isInteger(timeoutSeconds) &&
+          timeoutSeconds >= 1 &&
+          timeoutSeconds <= 86400
+        ) {
+          responseHeaderTimeoutSeconds = timeoutSeconds
         }
       }
       if (
@@ -1222,6 +1260,8 @@ export function transformChannelToFormDefaults(
     status_code_retry_times: statusCodeRetryTimes,
     status_code_retry_interval_ms: statusCodeRetryIntervalMS,
     status_code_retry_status_codes: statusCodeRetryStatusCodes,
+    response_header_timeout_enabled: responseHeaderTimeoutEnabled,
+    response_header_timeout_seconds: responseHeaderTimeoutSeconds,
     input_token_routing_enabled: inputTokenRoutingEnabled,
     input_token_routing_estimation_mode: inputTokenRoutingEstimationMode,
     input_token_routing_ranges: inputTokenRoutingRanges,
@@ -1463,6 +1503,20 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   } else if ('status_code_retry' in settingsObj) {
     delete settingsObj.status_code_retry
+  }
+
+  if (formData.response_header_timeout_enabled === true) {
+    const timeoutSeconds = Number(formData.response_header_timeout_seconds)
+    settingsObj.response_header_timeout = {
+      enabled: true,
+      timeout_seconds: Math.trunc(
+        Number.isFinite(timeoutSeconds)
+          ? timeoutSeconds
+          : DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
+      ),
+    }
+  } else if ('response_header_timeout' in settingsObj) {
+    delete settingsObj.response_header_timeout
   }
 
   if (formData.input_token_routing_enabled === true) {

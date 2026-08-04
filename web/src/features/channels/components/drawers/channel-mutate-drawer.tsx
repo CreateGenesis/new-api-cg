@@ -39,6 +39,7 @@ import {
   Plus,
   Eye,
   RefreshCw,
+  TimerReset,
   Code,
   Route,
   Settings,
@@ -265,6 +266,7 @@ const ADVANCED_SETTINGS_SECTION_IDS = {
   extraSettings: 'channel-section-advanced-extra-settings',
   fieldPassthrough: 'channel-section-advanced-field-passthrough',
   statusCodeRetry: 'channel-section-advanced-status-code-retry',
+  responseHeaderTimeout: 'channel-section-advanced-response-header-timeout',
   streamInterruptionBilling:
     'channel-section-advanced-stream-interruption-billing',
   cacheUsageValidationSplit:
@@ -332,6 +334,8 @@ const SENSITIVE_FORM_FIELDS = [
   'status_code_retry_times',
   'status_code_retry_interval_ms',
   'status_code_retry_status_codes',
+  'response_header_timeout_enabled',
+  'response_header_timeout_seconds',
   'input_token_routing_enabled',
   'input_token_routing_estimation_mode',
   'input_token_routing_ranges',
@@ -391,6 +395,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
+    values.response_header_timeout_enabled ||
     values.input_token_routing_enabled ||
     values.input_token_routing_estimation_mode !== 'default' ||
     values.stream_interruption_billing_mode !== 'off' ||
@@ -876,6 +881,9 @@ export function ChannelMutateDrawer({
     currentSimulatedModelCacheEstimateMissingInputTokens ||
     multiKeyType === 'cache_affinity_least_requests'
   const currentStatusCodeRetryEnabled = form.watch('status_code_retry_enabled')
+  const currentResponseHeaderTimeoutEnabled = form.watch(
+    'response_header_timeout_enabled'
+  )
   const currentInputTokenRoutingEnabled = form.watch(
     'input_token_routing_enabled'
   )
@@ -1211,6 +1219,9 @@ export function ChannelMutateDrawer({
     currentCacheUsageValidationSplit
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
+  const responseHeaderTimeoutConfigured = Boolean(
+    currentResponseHeaderTimeoutEnabled
+  )
   const inputTokenRoutingConfigured = Boolean(
     currentInputTokenRoutingEnabled ||
     currentInputTokenRoutingEstimationMode !== 'default' ||
@@ -1226,6 +1237,7 @@ export function ChannelMutateDrawer({
     extraSettingsConfigured ||
     fieldPassthroughConfigured ||
     statusCodeRetryConfigured ||
+    responseHeaderTimeoutConfigured ||
     streamInterruptionBillingConfigured ||
     cacheUsageValidationSplitConfigured ||
     simulatedModelCacheConfigured ||
@@ -1251,6 +1263,11 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.overrideRules,
       title: t('Override Rules'),
       configured: overrideRulesConfigured,
+    },
+    {
+      id: ADVANCED_SETTINGS_SECTION_IDS.responseHeaderTimeout,
+      title: t('Upstream Response Header Timeout'),
+      configured: responseHeaderTimeoutConfigured,
     },
     {
       id: ADVANCED_SETTINGS_SECTION_IDS.statusCodeRetry,
@@ -4888,6 +4905,96 @@ export function ChannelMutateDrawer({
                               />
                             </fieldset>
                           </div>
+                        </div>
+
+                        <div
+                          id={
+                            ADVANCED_SETTINGS_SECTION_IDS.responseHeaderTimeout
+                          }
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              responseHeaderTimeoutConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Upstream Response Header Timeout')}
+                            icon={
+                              <TimerReset
+                                className='h-4 w-4'
+                                aria-hidden='true'
+                              />
+                            }
+                          />
+                          <fieldset
+                            disabled={sensitiveLocked}
+                            className='space-y-4 disabled:opacity-60'
+                          >
+                            <div className='divide-border space-y-0 divide-y border-y'>
+                              <FormField
+                                control={form.control}
+                                name='response_header_timeout_enabled'
+                                render={({ field }) => (
+                                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                    <div className='space-y-0.5'>
+                                      <FormLabel className='text-sm'>
+                                        {t(
+                                          'Enable upstream response header timeout'
+                                        )}
+                                      </FormLabel>
+                                      <FormDescription>
+                                        {t(
+                                          'Abort this channel attempt when upstream response headers exceed the limit.'
+                                        )}
+                                      </FormDescription>
+                                    </div>
+                                    <FormControl>
+                                      <Switch
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                      />
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+
+                            <FormField
+                              control={form.control}
+                              name='response_header_timeout_seconds'
+                              render={({ field }) => (
+                                <FormItem className='max-w-sm'>
+                                  <FormLabel>
+                                    {t('Response header timeout (seconds)')}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input
+                                      type='number'
+                                      min={1}
+                                      max={86400}
+                                      step={1}
+                                      disabled={
+                                        !currentResponseHeaderTimeoutEnabled
+                                      }
+                                      {...field}
+                                      onChange={(event) =>
+                                        field.onChange(
+                                          Number(event.target.value)
+                                        )
+                                      }
+                                    />
+                                  </FormControl>
+                                  <FormDescription>
+                                    {t(
+                                      'Applied to each attempt; receiving response headers stops the timer.'
+                                    )}
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          </fieldset>
                         </div>
 
                         <div

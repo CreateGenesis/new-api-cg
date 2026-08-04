@@ -59,6 +59,7 @@ const (
 	ErrorCodeChannelAwsClientError        ErrorCode = "channel:aws_client_error"
 	ErrorCodeChannelInvalidKey            ErrorCode = "channel:invalid_key"
 	ErrorCodeChannelResponseTimeExceeded  ErrorCode = "channel:response_time_exceeded"
+	ErrorCodeChannelResponseHeaderTimeout ErrorCode = "channel:response_header_timeout"
 	ErrorCodeChannelStreamError           ErrorCode = "channel:stream_error"
 	ErrorCodeChannelOverloaded            ErrorCode = "channel_overloaded"
 
