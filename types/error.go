@@ -60,6 +60,7 @@ const (
 	ErrorCodeChannelInvalidKey            ErrorCode = "channel:invalid_key"
 	ErrorCodeChannelResponseTimeExceeded  ErrorCode = "channel:response_time_exceeded"
 	ErrorCodeChannelResponseHeaderTimeout ErrorCode = "channel:response_header_timeout"
+	ErrorCodeChannelResponseBodyTimeout   ErrorCode = "channel:response_body_timeout"
 	ErrorCodeChannelStreamError           ErrorCode = "channel:stream_error"
 	ErrorCodeChannelOverloaded            ErrorCode = "channel_overloaded"
 

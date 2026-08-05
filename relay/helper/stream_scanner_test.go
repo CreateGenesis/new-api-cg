@@ -518,6 +518,41 @@ func TestStreamScannerHandler_StreamStatus_Timeout(t *testing.T) {
 	assert.False(t, info.StreamStatus.IsNormalEnd())
 }
 
+func TestStreamScannerHandler_HeartbeatsDoNotExtendMeaningfulDataTimeout(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, err := fmt.Fprint(writer, ": upstream heartbeat\n\n"); err != nil {
+				return
+			}
+		}
+	}()
+
+	c, resp, info := setupStreamTest(t, reader)
+	info.DisablePing = true
+	info.IsStream = true
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.RequireStreamProtocolEnd()
+
+	started := time.Now()
+	streamErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	require.NotNil(t, streamErr)
+	assert.Equal(t, types.ErrorCodeChannelStreamError, streamErr.GetErrorCode())
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.Less(t, time.Since(started), 2*time.Second)
+}
+
 func TestStreamScannerHandler_StreamStatus_SoftErrors(t *testing.T) {
 	t.Parallel()
 

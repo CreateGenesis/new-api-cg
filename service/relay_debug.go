@@ -154,18 +154,41 @@ type RelayRetrySummary struct {
 }
 
 type relayDebugCollector struct {
-	mu           sync.Mutex
-	trace        RelayDebugTrace
-	current      *RelayDebugAttempt
-	failureCount int
-	textLimit    int
-	finalized    bool
-	summary      *RelayRetrySummary
+	mu            sync.Mutex
+	trace         RelayDebugTrace
+	current       *RelayDebugAttempt
+	failureCount  int
+	textLimit     int
+	captureBudget *relayDebugCaptureBudget
+	finalized     bool
+	summary       *RelayRetrySummary
+}
+
+type relayDebugCaptureBudget struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func (b *relayDebugCaptureBudget) reserve(size int) int {
+	if b == nil || size <= 0 {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining <= 0 {
+		return 0
+	}
+	if size > b.remaining {
+		size = b.remaining
+	}
+	b.remaining -= size
+	return size
 }
 
 type relayDebugBodyRecorder struct {
 	mu       sync.Mutex
 	buffer   bytes.Buffer
+	budget   *relayDebugCaptureBudget
 	limit    int
 	size     int64
 	overflow bool
@@ -184,23 +207,24 @@ func (r *relayDebugReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func newRelayDebugBodyRecorder(limit int) *relayDebugBodyRecorder {
-	return &relayDebugBodyRecorder{limit: limit}
+func newRelayDebugBodyRecorder(budget *relayDebugCaptureBudget, limit int) *relayDebugBodyRecorder {
+	return &relayDebugBodyRecorder{budget: budget, limit: limit}
 }
 
 func (r *relayDebugBodyRecorder) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.size += int64(len(p))
-	remaining := r.limit - r.buffer.Len()
-	if remaining > 0 {
-		if remaining > len(p) {
-			remaining = len(p)
-		}
-		_, _ = r.buffer.Write(p[:remaining])
+	if r.overflow {
+		return len(p), nil
 	}
-	if r.buffer.Len() < int(r.size) {
+	reserved := r.budget.reserve(len(p))
+	if reserved > 0 {
+		_, _ = r.buffer.Write(p[:reserved])
+	}
+	if reserved < len(p) {
 		r.overflow = true
+		r.buffer = bytes.Buffer{}
 	}
 	return len(p), nil
 }
@@ -210,11 +234,10 @@ func (r *relayDebugBodyRecorder) snapshot(contentType string) *RelayDebugBody {
 		return nil
 	}
 	r.mu.Lock()
-	data := append([]byte(nil), r.buffer.Bytes()...)
 	size := r.size
 	overflow := r.overflow
-	r.mu.Unlock()
 	if overflow {
+		r.mu.Unlock()
 		return &RelayDebugBody{
 			Kind:           "omitted",
 			ContentType:    contentType,
@@ -224,6 +247,8 @@ func (r *relayDebugBodyRecorder) snapshot(contentType string) *RelayDebugBody {
 			OmittedReason:  "body_exceeds_debug_limit",
 		}
 	}
+	data := append([]byte(nil), r.buffer.Bytes()...)
+	r.mu.Unlock()
 	return sanitizeRelayDebugBody(data, contentType, size, r.limit)
 }
 
@@ -246,8 +271,10 @@ func StartRelayDebug(c *gin.Context) {
 	if limitMB < 1 || limitMB > 128 {
 		limitMB = 16
 	}
+	textLimit := limitMB << 20
 	collector := &relayDebugCollector{
-		textLimit: limitMB << 20,
+		textLimit:     textLimit,
+		captureBudget: &relayDebugCaptureBudget{remaining: textLimit},
 		trace: RelayDebugTrace{
 			Version:   1,
 			RequestId: c.GetString(common.RequestIdKey),
@@ -265,7 +292,7 @@ func StartRelayDebug(c *gin.Context) {
 	if storage, err := common.GetBodyStorage(c); err == nil {
 		collector.trace.Client.BodySize = storage.Size()
 		if _, err := storage.Seek(0, io.SeekStart); err == nil {
-			recorder := newRelayDebugBodyRecorder(collector.textLimit)
+			recorder := newRelayDebugBodyRecorder(collector.captureBudget, collector.textLimit)
 			_, _ = io.Copy(recorder, storage)
 			collector.trace.Client.Body = recorder.snapshot(collector.trace.Client.ContentType)
 			_, _ = storage.Seek(0, io.SeekStart)
@@ -334,7 +361,7 @@ func CaptureRelayDebugHTTPRequest(c *gin.Context, req *http.Request) {
 		exchange.Request.URL = relaycommon.SanitizeURLForLog(req.URL.String())
 	}
 	if req.Body != nil {
-		recorder := newRelayDebugBodyRecorder(collector.textLimit)
+		recorder := newRelayDebugBodyRecorder(collector.captureBudget, collector.textLimit)
 		exchange.Request.recorder = recorder
 		req.Body = &relayDebugReadCloser{ReadCloser: req.Body, recorder: recorder}
 	}
@@ -356,7 +383,7 @@ func CaptureRelayDebugHTTPResponse(c *gin.Context, resp *http.Response) {
 	exchange.Response.Headers = sanitizeRelayDebugHeaders(resp.Header)
 	shouldCaptureBody := resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !common.GetContextKeyBool(c, constant.ContextKeyIsStream)
 	if resp.Body != nil && shouldCaptureBody {
-		recorder := newRelayDebugBodyRecorder(collector.textLimit)
+		recorder := newRelayDebugBodyRecorder(collector.captureBudget, collector.textLimit)
 		exchange.Response.recorder = recorder
 		resp.Body = &relayDebugReadCloser{ReadCloser: resp.Body, recorder: recorder}
 	}

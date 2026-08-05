@@ -151,6 +151,57 @@ describe('channel form status code retry settings', () => {
   })
 })
 
+describe('channel form response header timeout settings', () => {
+  test('enables the 180 second policy for new channels', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(
+      CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_enabled,
+      true
+    )
+    assert.deepEqual(settings.response_header_timeout, {
+      enabled: true,
+      timeout_seconds: 180,
+    })
+  })
+
+  test('treats a missing saved setting as enabled', () => {
+    const form = transformChannelToFormDefaults(testChannel('{}'))
+
+    assert.equal(form.response_header_timeout_enabled, true)
+    assert.equal(form.response_header_timeout_seconds, 180)
+  })
+
+  test('persists an explicit disabled setting', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel('{"response_header_timeout":{"enabled":false}}')
+    )
+    assert.equal(form.response_header_timeout_enabled, false)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.deepEqual(settings.response_header_timeout, { enabled: false })
+  })
+})
+
 describe('channel form stream interruption billing settings', () => {
   test('loads and saves input-only interruption billing', () => {
     const form = transformChannelToFormDefaults(

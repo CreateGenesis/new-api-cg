@@ -39,3 +39,17 @@ func TestShouldDisableChannelExcludesResponseHeaderTimeout(t *testing.T) {
 
 	assert.False(t, ShouldDisableChannel(timeoutErr))
 }
+
+func TestShouldDisableChannelExcludesResponseBodyTimeout(t *testing.T) {
+	originalEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = originalEnabled })
+
+	timeoutErr := types.NewErrorWithStatusCode(
+		errors.New("upstream response body timed out"),
+		types.ErrorCodeChannelResponseBodyTimeout,
+		http.StatusGatewayTimeout,
+	)
+
+	assert.False(t, ShouldDisableChannel(timeoutErr))
+}

@@ -326,7 +326,11 @@ docker run --name new-api -d --restart always \
 | `SQL_DSN` | Database connection string | - |
 | `REDIS_CONN_STRING` | Redis connection string | - |
 | `RELAY_IDLE_CONN_TIMEOUT` | Idle keep-alive timeout for relay HTTP clients, seconds. Defaults to Go standard library behavior; set `0` to disable | `90` |
-| `STREAMING_TIMEOUT` | Streaming timeout (seconds) | `300` |
+| `RELAY_RESPONSE_BODY_TIMEOUT` | Non-stream upstream response body idle timeout (seconds) | `300` |
+| `STREAMING_TIMEOUT` | Meaningful SSE `data:` payload idle timeout; comments, blank lines and heartbeats do not reset it (seconds) | `300` |
+| `HTTP_SERVER_READ_HEADER_TIMEOUT_SECONDS` | Client request header read timeout (seconds) | `10` |
+| `HTTP_SERVER_READ_TIMEOUT_SECONDS` | Complete client request read timeout (seconds) | `300` |
+| `HTTP_SERVER_IDLE_TIMEOUT_SECONDS` | HTTP keep-alive idle timeout (seconds) | `120` |
 | `STREAM_SCANNER_MAX_BUFFER_MB` | Max per-line buffer (MB) for the stream scanner; increase when upstream sends huge image/base64 payloads | `64` |
 | `MAX_REQUEST_BODY_MB` | Max request body size (MB, counted **after decompression**; prevents huge requests/zip bombs from exhausting memory). Exceeding it returns `413` | `32` |
 | `AZURE_DEFAULT_API_VERSION` | Azure API version | `2025-04-01-preview` |

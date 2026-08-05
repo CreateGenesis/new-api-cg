@@ -198,8 +198,12 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: server,
+		Addr:              ":" + port,
+		Handler:           server,
+		ReadHeaderTimeout: time.Duration(common.GetEnvOrDefault("HTTP_SERVER_READ_HEADER_TIMEOUT_SECONDS", 10)) * time.Second,
+		ReadTimeout:       time.Duration(common.GetEnvOrDefault("HTTP_SERVER_READ_TIMEOUT_SECONDS", 300)) * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       time.Duration(common.GetEnvOrDefault("HTTP_SERVER_IDLE_TIMEOUT_SECONDS", 120)) * time.Second,
 	}
 
 	go func() {

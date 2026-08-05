@@ -395,7 +395,10 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
-    values.response_header_timeout_enabled ||
+    values.response_header_timeout_enabled !==
+      CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_enabled ||
+    values.response_header_timeout_seconds !==
+      CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_seconds ||
     values.input_token_routing_enabled ||
     values.input_token_routing_estimation_mode !== 'default' ||
     values.stream_interruption_billing_mode !== 'off' ||
@@ -884,6 +887,9 @@ export function ChannelMutateDrawer({
   const currentResponseHeaderTimeoutEnabled = form.watch(
     'response_header_timeout_enabled'
   )
+  const currentResponseHeaderTimeoutSeconds = form.watch(
+    'response_header_timeout_seconds'
+  )
   const currentInputTokenRoutingEnabled = form.watch(
     'input_token_routing_enabled'
   )
@@ -1220,7 +1226,10 @@ export function ChannelMutateDrawer({
   )
   const statusCodeRetryConfigured = Boolean(currentStatusCodeRetryEnabled)
   const responseHeaderTimeoutConfigured = Boolean(
-    currentResponseHeaderTimeoutEnabled
+    currentResponseHeaderTimeoutEnabled !==
+      CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_enabled ||
+    currentResponseHeaderTimeoutSeconds !==
+      CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_seconds
   )
   const inputTokenRoutingConfigured = Boolean(
     currentInputTokenRoutingEnabled ||

@@ -135,6 +135,27 @@ func TestRelayDebugBodyTruncationAndTraceBudget(t *testing.T) {
 	assert.True(t, trace.Attempts[0].Exchanges[0].Response.Body.Truncated)
 }
 
+func TestRelayDebugRecordersShareCaptureBudget(t *testing.T) {
+	budget := &relayDebugCaptureBudget{remaining: 8}
+	first := newRelayDebugBodyRecorder(budget, 8)
+	second := newRelayDebugBodyRecorder(budget, 8)
+
+	_, err := first.Write([]byte("123456"))
+	require.NoError(t, err)
+	_, err = second.Write([]byte("abcd"))
+	require.NoError(t, err)
+
+	firstBody := first.snapshot("text/plain")
+	secondBody := second.snapshot("text/plain")
+	require.NotNil(t, firstBody)
+	require.NotNil(t, secondBody)
+	assert.Equal(t, "123456", firstBody.Text)
+	assert.Equal(t, "omitted", secondBody.Kind)
+	assert.Equal(t, "body_exceeds_debug_limit", secondBody.OmittedReason)
+	assert.Zero(t, second.buffer.Cap(), "overflowed recorder must release its capture buffer")
+	assert.Zero(t, budget.remaining)
+}
+
 func TestRecoveredRelayDebugAttemptRetainsSanitizedUpstreamRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousEnabled := common.RelayDebugLogEnabled

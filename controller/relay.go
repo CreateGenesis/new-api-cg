@@ -333,7 +333,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			service.SetRelayDebugDecision(c, service.RelayDebugDecision{Action: action, Reason: sameChannelDecision.reason})
 			sameChannelRetryState.Increase()
-			waitBeforeRelayRetry(c, channelRetryPolicy.retryDelay)
+			if !waitBeforeRelayRetry(c, channelRetryPolicy.retryDelay) {
+				break
+			}
 			channel, newAPIError = prepareMultiKeyChannelRetry(c, channel, relayInfo)
 			if newAPIError != nil {
 				relayInfo.LastError = newAPIError
@@ -828,6 +830,9 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 	if openaiErr == nil {
 		return relayRetryEvaluation{reason: "no_error"}
 	}
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		return relayRetryEvaluation{reason: "client_canceled"}
+	}
 	if respectAffinitySkip && service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return relayRetryEvaluation{reason: "affinity_locked"}
 	}
@@ -853,6 +858,12 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 			return relayRetryEvaluation{retry: policy.channelOverride, reason: "response_header_timeout"}
 		}
 		return relayRetryEvaluation{retry: true, reason: "response_header_timeout"}
+	}
+	if openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseBodyTimeout {
+		if allowSpecificChannelRetry {
+			return relayRetryEvaluation{retry: policy.channelOverride, reason: "response_body_timeout"}
+		}
+		return relayRetryEvaluation{retry: true, reason: "response_body_timeout"}
 	}
 	if types.IsChannelError(openaiErr) {
 		if allowSpecificChannelRetry && c.GetBool("layered_relay_retry") {
@@ -911,14 +922,22 @@ func recordInternalRetryOverloadBlocked(c *gin.Context, channel *model.Channel, 
 	logger.LogWarn(c, fmt.Sprintf("same-channel retry blocked by overload: channel=%d reason=%s inter_retry=%d/%d", channel.Id, reason, currentRetry, policy.retryTimes))
 }
 
-func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) {
-	if delay <= 0 || c.Request == nil {
-		return
+func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) bool {
+	if c == nil || c.Request == nil {
+		return true
+	}
+	if c.Request.Context().Err() != nil {
+		return false
+	}
+	if delay <= 0 {
+		return true
 	}
 	timer := time.NewTimer(delay)
+	completed := true
 	select {
 	case <-timer.C:
 	case <-c.Request.Context().Done():
+		completed = false
 	}
 	if !timer.Stop() {
 		select {
@@ -926,6 +945,7 @@ func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) {
 		default:
 		}
 	}
+	return completed
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

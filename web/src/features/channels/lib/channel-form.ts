@@ -826,7 +826,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   status_code_retry_times: 10,
   status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
   status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
-  response_header_timeout_enabled: false,
+  response_header_timeout_enabled: true,
   response_header_timeout_seconds: DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS,
   input_token_routing_enabled: false,
   input_token_routing_estimation_mode: 'default',
@@ -926,7 +926,7 @@ export function transformChannelToFormDefaults(
   let statusCodeRetryTimes = 10
   let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
   let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
-  let responseHeaderTimeoutEnabled = false
+  let responseHeaderTimeoutEnabled = true
   let responseHeaderTimeoutSeconds = DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
   let inputTokenRoutingEnabled = false
   let inputTokenRoutingEstimationMode: InputTokenRoutingEstimationMode =
@@ -1059,7 +1059,7 @@ export function transformChannelToFormDefaults(
           string,
           unknown
         >
-        responseHeaderTimeoutEnabled = responseHeaderTimeout.enabled === true
+        responseHeaderTimeoutEnabled = responseHeaderTimeout.enabled !== false
         const timeoutSeconds = Number(responseHeaderTimeout.timeout_seconds)
         if (
           Number.isInteger(timeoutSeconds) &&
@@ -1515,8 +1515,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
           : DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
       ),
     }
-  } else if ('response_header_timeout' in settingsObj) {
-    delete settingsObj.response_header_timeout
+  } else {
+    settingsObj.response_header_timeout = { enabled: false }
   }
 
   if (formData.input_token_routing_enabled === true) {

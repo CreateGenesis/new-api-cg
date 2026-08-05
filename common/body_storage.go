@@ -261,9 +261,10 @@ func CreateBodyStorage(data []byte) (BodyStorage, error) {
 // CreateBodyStorageFromReader 从 Reader 创建存储（用于大请求的流式处理）
 func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes int64) (BodyStorage, error) {
 	threshold := GetDiskCacheThresholdBytes()
+	diskCacheEnabled := IsDiskCacheEnabled() && threshold > 0
 
 	// 如果启用了磁盘缓存且内容长度超过阈值，直接使用磁盘存储
-	if IsDiskCacheEnabled() &&
+	if diskCacheEnabled &&
 		contentLength > 0 &&
 		contentLength >= threshold &&
 		IsDiskCacheAvailable(contentLength) {
@@ -274,6 +275,36 @@ func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes
 			}
 			// 磁盘存储失败，reader 已被消费，无法安全回退
 			// 直接返回错误而非尝试回退（因为 reader 数据已丢失）
+			return nil, fmt.Errorf("disk storage creation failed: %w", err)
+		}
+		IncrementDiskCacheHits()
+		return storage, nil
+	}
+
+	// Unknown, chunked, decompressed, or inaccurate Content-Length bodies are
+	// sampled only up to the disk threshold. Once they cross it, continue
+	// directly into a temporary file instead of first retaining maxBytes in RAM.
+	if diskCacheEnabled && threshold <= maxBytes && IsDiskCacheAvailable(threshold) {
+		var prefix bytes.Buffer
+		read, err := io.CopyN(&prefix, reader, threshold)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if read < threshold {
+			storage := newMemoryStorage(prefix.Bytes())
+			IncrementMemoryCacheHits()
+			return storage, nil
+		}
+
+		storage, err := newDiskStorageFromReader(
+			io.MultiReader(bytes.NewReader(prefix.Bytes()), reader),
+			maxBytes,
+			GetDiskCachePath(),
+		)
+		if err != nil {
+			if IsRequestBodyTooLargeError(err) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("disk storage creation failed: %w", err)
 		}
 		IncrementDiskCacheHits()

@@ -112,6 +112,32 @@ func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 		}},
 	}
 	require.Zero(t, responseHeaderTimeoutForRelay(disabledInfo))
+
+	defaultInfo := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+	require.Equal(t, 3*time.Minute, responseHeaderTimeoutForRelay(defaultInfo))
+}
+
+func TestResponseBodyIdleReadCloserReturnsChannelTimeout(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	body := newResponseBodyIdleReadCloser(reader, 20*time.Millisecond)
+
+	_, err := io.ReadAll(body)
+
+	require.Error(t, err)
+	var apiErr *types.NewAPIError
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, types.ErrorCodeChannelResponseBodyTimeout, apiErr.GetErrorCode())
+	require.Equal(t, http.StatusGatewayTimeout, apiErr.StatusCode)
+	require.ErrorIs(t, err, errResponseBodyTimeout)
+
+	wrapped := types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	require.Equal(t, types.ErrorCodeChannelResponseBodyTimeout, wrapped.GetErrorCode())
+	require.Equal(t, http.StatusGatewayTimeout, wrapped.StatusCode)
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {

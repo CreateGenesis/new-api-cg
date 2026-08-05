@@ -12,6 +12,7 @@ import (
 	"time"
 
 	common2 "github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -375,7 +376,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -409,7 +410,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -551,10 +552,105 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 }
 
 var errResponseHeaderTimeout = errors.New("upstream response header timeout")
+var errResponseBodyTimeout = errors.New("upstream response body timeout")
 
 type responseBodyCancelReadCloser struct {
 	io.ReadCloser
 	cancel context.CancelCauseFunc
+}
+
+type responseBodyIdleReadCloser struct {
+	io.ReadCloser
+	timeout  time.Duration
+	mu       sync.Mutex
+	timer    *time.Timer
+	timedOut bool
+	closed   bool
+	closeErr error
+}
+
+func newResponseBodyIdleReadCloser(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
+	if body == nil || timeout <= 0 {
+		return body
+	}
+	return &responseBodyIdleReadCloser{ReadCloser: body, timeout: timeout}
+}
+
+func (b *responseBodyIdleReadCloser) timeoutError() error {
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("upstream response body produced no data for %d seconds: %w", int(b.timeout/time.Second), errResponseBodyTimeout),
+		types.ErrorCodeChannelResponseBodyTimeout,
+		http.StatusGatewayTimeout,
+	)
+}
+
+func (b *responseBodyIdleReadCloser) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	if b.closed {
+		timedOut := b.timedOut
+		b.mu.Unlock()
+		if timedOut {
+			return 0, b.timeoutError()
+		}
+		return 0, http.ErrBodyReadAfterClose
+	}
+	if b.timer == nil {
+		b.timer = time.AfterFunc(b.timeout, b.expire)
+	} else {
+		b.timer.Reset(b.timeout)
+	}
+	b.mu.Unlock()
+
+	n, err := b.ReadCloser.Read(p)
+
+	b.mu.Lock()
+	timedOut := b.timedOut
+	if err != nil && b.timer != nil {
+		b.timer.Stop()
+	} else if n > 0 && b.timer != nil {
+		b.timer.Reset(b.timeout)
+	}
+	b.mu.Unlock()
+	if timedOut {
+		return n, b.timeoutError()
+	}
+	return n, err
+}
+
+func (b *responseBodyIdleReadCloser) expire() {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.timedOut = true
+	b.closed = true
+	b.mu.Unlock()
+
+	err := b.ReadCloser.Close()
+	b.mu.Lock()
+	b.closeErr = err
+	b.mu.Unlock()
+}
+
+func (b *responseBodyIdleReadCloser) Close() error {
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	if b.closed {
+		err := b.closeErr
+		b.mu.Unlock()
+		return err
+	}
+	b.closed = true
+	b.mu.Unlock()
+
+	err := b.ReadCloser.Close()
+	b.mu.Lock()
+	b.closeErr = err
+	b.mu.Unlock()
+	return err
 }
 
 func (b *responseBodyCancelReadCloser) Close() error {
@@ -600,7 +696,7 @@ func doRequestWithResponseHeaderTimeout(client *http.Client, req *http.Request, 
 }
 
 func responseHeaderTimeoutForRelay(info *common.RelayInfo) time.Duration {
-	if info == nil || info.ChannelMeta == nil || info.ChannelOtherSettings.ResponseHeaderTimeout == nil {
+	if info == nil || info.ChannelMeta == nil {
 		return 0
 	}
 
@@ -615,6 +711,9 @@ func responseHeaderTimeoutForRelay(info *common.RelayInfo) time.Duration {
 		types.RelayFormatGemini:
 	default:
 		return 0
+	}
+	if info.ChannelOtherSettings.ResponseHeaderTimeout == nil {
+		return time.Duration(dto.DefaultResponseHeaderTimeoutSeconds) * time.Second
 	}
 
 	settings := info.ChannelOtherSettings.ResponseHeaderTimeout.Normalize()
@@ -676,6 +775,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
+	if !info.IsStream && !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		resp.Body = newResponseBodyIdleReadCloser(resp.Body, time.Duration(common2.RelayResponseBodyTimeout)*time.Second)
+	}
 	service.CaptureRelayDebugHTTPResponse(c, resp)
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
@@ -692,7 +794,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}

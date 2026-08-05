@@ -413,6 +413,45 @@ func TestResponseHeaderTimeoutUsesChannelOverrideBeforeSwitching(t *testing.T) {
 	assert.False(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withOverride, 1, true, false).retry)
 }
 
+func TestResponseBodyTimeoutUsesChannelOverrideBeforeSwitching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("layered_relay_retry", true)
+	timeoutErr := types.NewErrorWithStatusCode(
+		errors.New("upstream response body timed out"),
+		types.ErrorCodeChannelResponseBodyTimeout,
+		http.StatusGatewayTimeout,
+	)
+
+	withoutOverride := relayRetryPolicy{retryTimes: 1}
+	assert.False(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withoutOverride, 0, true, false).retry)
+	assert.True(t, shouldRetryWithPolicy(ctx, timeoutErr, withoutOverride, 0))
+
+	withOverride := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	assert.True(t, evaluateRetryRelayErrorWithPolicy(ctx, timeoutErr, withOverride, 0, true, false).retry)
+}
+
+func TestCanceledClientSuppressesAllRelayRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	requestContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(requestContext)
+	relayErr := types.NewErrorWithStatusCode(
+		errors.New("upstream unavailable"),
+		types.ErrorCodeChannelResponseHeaderTimeout,
+		http.StatusGatewayTimeout,
+	)
+	policy := relayRetryPolicy{retryTimes: 3, channelOverride: true}
+
+	decision := evaluateRetryRelayErrorWithPolicy(ctx, relayErr, policy, 0, false, false)
+
+	assert.False(t, decision.retry)
+	assert.Equal(t, "client_canceled", decision.reason)
+	assert.False(t, waitBeforeRelayRetry(ctx, time.Second))
+}
+
 func TestInternalRetryOverloadForcesChannelSwitchWithoutStatusMatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
