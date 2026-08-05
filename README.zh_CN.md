@@ -325,7 +325,7 @@ docker run --name new-api -d --restart always \
 | `CRYPTO_SECRET` | 缓存键 HMAC 密钥；共享 Redis 的节点必须使用相同有效值 | 默认跟随 `SESSION_SECRET` |
 | `SQL_DSN` | 数据库连接字符串                                                     | - |
 | `REDIS_CONN_STRING` | Redis 连接字符串                                                  | - |
-| `RELAY_RESPONSE_BODY_TIMEOUT` | 非流式上游响应体连续无数据超时（秒）                              | `300` |
+| `RELAY_RESPONSE_BODY_TIMEOUT` | 非流式上游响应体连续无数据超时（秒）；`0` 表示不限制                  | `1200` |
 | `STREAMING_TIMEOUT` | SSE 有效 `data:` 载荷连续无数据超时（秒）；注释、空行和心跳不会续期          | `300` |
 | `HTTP_SERVER_READ_HEADER_TIMEOUT_SECONDS` | 客户端请求头读取超时（秒）                            | `10` |
 | `HTTP_SERVER_READ_TIMEOUT_SECONDS` | 客户端完整请求读取超时（秒）                               | `300` |
