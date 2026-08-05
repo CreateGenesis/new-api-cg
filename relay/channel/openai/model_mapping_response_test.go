@@ -97,6 +97,75 @@ func TestOpenAIStreamHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
 	require.NotContains(t, got, `"model":"xopglm52"`)
 }
 
+func TestOpenAIStreamHandlerPreservesReasoningForClaudeClient(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	c, recorder, info := newMappedOpenAIResponseTestContext(t)
+	info.RelayFormat = types.RelayFormatClaude
+	info.IsStream = true
+	info.ClaudeConvertInfo = &relaycommon.ClaudeConvertInfo{
+		LastMessagesType: relaycommon.LastMessageTypeNone,
+	}
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"reasoning_content":"reasoning","content":"answer"},"finish_reason":"stop"}]}`,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, err := OaiStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+	require.Equal(t, 1, strings.Count(got, `"type":"message_start"`))
+	require.Contains(t, got, `"type":"thinking"`)
+	require.Contains(t, got, `"type":"thinking_delta","thinking":"reasoning"`)
+	require.Contains(t, got, `"type":"text_delta","text":"answer"`)
+	require.Contains(t, got, `"type":"message_stop"`)
+}
+
+func TestOpenAIHandlerPreservesReasoningForClaudeClient(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	c, recorder, info := newMappedOpenAIResponseTestContext(t)
+	info.RelayFormat = types.RelayFormatClaude
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1710000000,
+			"model":"kimi-k3",
+			"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"reasoning","content":"answer"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
+		}`)),
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	usage, err := OpenaiHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+	require.Contains(t, got, `"type":"thinking","thinking":"reasoning"`)
+	require.Contains(t, got, `"type":"text","text":"answer"`)
+}
+
 func TestOpenAIStreamHandlerFinishReasonCompletesProtocolWithoutDone(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)

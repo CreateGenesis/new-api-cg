@@ -79,6 +79,45 @@ func TestResponseOpenAI2ClaudeUsageCarriesOpenAIBillingUsage(t *testing.T) {
 	assert.Nil(t, resp.Usage.BillingUsage.OpenAIUsage.BillingUsage)
 }
 
+func TestResponseOpenAI2ClaudePreservesReasoningAsThinkingBlock(t *testing.T) {
+	reasoning := "inspect the request"
+	message := dto.Message{
+		Role:             "assistant",
+		Content:          "final answer",
+		ReasoningContent: &reasoning,
+	}
+	message.SetToolCalls([]dto.ToolCallRequest{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "lookup",
+				Arguments: `{"q":"x"}`,
+			},
+		},
+	})
+	resp := ResponseOpenAI2Claude(&dto.OpenAITextResponse{
+		Id:    "chatcmpl_1",
+		Model: "kimi-k3",
+		Choices: []dto.OpenAITextResponseChoice{
+			{
+				Message:      message,
+				FinishReason: "stop",
+			},
+		},
+	}, nil)
+
+	require.Len(t, resp.Content, 3)
+	assert.Equal(t, "thinking", resp.Content[0].Type)
+	require.NotNil(t, resp.Content[0].Thinking)
+	assert.Equal(t, reasoning, *resp.Content[0].Thinking)
+	assert.Equal(t, "text", resp.Content[1].Type)
+	assert.Equal(t, "final answer", resp.Content[1].GetText())
+	assert.Equal(t, "tool_use", resp.Content[2].Type)
+	assert.Equal(t, "lookup", resp.Content[2].Name)
+	assert.Equal(t, map[string]interface{}{"q": "x"}, resp.Content[2].Input)
+}
+
 func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
 	usage := buildClaudeUsageFromOpenAIUsage(&dto.Usage{
 		PromptTokens:     3619,
@@ -147,6 +186,10 @@ func TestStreamResponseOpenAI2ClaudeClosesTextThinkingAndToolBlocks(t *testing.T
 	assert.Equal(t, 1, thinkingResponses[1].GetIndex())
 	assert.Equal(t, "thinking", thinkingResponses[1].ContentBlock.Type)
 	assert.Equal(t, "content_block_delta", thinkingResponses[2].Type)
+	require.NotNil(t, thinkingResponses[2].Delta)
+	assert.Equal(t, "thinking_delta", thinkingResponses[2].Delta.Type)
+	require.NotNil(t, thinkingResponses[2].Delta.Thinking)
+	assert.Equal(t, "thinking", *thinkingResponses[2].Delta.Thinking)
 
 	info.SendResponseCount = 3
 	toolResponses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
@@ -202,6 +245,121 @@ func TestStreamResponseOpenAI2ClaudeClosesTextThinkingAndToolBlocks(t *testing.T
 	assert.Equal(t, 7, finishResponses[1].Usage.BillingUsage.OpenAIUsage.PromptTokens)
 	assert.Equal(t, 3, finishResponses[1].Usage.BillingUsage.OpenAIUsage.CompletionTokens)
 	assert.Equal(t, "message_stop", finishResponses[2].Type)
+}
+
+func TestStreamResponseOpenAI2ClaudePreservesReasoningAndTextFromSameChunk(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		SendResponseCount: 1,
+		ClaudeConvertInfo: &relaycommon.ClaudeConvertInfo{
+			LastMessagesType: relaycommon.LastMessageTypeNone,
+		},
+	}
+
+	responses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Id:    "chatcmpl_1",
+		Model: "kimi-k3",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+					ReasoningContent: ptr("reasoning"),
+					Content:          ptr("answer"),
+				},
+			},
+		},
+	}, info)
+
+	require.Len(t, responses, 6)
+	assert.Equal(t, "message_start", responses[0].Type)
+	assert.Equal(t, "thinking", responses[1].ContentBlock.Type)
+	assert.Equal(t, "thinking_delta", responses[2].Delta.Type)
+	assert.Equal(t, "reasoning", *responses[2].Delta.Thinking)
+	assert.Equal(t, "content_block_stop", responses[3].Type)
+	assert.Equal(t, "text", responses[4].ContentBlock.Type)
+	assert.Equal(t, "text_delta", responses[5].Delta.Type)
+	assert.Equal(t, "answer", *responses[5].Delta.Text)
+}
+
+func TestStreamResponseOpenAI2ClaudePreservesAllDeltaFields(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		SendResponseCount: 2,
+		ClaudeConvertInfo: &relaycommon.ClaudeConvertInfo{
+			LastMessagesType: relaycommon.LastMessageTypeNone,
+		},
+	}
+
+	responses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+					ReasoningContent: ptr("reasoning"),
+					Content:          ptr("answer"),
+					ToolCalls: []dto.ToolCallResponse{
+						{
+							Index: ptr(0),
+							ID:    "call_1",
+							Type:  "function",
+							Function: dto.FunctionResponse{
+								Name:      "lookup",
+								Arguments: `{"q":"x"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}, info)
+
+	require.Len(t, responses, 8)
+	assert.Equal(t, "thinking", responses[0].ContentBlock.Type)
+	assert.Equal(t, "reasoning", *responses[1].Delta.Thinking)
+	assert.Equal(t, "content_block_stop", responses[2].Type)
+	assert.Equal(t, "text", responses[3].ContentBlock.Type)
+	assert.Equal(t, "answer", *responses[4].Delta.Text)
+	assert.Equal(t, "content_block_stop", responses[5].Type)
+	assert.Equal(t, "tool_use", responses[6].ContentBlock.Type)
+	assert.Equal(t, "lookup", responses[6].ContentBlock.Name)
+	assert.Equal(t, `{"q":"x"}`, *responses[7].Delta.PartialJson)
+}
+
+func TestStreamResponseOpenAI2ClaudePreservesFinishDeltasBeforeUsageChunk(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		SendResponseCount: 2,
+		ClaudeConvertInfo: &relaycommon.ClaudeConvertInfo{
+			LastMessagesType: relaycommon.LastMessageTypeNone,
+		},
+	}
+
+	finishResponses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+					ReasoningContent: ptr("reasoning"),
+					Content:          ptr("answer"),
+				},
+				FinishReason: ptr("stop"),
+			},
+		},
+	}, info)
+
+	require.Len(t, finishResponses, 5)
+	assert.Equal(t, "thinking", finishResponses[0].ContentBlock.Type)
+	assert.Equal(t, "reasoning", *finishResponses[1].Delta.Thinking)
+	assert.Equal(t, "content_block_stop", finishResponses[2].Type)
+	assert.Equal(t, "text", finishResponses[3].ContentBlock.Type)
+	assert.Equal(t, "answer", *finishResponses[4].Delta.Text)
+	assert.False(t, info.ClaudeConvertInfo.Done)
+
+	info.SendResponseCount = 3
+	usageResponses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Usage: &dto.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5},
+	}, info)
+
+	require.Len(t, usageResponses, 3)
+	assert.Equal(t, "content_block_stop", usageResponses[0].Type)
+	assert.Equal(t, "message_delta", usageResponses[1].Type)
+	assert.Equal(t, "end_turn", *usageResponses[1].Delta.StopReason)
+	assert.Equal(t, "message_stop", usageResponses[2].Type)
+	assert.True(t, info.ClaudeConvertInfo.Done)
 }
 
 func TestNormalizeCacheCreationSplit(t *testing.T) {
