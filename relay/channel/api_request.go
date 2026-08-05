@@ -554,6 +554,137 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 var errResponseHeaderTimeout = errors.New("upstream response header timeout")
 var errResponseBodyTimeout = errors.New("upstream response body timeout")
 
+type responseHeaderWait struct {
+	mu         sync.Mutex
+	startedAt  time.Time
+	cancel     context.CancelCauseFunc
+	timer      *time.Timer
+	generation uint64
+	active     bool
+	expired    bool
+}
+
+var activeResponseHeaderWaits = struct {
+	sync.Mutex
+	byChannel map[int]map[*responseHeaderWait]struct{}
+}{
+	byChannel: make(map[int]map[*responseHeaderWait]struct{}),
+}
+
+func (w *responseHeaderWait) reconfigure(timeout time.Duration) {
+	w.mu.Lock()
+	if !w.active || w.expired {
+		w.mu.Unlock()
+		return
+	}
+	w.generation++
+	generation := w.generation
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+	if timeout <= 0 {
+		w.mu.Unlock()
+		return
+	}
+
+	remaining := timeout - time.Since(w.startedAt)
+	if remaining <= 0 {
+		w.expired = true
+		w.active = false
+		cancel := w.cancel
+		w.mu.Unlock()
+		cancel(errResponseHeaderTimeout)
+		return
+	}
+	w.timer = time.AfterFunc(remaining, func() {
+		w.mu.Lock()
+		if !w.active || w.expired || w.generation != generation {
+			w.mu.Unlock()
+			return
+		}
+		w.expired = true
+		w.active = false
+		cancel := w.cancel
+		w.mu.Unlock()
+		cancel(errResponseHeaderTimeout)
+	})
+	w.mu.Unlock()
+}
+
+func (w *responseHeaderWait) stop() bool {
+	w.mu.Lock()
+	w.active = false
+	w.generation++
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+	expired := w.expired
+	w.mu.Unlock()
+	return expired
+}
+
+func registerResponseHeaderWait(channelID int, wait *responseHeaderWait, initialTimeout time.Duration) {
+	if channelID <= 0 {
+		wait.reconfigure(initialTimeout)
+		return
+	}
+	activeResponseHeaderWaits.Lock()
+	waits := activeResponseHeaderWaits.byChannel[channelID]
+	if waits == nil {
+		waits = make(map[*responseHeaderWait]struct{})
+		activeResponseHeaderWaits.byChannel[channelID] = waits
+	}
+	wait.reconfigure(initialTimeout)
+	waits[wait] = struct{}{}
+	activeResponseHeaderWaits.Unlock()
+}
+
+func unregisterResponseHeaderWait(channelID int, wait *responseHeaderWait) {
+	if channelID <= 0 {
+		return
+	}
+	activeResponseHeaderWaits.Lock()
+	waits := activeResponseHeaderWaits.byChannel[channelID]
+	delete(waits, wait)
+	if len(waits) == 0 {
+		delete(activeResponseHeaderWaits.byChannel, channelID)
+	}
+	activeResponseHeaderWaits.Unlock()
+}
+
+func refreshActiveResponseHeaderTimeout(channelID int, timeout time.Duration) {
+	if channelID <= 0 {
+		return
+	}
+	activeResponseHeaderWaits.Lock()
+	waits := make([]*responseHeaderWait, 0, len(activeResponseHeaderWaits.byChannel[channelID]))
+	for wait := range activeResponseHeaderWaits.byChannel[channelID] {
+		waits = append(waits, wait)
+	}
+	activeResponseHeaderWaits.Unlock()
+	for _, wait := range waits {
+		wait.reconfigure(timeout)
+	}
+}
+
+// RefreshActiveResponseHeaderTimeout applies a saved channel timeout to
+// requests that are already waiting for response headers. Response bodies are
+// unaffected because waits are unregistered as soon as headers arrive.
+func RefreshActiveResponseHeaderTimeout(channelID int, settings *dto.ResponseHeaderTimeoutSettings) {
+	timeout := time.Duration(dto.DefaultResponseHeaderTimeoutSeconds) * time.Second
+	if settings != nil {
+		normalized := settings.Normalize()
+		if !normalized.Enabled {
+			timeout = 0
+		} else {
+			timeout = time.Duration(normalized.TimeoutSeconds) * time.Second
+		}
+	}
+	refreshActiveResponseHeaderTimeout(channelID, timeout)
+}
+
 type responseBodyCancelReadCloser struct {
 	io.ReadCloser
 	cancel context.CancelCauseFunc
@@ -660,56 +791,58 @@ func (b *responseBodyCancelReadCloser) Close() error {
 }
 
 func doRequestWithResponseHeaderTimeout(client *http.Client, req *http.Request, timeout time.Duration) (*http.Response, error) {
-	if timeout <= 0 {
-		return client.Do(req)
-	}
-
-	timeoutContext, cancel := context.WithCancelCause(req.Context())
-	timerDone := make(chan struct{})
-	timer := time.AfterFunc(timeout, func() {
-		cancel(errResponseHeaderTimeout)
-		close(timerDone)
-	})
-
-	resp, err := client.Do(req.WithContext(timeoutContext))
-	if timer.Stop() {
-		if err != nil || resp == nil || resp.Body == nil {
-			cancel(nil)
-			return resp, err
-		}
-		resp.Body = &responseBodyCancelReadCloser{
-			ReadCloser: resp.Body,
-			cancel:     cancel,
-		}
-		return resp, nil
-	}
-
-	<-timerDone
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if errors.Is(context.Cause(timeoutContext), errResponseHeaderTimeout) {
-		return nil, errResponseHeaderTimeout
-	}
-	cancel(nil)
-	return resp, err
+	return doRequestWithResponseHeaderTimeoutForChannel(client, req, 0, timeout)
 }
 
-func responseHeaderTimeoutForRelay(info *common.RelayInfo) time.Duration {
-	if info == nil || info.ChannelMeta == nil {
-		return 0
+func doRequestWithResponseHeaderTimeoutForChannel(client *http.Client, req *http.Request, channelID int, timeout time.Duration) (*http.Response, error) {
+	timeoutContext, cancel := context.WithCancelCause(req.Context())
+	wait := &responseHeaderWait{
+		startedAt: time.Now(),
+		cancel:    cancel,
+		active:    true,
 	}
+	registerResponseHeaderWait(channelID, wait, timeout)
 
+	resp, err := client.Do(req.WithContext(timeoutContext))
+	unregisterResponseHeaderWait(channelID, wait)
+	if wait.stop() || errors.Is(context.Cause(timeoutContext), errResponseHeaderTimeout) {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, errResponseHeaderTimeout
+	}
+	if err != nil || resp == nil || resp.Body == nil {
+		cancel(nil)
+		return resp, err
+	}
+	resp.Body = &responseBodyCancelReadCloser{
+		ReadCloser: resp.Body,
+		cancel:     cancel,
+	}
+	return resp, nil
+}
+
+func responseHeaderTimeoutAppliesToRelay(info *common.RelayInfo) bool {
+	if info == nil || info.ChannelMeta == nil || !info.IsStream {
+		return false
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.RelayMode != constant.RelayModeChatCompletions && info.RelayMode != constant.RelayModeCompletions {
-			return 0
+			return false
 		}
 	case types.RelayFormatOpenAIResponses,
 		types.RelayFormatOpenAIResponsesCompaction,
 		types.RelayFormatClaude,
 		types.RelayFormatGemini:
 	default:
+		return false
+	}
+	return true
+}
+
+func responseHeaderTimeoutForRelay(info *common.RelayInfo) time.Duration {
+	if !responseHeaderTimeoutAppliesToRelay(info) {
 		return 0
 	}
 	if info.ChannelOtherSettings.ResponseHeaderTimeout == nil {
@@ -757,7 +890,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	responseHeaderTimeout := responseHeaderTimeoutForRelay(info)
-	resp, err := doRequestWithResponseHeaderTimeout(client, req, responseHeaderTimeout)
+	var resp *http.Response
+	if responseHeaderTimeoutAppliesToRelay(info) {
+		resp, err = doRequestWithResponseHeaderTimeoutForChannel(client, req, info.ChannelId, responseHeaderTimeout)
+	} else {
+		resp, err = client.Do(req)
+	}
 	if err != nil {
 		if errors.Is(err, errResponseHeaderTimeout) {
 			timeoutSeconds := int(responseHeaderTimeout / time.Second)

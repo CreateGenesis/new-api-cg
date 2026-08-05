@@ -67,6 +67,52 @@ func TestDoRequestWithResponseHeaderTimeoutStopsAfterHeaders(t *testing.T) {
 	require.ErrorIs(t, upstreamContext.Err(), context.Canceled)
 }
 
+func TestResponseHeaderTimeoutPolicyShortensActiveWait(t *testing.T) {
+	const channelID = 910001
+	requestStarted := make(chan struct{})
+	client := &http.Client{Transport: responseHeaderTimeoutRoundTripper(func(req *http.Request) (*http.Response, error) {
+		close(requestStarted)
+		<-req.Context().Done()
+		return nil, context.Cause(req.Context())
+	})}
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	require.NoError(t, err)
+
+	result := make(chan error, 1)
+	go func() {
+		_, requestErr := doRequestWithResponseHeaderTimeoutForChannel(client, req, channelID, time.Hour)
+		result <- requestErr
+	}()
+	<-requestStarted
+
+	refreshActiveResponseHeaderTimeout(channelID, time.Nanosecond)
+	require.ErrorIs(t, <-result, errResponseHeaderTimeout)
+}
+
+func TestResponseHeaderWaitReconfigurationReplacesTimer(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	wait := &responseHeaderWait{
+		startedAt: time.Now(),
+		cancel:    cancel,
+		active:    true,
+	}
+	wait.reconfigure(time.Hour)
+	firstTimer := wait.timer
+	require.NotNil(t, firstTimer)
+
+	wait.reconfigure(2 * time.Hour)
+	secondTimer := wait.timer
+	require.NotNil(t, secondTimer)
+	require.NotSame(t, firstTimer, secondTimer)
+	require.False(t, firstTimer.Stop())
+
+	wait.reconfigure(0)
+	require.Nil(t, wait.timer)
+	require.False(t, secondTimer.Stop())
+	require.NoError(t, context.Cause(ctx))
+	require.False(t, wait.stop())
+}
+
 func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 	timeoutSeconds := 180
 	settings := dto.ChannelOtherSettings{
@@ -79,17 +125,19 @@ func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 		name   string
 		format types.RelayFormat
 		mode   int
+		stream bool
 		want   time.Duration
 	}{
-		{name: "chat completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeChatCompletions, want: 3 * time.Minute},
-		{name: "completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeCompletions, want: 3 * time.Minute},
-		{name: "responses", format: types.RelayFormatOpenAIResponses, mode: relayconstant.RelayModeResponses, want: 3 * time.Minute},
-		{name: "responses compact", format: types.RelayFormatOpenAIResponsesCompaction, mode: relayconstant.RelayModeResponsesCompact, want: 3 * time.Minute},
-		{name: "claude", format: types.RelayFormatClaude, mode: relayconstant.RelayModeChatCompletions, want: 3 * time.Minute},
-		{name: "gemini", format: types.RelayFormatGemini, mode: relayconstant.RelayModeGemini, want: 3 * time.Minute},
-		{name: "embeddings excluded", format: types.RelayFormatEmbedding, mode: relayconstant.RelayModeEmbeddings},
-		{name: "images excluded", format: types.RelayFormatOpenAIImage, mode: relayconstant.RelayModeImagesGenerations},
-		{name: "realtime excluded", format: types.RelayFormatOpenAIRealtime, mode: relayconstant.RelayModeRealtime},
+		{name: "stream chat completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeChatCompletions, stream: true, want: 3 * time.Minute},
+		{name: "stream completions", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeCompletions, stream: true, want: 3 * time.Minute},
+		{name: "stream responses", format: types.RelayFormatOpenAIResponses, mode: relayconstant.RelayModeResponses, stream: true, want: 3 * time.Minute},
+		{name: "stream responses compact", format: types.RelayFormatOpenAIResponsesCompaction, mode: relayconstant.RelayModeResponsesCompact, stream: true, want: 3 * time.Minute},
+		{name: "stream claude", format: types.RelayFormatClaude, mode: relayconstant.RelayModeChatCompletions, stream: true, want: 3 * time.Minute},
+		{name: "stream gemini", format: types.RelayFormatGemini, mode: relayconstant.RelayModeGemini, stream: true, want: 3 * time.Minute},
+		{name: "non-stream chat completions excluded", format: types.RelayFormatOpenAI, mode: relayconstant.RelayModeChatCompletions},
+		{name: "stream embeddings excluded", format: types.RelayFormatEmbedding, mode: relayconstant.RelayModeEmbeddings, stream: true},
+		{name: "stream images excluded", format: types.RelayFormatOpenAIImage, mode: relayconstant.RelayModeImagesGenerations, stream: true},
+		{name: "realtime excluded", format: types.RelayFormatOpenAIRealtime, mode: relayconstant.RelayModeRealtime, stream: true},
 	}
 
 	for _, testCase := range tests {
@@ -97,6 +145,7 @@ func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 			info := &relaycommon.RelayInfo{
 				RelayFormat: testCase.format,
 				RelayMode:   testCase.mode,
+				IsStream:    testCase.stream,
 				ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: settings},
 			}
 
@@ -107,6 +156,7 @@ func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 	disabledInfo := &relaycommon.RelayInfo{
 		RelayFormat: types.RelayFormatOpenAI,
 		RelayMode:   relayconstant.RelayModeChatCompletions,
+		IsStream:    true,
 		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
 			ResponseHeaderTimeout: &dto.ResponseHeaderTimeoutSettings{Enabled: false},
 		}},
@@ -116,6 +166,7 @@ func TestResponseHeaderTimeoutForRelayScope(t *testing.T) {
 	defaultInfo := &relaycommon.RelayInfo{
 		RelayFormat: types.RelayFormatOpenAI,
 		RelayMode:   relayconstant.RelayModeChatCompletions,
+		IsStream:    true,
 		ChannelMeta: &relaycommon.ChannelMeta{},
 	}
 	require.Equal(t, 3*time.Minute, responseHeaderTimeoutForRelay(defaultInfo))

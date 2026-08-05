@@ -1129,6 +1129,10 @@ func UpdateChannel(c *gin.Context) {
 		service.ResetChannelOverloadState(c.Request.Context(), channel.Id, keyCount)
 	}
 	model.InitChannelCache()
+	relaychannel.RefreshActiveResponseHeaderTimeout(
+		channel.Id,
+		channel.GetOtherSettings().ResponseHeaderTimeout,
+	)
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}

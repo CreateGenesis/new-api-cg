@@ -4954,7 +4954,7 @@ export function ChannelMutateDrawer({
                                       </FormLabel>
                                       <FormDescription>
                                         {t(
-                                          'Abort this channel attempt when upstream response headers exceed the limit.'
+                                          'Abort this streaming channel attempt when upstream response headers exceed the limit.'
                                         )}
                                       </FormDescription>
                                     </div>
@@ -4996,7 +4996,7 @@ export function ChannelMutateDrawer({
                                   </FormControl>
                                   <FormDescription>
                                     {t(
-                                      'Applied to each attempt; receiving response headers stops the timer.'
+                                      'Applied only to streaming requests; receiving response headers stops the timer.'
                                     )}
                                   </FormDescription>
                                   <FormMessage />
