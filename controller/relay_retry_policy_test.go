@@ -41,6 +41,24 @@ func TestRelayRetryPolicyFromContextUsesGlobalDefaults(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusInternalServerError), policy, 2))
 }
 
+func TestSameChannelRetryRequiresChannelOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("500")
+	require.NoError(t, err)
+	policy := relayRetryPolicy{retryTimes: 10, statusCodeRanges: ranges}
+
+	decision := evaluateSameChannelRetryRelayErrorWithPolicy(
+		ctx,
+		statusCodeError(http.StatusInternalServerError),
+		policy,
+		0,
+	)
+
+	assert.False(t, decision.retry)
+	assert.Equal(t, "channel_override_disabled", decision.reason)
+}
+
 func TestBuildRelayErrorLogDetailsIncludesUpstreamDiagnostics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

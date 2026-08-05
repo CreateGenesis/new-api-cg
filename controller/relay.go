@@ -323,7 +323,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				break
 			}
 
-			sameChannelDecision := evaluateRetryRelayErrorWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetryState.Count(), true, false)
+			sameChannelDecision := evaluateSameChannelRetryRelayErrorWithPolicy(c, newAPIError, channelRetryPolicy, sameChannelRetryState.Count())
 			if !sameChannelDecision.retry {
 				break
 			}
@@ -805,10 +805,14 @@ func shouldRetryWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy 
 }
 
 func shouldRetrySameChannelWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) bool {
+	return evaluateSameChannelRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry).retry
+}
+
+func evaluateSameChannelRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int) relayRetryEvaluation {
 	if !policy.channelOverride {
-		return false
+		return relayRetryEvaluation{reason: "channel_override_disabled"}
 	}
-	return shouldRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry, true, false)
+	return evaluateRetryRelayErrorWithPolicy(c, openaiErr, policy, currentRetry, true, false)
 }
 
 func shouldRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIError, policy relayRetryPolicy, currentRetry int, allowSpecificChannelRetry bool, respectAffinitySkip bool) bool {

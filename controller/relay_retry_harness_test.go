@@ -29,6 +29,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		attemptsMu            sync.Mutex
 		attempts              []string
 		succeedOnAttempt      int
+		succeedOnKey          string
 		routeOnBoundedHTTP400 bool
 		streamFallback        bool
 	)
@@ -38,6 +39,9 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		attempts = append(attempts, channelKey)
 		attemptNumber := len(attempts)
 		shouldSucceed := succeedOnAttempt > 0 && attemptNumber == succeedOnAttempt
+		if succeedOnKey != "" && channelKey == succeedOnKey {
+			shouldSucceed = true
+		}
 		if routeOnBoundedHTTP400 && channelKey != "channel-1" {
 			shouldSucceed = true
 		}
@@ -285,9 +289,86 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	require.NotEmpty(t, recoveredTrace.Attempts[2].Exchanges)
 	assert.NotNil(t, recoveredTrace.Attempts[2].Exchanges[0].Request.Body)
 
+	originalFirstChannelKey := channels[0].Key
+	originalFirstChannelInfo := channels[0].ChannelInfo
+	originalFirstChannelSettings := channels[0].OtherSettings
+	noOverrideCases := []struct {
+		name        string
+		requestID   string
+		key         string
+		channelInfo model.ChannelInfo
+	}{
+		{
+			name:      "single key",
+			requestID: "relay-no-channel-override-single-key",
+			key:       "channel-1",
+		},
+		{
+			name:      "multiple keys",
+			requestID: "relay-no-channel-override-multiple-keys",
+			key:       "channel-1-key-a\nchannel-1-key-b\nchannel-1-key-c",
+			channelInfo: model.ChannelInfo{
+				IsMultiKey:   true,
+				MultiKeyMode: constant.MultiKeyModeRandom,
+			},
+		},
+	}
+	for _, testCase := range noOverrideCases {
+		t.Run(testCase.name+" does not retry the same channel", func(t *testing.T) {
+			channels[0].Key = testCase.key
+			channels[0].ChannelInfo = testCase.channelInfo
+			channels[0].OtherSettings = "{}"
+			require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Updates(map[string]interface{}{
+				"key":          channels[0].Key,
+				"channel_info": channels[0].ChannelInfo,
+				"settings":     channels[0].OtherSettings,
+			}).Error)
+			attemptsMu.Lock()
+			attempts = nil
+			succeedOnAttempt = 0
+			succeedOnKey = "channel-2"
+			attemptsMu.Unlock()
+
+			retryRecorder := httptest.NewRecorder()
+			retryCtx, _ := gin.CreateTestContext(retryRecorder)
+			retryCtx.Request = httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+			)
+			retryCtx.Request.Header.Set("Content-Type", "application/json")
+			retryCtx.Set(common.RequestIdKey, testCase.requestID)
+			common.SetContextKey(retryCtx, constant.ContextKeyTokenGroup, "default")
+			common.SetContextKey(retryCtx, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(retryCtx, constant.ContextKeyUsingGroup, "default")
+			common.SetContextKey(retryCtx, constant.ContextKeyRequestStartTime, time.Now())
+			require.Nil(t, middleware.SetupContextForSelectedChannel(retryCtx, &channels[0], modelName))
+
+			Relay(retryCtx, types.RelayFormatOpenAI)
+
+			attemptsMu.Lock()
+			noOverrideAttempts := append([]string(nil), attempts...)
+			attemptsMu.Unlock()
+			require.Len(t, noOverrideAttempts, 2)
+			assert.Contains(t, strings.Split(testCase.key, "\n"), noOverrideAttempts[0])
+			assert.Equal(t, "channel-2", noOverrideAttempts[1])
+			assert.Equal(t, []string{"1", "2"}, retryCtx.GetStringSlice("use_channel"))
+			assert.Equal(t, http.StatusOK, retryRecorder.Code)
+		})
+	}
+	channels[0].Key = originalFirstChannelKey
+	channels[0].ChannelInfo = originalFirstChannelInfo
+	channels[0].OtherSettings = originalFirstChannelSettings
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Updates(map[string]interface{}{
+		"key":          channels[0].Key,
+		"channel_info": channels[0].ChannelInfo,
+		"settings":     channels[0].OtherSettings,
+	}).Error)
+
 	attemptsMu.Lock()
 	attempts = nil
 	succeedOnAttempt = 0
+	succeedOnKey = ""
 	streamFallback = true
 	attemptsMu.Unlock()
 
