@@ -11,6 +11,41 @@ import (
 	"gorm.io/gorm"
 )
 
+// InvalidateAuthenticationCachesAfterRestore clears identity snapshots and
+// session observations that cannot be trusted after users are replaced.
+func InvalidateAuthenticationCachesAfterRestore(userIDs []int, sessionIDs []string) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	keys := make([]string, 0, len(userIDs)*3+len(sessionIDs))
+	seen := make(map[string]struct{}, cap(keys))
+	appendKey := func(key string) {
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			continue
+		}
+		appendKey(getUserCacheKey(userID))
+		appendKey(getUserAuthFenceKey(userID))
+		appendKey(getUserAuthVersionKey(userID))
+	}
+	for _, sessionID := range sessionIDs {
+		appendKey(userSessionCacheKey(sessionID))
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return common.RDB.Del(context.Background(), keys...).Err()
+}
+
 // User auth cache fencing uses three Redis keys per user: the cached user
 // hash, a short-lived pending fence published before a restrictive database
 // transaction, and a monotonic committed version floor published after

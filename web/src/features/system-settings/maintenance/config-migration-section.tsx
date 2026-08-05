@@ -46,6 +46,7 @@ import type {
   SystemConfigImportPreview,
   SystemConfigIssue,
 } from '../types'
+import { FullSystemBackupSection } from './full-system-backup-section'
 
 const MAX_IMPORT_SIZE = 32 * 1024 * 1024
 
@@ -350,6 +351,10 @@ export function ConfigMigrationSection() {
             </div>
           </div>
         )}
+
+        <Separator />
+
+        <FullSystemBackupSection />
       </div>
 
       <ConfirmDialog

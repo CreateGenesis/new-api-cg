@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 
@@ -196,6 +197,24 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/config/export", controller.ExportSystemConfig)
 			optionRoute.POST("/config/import/preview", controller.PreviewSystemConfigImport)
 			optionRoute.POST("/config/import", controller.ApplySystemConfigImport)
+			optionRoute.POST("/config/full/export",
+				middleware.CriticalRateLimit(),
+				middleware.DisableCache(),
+				middleware.SecurityProofRequired(constant.SecurityProofScopeSystemBackupExport, []string{constant.SecurityProofMethodPassword}),
+				controller.ExportSystemBackup,
+			)
+			optionRoute.POST("/config/full/import/preview",
+				middleware.CriticalRateLimit(),
+				middleware.DisableCache(),
+				middleware.SecurityProofRequired(constant.SecurityProofScopeSystemBackupImport, []string{constant.SecurityProofMethodPassword}),
+				controller.PreviewSystemBackupImport,
+			)
+			optionRoute.POST("/config/full/import",
+				middleware.CriticalRateLimit(),
+				middleware.DisableCache(),
+				middleware.SecurityProofRequired(constant.SecurityProofScopeSystemBackupImport, []string{constant.SecurityProofMethodPassword}),
+				controller.ApplySystemBackupImport,
+			)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)

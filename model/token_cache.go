@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -25,6 +26,30 @@ func cacheDeleteToken(key string) error {
 		return err
 	}
 	return nil
+}
+
+// InvalidateTokenCaches removes cached snapshots after an authoritative restore.
+func InvalidateTokenCaches(keys []string) error {
+	if !common.RedisEnabled || len(keys) == 0 {
+		return nil
+	}
+	redisKeys := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		redisKey := fmt.Sprintf("token:%s", common.GenerateHMAC(key))
+		if _, ok := seen[redisKey]; ok {
+			continue
+		}
+		seen[redisKey] = struct{}{}
+		redisKeys = append(redisKeys, redisKey)
+	}
+	if len(redisKeys) == 0 {
+		return nil
+	}
+	return common.RDB.Del(context.Background(), redisKeys...).Err()
 }
 
 func cacheIncrTokenQuota(key string, increment int64) error {

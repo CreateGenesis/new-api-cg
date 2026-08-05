@@ -24,6 +24,9 @@ import type {
   LogCleanupTask,
   SystemOptionsResponse,
   SystemConfigImportResponse,
+  SystemBackupImportResponse,
+  SystemBackupProofResponse,
+  SystemBackupProofScope,
   SystemTaskListResponse,
   SystemTaskResponse,
   UpdateOptionRequest,
@@ -74,6 +77,78 @@ export async function applySystemConfigImport(
     {
       params: { preview_hash: previewHash },
       headers: { 'Content-Type': 'application/json' },
+    }
+  )
+  return res.data
+}
+
+export async function verifySystemBackupPassword(request: {
+  username: string
+  password: string
+  scope: SystemBackupProofScope
+}) {
+  const res = await api.post<SystemBackupProofResponse>(
+    '/api/verify',
+    { method: 'password', ...request },
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function exportSystemBackup(proofToken: string) {
+  const res = await api.post<Blob>(
+    '/api/option/config/full/export',
+    undefined,
+    {
+      responseType: 'blob',
+      headers: { 'X-Security-Proof': proofToken },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  const disposition = String(res.headers['content-disposition'] ?? '')
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i)
+  return {
+    blob: res.data,
+    filename: filenameMatch?.[1] ?? 'system-backup.json',
+  }
+}
+
+export async function previewSystemBackupImport(
+  content: string,
+  proofToken: string
+) {
+  const res = await api.post<SystemBackupImportResponse>(
+    '/api/option/config/full/import/preview',
+    content,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Security-Proof': proofToken,
+      },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return res.data
+}
+
+export async function applySystemBackupImport(
+  content: string,
+  previewHash: string,
+  proofToken: string
+) {
+  const res = await api.post<SystemBackupImportResponse>(
+    '/api/option/config/full/import',
+    content,
+    {
+      params: { preview_hash: previewHash },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Security-Proof': proofToken,
+      },
+      skipBusinessError: true,
+      skipErrorHandler: true,
     }
   )
   return res.data

@@ -21,6 +21,16 @@ func SecureVerificationRequired() gin.HandlerFunc {
 	}
 }
 
+// SecurityProofRequired protects a route with a session-bound proof.
+func SecurityProofRequired(requiredScope string, allowedMethods []string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !RequireSecurityProof(c, requiredScope, allowedMethods) {
+			return
+		}
+		c.Next()
+	}
+}
+
 // RequireSecurityProof validates a proof against the authenticated dashboard
 // session and writes the shared proof error contract on failure.
 func RequireSecurityProof(c *gin.Context, requiredScope string, allowedMethods []string) bool {

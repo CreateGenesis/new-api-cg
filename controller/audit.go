@@ -33,6 +33,9 @@ var auditContentTemplates = map[string]string{
 	"system_config.export":         "Exported system configuration (${options} settings, ${channels} channels, ${models} models)",
 	"system_config.import_preview": "Previewed system configuration import (${conflicts} conflicts)",
 	"system_config.import":         "Imported system configuration (${options} settings, ${channels} channels, ${models} models)",
+	"system_backup.export":         "Exported full system backup (${records} records)",
+	"system_backup.import_preview": "Previewed full system backup import (${records} records)",
+	"system_backup.import":         "Restored full system backup (${records} records)",
 
 	"channel.create":             "Created channel ${name} (type ${type}, count ${count})",
 	"channel.update":             "Updated channel ${name} (ID: ${id})",

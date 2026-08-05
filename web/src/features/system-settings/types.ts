@@ -82,6 +82,57 @@ export type SystemConfigImportResponse = {
   data?: SystemConfigImportPreview
 }
 
+export type SystemBackupProofScope =
+  | 'system.config.full.export'
+  | 'system.config.full.import'
+
+export type SystemBackupProof = {
+  proof_token: string
+  expires_at: number
+  method: 'password'
+  scope: SystemBackupProofScope
+}
+
+export type SystemBackupChangeCounts = {
+  add: number
+  update: number
+  delete: number
+  unchanged: number
+}
+
+export type SystemBackupSection =
+  | 'options'
+  | 'channels'
+  | 'catalog'
+  | 'oauth'
+  | 'authorization'
+  | 'users'
+  | 'tokens'
+  | 'redemptions'
+  | 'authentication'
+  | 'subscriptions'
+
+export type SystemBackupImportPreview = {
+  hash: string
+  record_count: number
+  sections: Record<SystemBackupSection, SystemBackupChangeCounts>
+  warnings: Array<{ code: 'runtime_history_preserved'; item?: string }>
+  conflicts: Array<{ code: string; item?: string }>
+  requires_logout: boolean
+}
+
+export type SystemBackupImportResponse = {
+  success: boolean
+  message: string
+  data?: SystemBackupImportPreview
+}
+
+export type SystemBackupProofResponse = {
+  success: boolean
+  message: string
+  data?: SystemBackupProof
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
