@@ -822,7 +822,7 @@ func syncSystemBackupPostgresSequences(tx *gorm.DB) error {
 		return nil
 	}
 	tables := []string{
-		"channels", "tokens", "users", "redemptions", "abilities", "models", "vendors",
+		"channels", "tokens", "users", "redemptions", "models", "vendors",
 		"prefill_groups", "setups", "two_fas", "two_fa_backup_codes", "subscription_plans",
 		"user_subscriptions", "custom_oauth_providers", "user_oauth_bindings", "passkey_credentials",
 		"external_identity_claims", "authz_roles", "casbin_rule",

@@ -106,6 +106,26 @@ func TestSystemBackupExportQuotesReservedOptionKey(t *testing.T) {
 	assert.Contains(t, strings.ToLower(queries[0]), "order by `key`")
 }
 
+func TestSystemBackupPostgresSequenceSyncSkipsAbilities(t *testing.T) {
+	db, err := gorm.Open(tests.DummyDialector{}, &gorm.Config{DryRun: true})
+	require.NoError(t, err)
+
+	statements := make([]string, 0)
+	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register("system_backup:capture_sequence_sql", func(tx *gorm.DB) {
+		statements = append(statements, tx.Statement.SQL.String())
+	}))
+
+	previousDatabaseType := common.MainDatabaseType()
+	common.SetMainDatabaseType(common.DatabaseTypePostgreSQL)
+	t.Cleanup(func() { common.SetMainDatabaseType(previousDatabaseType) })
+
+	require.NoError(t, syncSystemBackupPostgresSequences(db))
+	require.NotEmpty(t, statements)
+	sequenceSQL := strings.Join(statements, "\n")
+	assert.Contains(t, sequenceSQL, `FROM "channels"`)
+	assert.NotContains(t, sequenceSQL, "abilities")
+}
+
 func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	db := setupSystemBackupTest(t)
 	seedSystemBackupSource(t, db)
