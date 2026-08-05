@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/service/authz"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -198,7 +199,7 @@ func ExportSystemBackup() (*SystemBackupFile, error) {
 		Sensitive:          true,
 		RestoreMode:        SystemBackupRestoreMode,
 	}
-	if err := model.DB.Order("key asc").Find(&backup.Options).Error; err != nil {
+	if err := model.DB.Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}}).Find(&backup.Options).Error; err != nil {
 		return nil, err
 	}
 	if err := model.DB.Order("id asc").Find(&backup.Channels).Error; err != nil {

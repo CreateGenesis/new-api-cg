@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/utils/tests"
 )
 
 func setupSystemBackupTest(t *testing.T) *gorm.DB {
@@ -81,6 +83,27 @@ func seedSystemBackupSource(t *testing.T, db *gorm.DB) {
 	require.NoError(t, db.Create(&model.TwoFABackupCode{
 		Id: 80, UserId: 50, CodeHash: "backup-code-hash",
 	}).Error)
+}
+
+func TestSystemBackupExportQuotesReservedOptionKey(t *testing.T) {
+	db, err := gorm.Open(tests.DummyDialector{}, &gorm.Config{DryRun: true})
+	require.NoError(t, err)
+
+	queries := make([]string, 0, 1)
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register("system_backup:capture_sql", func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table == "options" {
+			queries = append(queries, tx.Statement.SQL.String())
+		}
+	}))
+
+	previousDB := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = previousDB })
+
+	_, err = ExportSystemBackup()
+	require.NoError(t, err)
+	require.Len(t, queries, 1)
+	assert.Contains(t, strings.ToLower(queries[0]), "order by `key`")
 }
 
 func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
