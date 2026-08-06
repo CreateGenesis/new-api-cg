@@ -202,6 +202,78 @@ describe('channel form response header timeout settings', () => {
   })
 })
 
+describe('channel fallback policy settings', () => {
+  test('loads and saves fallback switches and output multiplier', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        '{"retry_zero_output":true,"disable_non_stream":true,"missing_output_token_multiplier":1.75}'
+      )
+    )
+
+    assert.equal(form.retry_zero_output, true)
+    assert.equal(form.disable_non_stream, true)
+    assert.equal(form.missing_output_token_multiplier, 1.75)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.retry_zero_output, true)
+    assert.equal(settings.disable_non_stream, true)
+    assert.equal(settings.missing_output_token_multiplier, 1.75)
+  })
+
+  test('preserves a non-default output multiplier while retry is disabled', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      retry_zero_output: false,
+      missing_output_token_multiplier: 2,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.retry_zero_output, undefined)
+    assert.equal(settings.missing_output_token_multiplier, 2)
+  })
+
+  test('omits disabled fallback defaults and rejects invalid multipliers', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.retry_zero_output, undefined)
+    assert.equal(settings.disable_non_stream, undefined)
+    assert.equal(settings.missing_output_token_multiplier, undefined)
+
+    for (const multiplier of [0, 100.01, Number.POSITIVE_INFINITY]) {
+      const parsed = channelFormSchema.safeParse({
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        missing_output_token_multiplier: multiplier,
+      })
+      assert.equal(parsed.success, false)
+    }
+  })
+})
+
 describe('channel form stream interruption billing settings', () => {
   test('loads and saves input-only interruption billing', () => {
     const form = transformChannelToFormDefaults(

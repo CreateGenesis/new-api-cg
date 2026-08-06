@@ -118,13 +118,17 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 			payload["model"] = model
 			patched = true
 		}
-		if responseAny, ok := payload["response"]; ok {
-			if responseMap, ok := responseAny.(map[string]any); ok {
-				if _, ok := responseMap["model"]; ok {
-					responseMap["model"] = model
-					patched = true
-				}
+		if responseMap, ok := payload["response"].(map[string]any); ok {
+			if _, ok := responseMap["model"]; ok {
+				responseMap["model"] = model
+				patched = true
 			}
+		}
+	}
+	if responseMap, ok := payload["response"].(map[string]any); ok {
+		if usageMap, ok := responseMap["usage"].(map[string]any); ok {
+			patchOpenAIStyleUsageMap(usageMap, usage)
+			patched = true
 		}
 	}
 	if usageAny, ok := payload["usage"]; ok {

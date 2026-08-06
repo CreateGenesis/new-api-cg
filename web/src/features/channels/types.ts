@@ -182,9 +182,13 @@ export interface ChannelOtherSettings {
   disable_task_polling_sleep?: boolean
   deepseek_v4_request_sanitization?: boolean
   cache_usage_validation_split?: boolean
+  retry_zero_output?: boolean
+  disable_non_stream?: boolean
+  missing_output_token_multiplier?: number
   simulated_model_cache?: {
     enabled?: boolean
     estimate_missing_input_tokens?: boolean
+    missing_input_token_multiplier?: number
     ttl_seconds?: number
     min_match_ratio?: number
     multimodal?: {

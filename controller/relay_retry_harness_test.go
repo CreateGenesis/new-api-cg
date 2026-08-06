@@ -32,6 +32,8 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		succeedOnKey          string
 		routeOnBoundedHTTP400 bool
 		streamFallback        bool
+		zeroOutputFallback    bool
+		zeroOutputStream      bool
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptsMu.Lock()
@@ -47,7 +49,28 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		}
 		boundedHTTP400 := routeOnBoundedHTTP400 && channelKey == "channel-1"
 		useStreamFallback := streamFallback
+		useZeroOutputFallback := zeroOutputFallback
+		useZeroOutputStream := zeroOutputStream
 		attemptsMu.Unlock()
+		if useZeroOutputFallback {
+			if useZeroOutputStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if channelKey == "channel-1" {
+					_, _ = w.Write([]byte(": zero-output-channel-1\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0,\"total_tokens\":1}}\n\ndata: [DONE]\n\n"))
+					return
+				}
+				_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-zero-output-stream-fallback\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"zero output stream fallback ok\"},\"finish_reason\":null}]}\n\n"))
+				_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if channelKey == "channel-1" {
+				_, _ = w.Write([]byte(`{"id":"zero-output-channel-1","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-zero-output-fallback","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"zero output fallback ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
 		if useStreamFallback {
 			w.Header().Set("Content-Type", "text/event-stream")
 			if channelKey == "channel-1" {
@@ -405,6 +428,101 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	var firstChannelStatus int
 	require.NoError(t, db.Model(&model.Channel{}).Select("status").Where("id = ?", channels[0].Id).Scan(&firstChannelStatus).Error)
 	assert.Equal(t, common.ChannelStatusEnabled, firstChannelStatus)
+
+	channels[0].OtherSettings = `{"retry_zero_output":true}`
+	channels[1].OtherSettings = `{}`
+	for i := 0; i < 2; i++ {
+		require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[i].Id).Update("settings", channels[i].OtherSettings).Error)
+	}
+	common.RetryTimes = 2
+	attemptsMu.Lock()
+	attempts = nil
+	zeroOutputFallback = true
+	zeroOutputStream = false
+	attemptsMu.Unlock()
+
+	zeroOutputRecorder := httptest.NewRecorder()
+	zeroOutputCtx, _ := gin.CreateTestContext(zeroOutputRecorder)
+	zeroOutputCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	zeroOutputCtx.Request.Header.Set("Content-Type", "application/json")
+	zeroOutputCtx.Set(common.RequestIdKey, "relay-zero-output-recovered")
+	common.SetContextKey(zeroOutputCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(zeroOutputCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(zeroOutputCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(zeroOutputCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(zeroOutputCtx, &channels[0], modelName))
+
+	Relay(zeroOutputCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	zeroOutputAttempts := append([]string(nil), attempts...)
+	zeroOutputStream = true
+	attempts = nil
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, zeroOutputAttempts)
+	assert.Equal(t, http.StatusOK, zeroOutputRecorder.Code)
+	assert.Contains(t, zeroOutputRecorder.Body.String(), "zero output fallback ok")
+	assert.NotContains(t, zeroOutputRecorder.Body.String(), "zero-output-channel-1")
+
+	zeroOutputStreamRecorder := httptest.NewRecorder()
+	zeroOutputStreamCtx, _ := gin.CreateTestContext(zeroOutputStreamRecorder)
+	zeroOutputStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true,"stream_options":{"include_usage":true}}`, modelName)),
+	)
+	zeroOutputStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	zeroOutputStreamCtx.Set(common.RequestIdKey, "relay-zero-output-stream-recovered")
+	common.SetContextKey(zeroOutputStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(zeroOutputStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(zeroOutputStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(zeroOutputStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(zeroOutputStreamCtx, &channels[0], modelName))
+
+	Relay(zeroOutputStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	zeroOutputStreamAttempts := append([]string(nil), attempts...)
+	zeroOutputFallback = false
+	zeroOutputStream = false
+	attempts = nil
+	succeedOnKey = "channel-2"
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, zeroOutputStreamAttempts)
+	assert.Equal(t, http.StatusOK, zeroOutputStreamRecorder.Code)
+	assert.Contains(t, zeroOutputStreamRecorder.Body.String(), "zero output stream fallback ok")
+	assert.NotContains(t, zeroOutputStreamRecorder.Body.String(), "zero-output-channel-1")
+
+	channels[0].OtherSettings = `{"disable_non_stream":true}`
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)
+	disableNonStreamRecorder := httptest.NewRecorder()
+	disableNonStreamCtx, _ := gin.CreateTestContext(disableNonStreamRecorder)
+	disableNonStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	disableNonStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	disableNonStreamCtx.Set(common.RequestIdKey, "relay-disable-non-stream-rerouted")
+	common.SetContextKey(disableNonStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(disableNonStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(disableNonStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(disableNonStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(disableNonStreamCtx, &channels[0], modelName))
+
+	Relay(disableNonStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	disableNonStreamAttempts := append([]string(nil), attempts...)
+	succeedOnKey = ""
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-2"}, disableNonStreamAttempts)
+	assert.Equal(t, []string{"2"}, disableNonStreamCtx.GetStringSlice("use_channel"))
+	assert.Equal(t, http.StatusOK, disableNonStreamRecorder.Code)
 
 	channels[0].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":1,"max_tokens":500000}]}}`
 	channels[1].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":0}]}}`

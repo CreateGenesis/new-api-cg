@@ -1193,6 +1193,9 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if err := dto.ValidateMissingTokenMultiplier("missing_output_token_multiplier", channelOtherSettings.MissingOutputTokenMultiplier); err != nil {
+		return err
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

@@ -236,4 +236,48 @@ describe('simulated model cache multimedia form settings', () => {
       true
     )
   })
+
+  test('loads, saves, and validates the missing input multiplier', () => {
+    const form = transformChannelToFormDefaults(
+      channelWithSettings(
+        '{"simulated_model_cache":{"estimate_missing_input_tokens":true,"missing_input_token_multiplier":1.25}}'
+      )
+    )
+    assert.equal(
+      form.simulated_model_cache_missing_input_token_multiplier,
+      1.25
+    )
+
+    const payload = transformFormDataToCreatePayload(validChannelForm(form))
+    const saved = JSON.parse(String(payload.channel.settings))
+    assert.equal(
+      saved.simulated_model_cache.missing_input_token_multiplier,
+      1.25
+    )
+
+    for (const multiplier of [0, 101, Number.NaN]) {
+      const result = channelFormSchema.safeParse(
+        validChannelForm({
+          simulated_model_cache_missing_input_token_multiplier: multiplier,
+        })
+      )
+      assert.equal(result.success, false)
+    }
+  })
+
+  test('preserves a non-default missing input multiplier while estimation is disabled', () => {
+    const payload = transformFormDataToCreatePayload(
+      validChannelForm({
+        simulated_model_cache_estimate_missing_input_tokens: false,
+        simulated_model_cache_missing_input_token_multiplier: 3,
+      })
+    )
+    const saved = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(saved.simulated_model_cache.missing_input_token_multiplier, 3)
+    assert.equal(
+      saved.simulated_model_cache.estimate_missing_input_tokens,
+      undefined
+    )
+  })
 })

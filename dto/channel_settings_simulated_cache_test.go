@@ -83,6 +83,39 @@ func TestChannelOtherSettingsSimulatedModelCacheMissingInputEstimateIsOptIn(t *t
 	}`, string(encoded))
 }
 
+func TestMissingTokenMultiplierDefaultsAndValidation(t *testing.T) {
+	assert.Equal(t, DefaultMissingTokenMultiplier, MissingTokenMultiplier(nil))
+
+	valid := 1.25
+	assert.Equal(t, valid, MissingTokenMultiplier(&valid))
+	require.NoError(t, ValidateMissingTokenMultiplier("multiplier", &valid))
+
+	for _, invalid := range []float64{0, 100.01, math.NaN(), math.Inf(1)} {
+		invalid := invalid
+		assert.Equal(t, DefaultMissingTokenMultiplier, MissingTokenMultiplier(&invalid))
+		require.Error(t, ValidateMissingTokenMultiplier("multiplier", &invalid))
+	}
+}
+
+func TestChannelOtherSettingsMissingTokenMultipliersJSONCompatibility(t *testing.T) {
+	var settings ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(`{
+		"retry_zero_output":true,
+		"disable_non_stream":true,
+		"missing_output_token_multiplier":1.5,
+		"simulated_model_cache":{"missing_input_token_multiplier":2.25}
+	}`, &settings))
+
+	assert.True(t, settings.RetryZeroOutput)
+	assert.True(t, settings.DisableNonStream)
+	require.NotNil(t, settings.MissingOutputTokenMultiplier)
+	assert.Equal(t, 1.5, *settings.MissingOutputTokenMultiplier)
+	require.NotNil(t, settings.SimulatedModelCache)
+	require.NotNil(t, settings.SimulatedModelCache.MissingInputTokenMultiplier)
+	assert.Equal(t, 2.25, *settings.SimulatedModelCache.MissingInputTokenMultiplier)
+	require.NoError(t, settings.SimulatedModelCache.Validate())
+}
+
 func TestSimulatedModelCacheMultimodalSettingsRequireExplicitWeights(t *testing.T) {
 	settings := SimulatedModelCacheSettings{
 		Multimodal: &SimulatedModelCacheMultimodalSettings{Enabled: true},

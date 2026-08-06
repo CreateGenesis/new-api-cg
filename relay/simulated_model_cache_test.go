@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,6 +142,7 @@ func TestPrepareSimulatedModelCacheAttemptUsesConservativeTextEstimateWhenEnable
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	multiplier := 1.5
 	info := &relaycommon.RelayInfo{
 		RelayFormat:        types.RelayFormatClaude,
 		OriginModelName:    "kimi-k3",
@@ -149,7 +151,8 @@ func TestPrepareSimulatedModelCacheAttemptUsesConservativeTextEstimateWhenEnable
 			ChannelId: 7,
 			ChannelOtherSettings: dto.ChannelOtherSettings{
 				SimulatedModelCache: &dto.SimulatedModelCacheSettings{
-					EstimateMissingInputTokens: true,
+					EstimateMissingInputTokens:  true,
+					MissingInputTokenMultiplier: &multiplier,
 				},
 			},
 		},
@@ -167,11 +170,8 @@ func TestPrepareSimulatedModelCacheAttemptUsesConservativeTextEstimateWhenEnable
 	assert.False(t, attempt.settings.Enabled)
 	assert.True(t, attempt.settings.EstimateMissingInputTokens)
 	assert.Nil(t, attempt.partialMatch)
-	assert.Equal(
-		t,
-		service.EstimateTokenByModel("kimi-k3", "system text\nhello world"),
-		attempt.missingInputEstimatedTokens,
-	)
+	baseEstimate := service.EstimateTokenByModel("kimi-k3", "system text\nhello world")
+	assert.Equal(t, int(math.Ceil(float64(baseEstimate)*multiplier)), attempt.missingInputEstimatedTokens)
 }
 
 func TestHiddenSimulatedModelCacheMatchDoesNotRewriteResponseOrLogInfo(t *testing.T) {

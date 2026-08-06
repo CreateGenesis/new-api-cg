@@ -36,6 +36,7 @@ type SimulatedModelCacheNumberFieldName = Extract<
   FieldPath<ChannelFormValues>,
   | 'simulated_model_cache_ttl_seconds'
   | 'simulated_model_cache_min_match_ratio'
+  | 'simulated_model_cache_missing_input_token_multiplier'
   | 'simulated_model_cache_image_tokens_per_megapixel'
   | 'simulated_model_cache_video_tokens_per_second_megapixel'
   | 'simulated_model_cache_audio_tokens_per_second'
@@ -51,6 +52,7 @@ type SimulatedModelCacheNumberFieldProps = {
   name: SimulatedModelCacheNumberFieldName
   label: string
   description?: string
+  itemClassName?: string
   disabled: boolean
   min: number
   max?: number
@@ -65,7 +67,7 @@ function SimulatedModelCacheNumberField(
       control={props.control}
       name={props.name}
       render={({ field }) => (
-        <FormItem>
+        <FormItem className={props.itemClassName}>
           <FormLabel>{props.label}</FormLabel>
           <FormControl>
             <Input
@@ -107,6 +109,10 @@ export function SimulatedModelCacheFields(
   const multimodalEnabled = useWatch({
     control: props.control,
     name: 'simulated_model_cache_multimodal_enabled',
+  })
+  const estimateMissingInputTokens = useWatch({
+    control: props.control,
+    name: 'simulated_model_cache_estimate_missing_input_tokens',
   })
   const numericFieldsDisabled = !props.runtimeActive || !multimodalEnabled
 
@@ -164,6 +170,20 @@ export function SimulatedModelCacheFields(
               </FormControl>
             </FormItem>
           )}
+        />
+
+        <SimulatedModelCacheNumberField
+          control={props.control}
+          name='simulated_model_cache_missing_input_token_multiplier'
+          label={t('Missing input token multiplier')}
+          description={t(
+            'Scales local estimates when upstream input usage is zero. Values are rounded up and changes apply to new requests immediately.'
+          )}
+          itemClassName='px-4 py-3'
+          disabled={!props.runtimeActive || !estimateMissingInputTokens}
+          min={0.01}
+          max={100}
+          step={0.01}
         />
 
         <FormField

@@ -366,8 +366,12 @@ export const channelFormSchema = z
     disable_task_polling_sleep: z.boolean().optional(),
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
+    retry_zero_output: z.boolean().optional(),
+    disable_non_stream: z.boolean().optional(),
+    missing_output_token_multiplier: z.number().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
     simulated_model_cache_estimate_missing_input_tokens: z.boolean().optional(),
+    simulated_model_cache_missing_input_token_multiplier: z.number().optional(),
     simulated_model_cache_ttl_seconds: z.number().optional(),
     simulated_model_cache_min_match_ratio: z.number().optional(),
     simulated_model_cache_multimodal_enabled: z.boolean().optional(),
@@ -606,6 +610,24 @@ export const channelFormSchema = z
       data.simulated_model_cache_enabled ||
       data.simulated_model_cache_estimate_missing_input_tokens ||
       data.multi_key_type === 'cache_affinity_least_requests'
+    for (const fieldName of [
+      'missing_output_token_multiplier',
+      'simulated_model_cache_missing_input_token_multiplier',
+    ] as const) {
+      if (data[fieldName] === undefined) continue
+      const multiplier = Number(data[fieldName])
+      if (
+        !Number.isFinite(multiplier) ||
+        multiplier < 0.01 ||
+        multiplier > 100
+      ) {
+        addRequiredIssue(
+          ctx,
+          fieldName,
+          'Multiplier must be between 0.01 and 100.'
+        )
+      }
+    }
     if (simulatedModelCacheRuntimeActive) {
       if (
         !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
@@ -809,8 +831,12 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_task_polling_sleep: false,
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
+  retry_zero_output: false,
+  disable_non_stream: false,
+  missing_output_token_multiplier: 1,
   simulated_model_cache_enabled: false,
   simulated_model_cache_estimate_missing_input_tokens: false,
+  simulated_model_cache_missing_input_token_multiplier: 1,
   simulated_model_cache_ttl_seconds: 86400,
   simulated_model_cache_min_match_ratio: 0.01,
   simulated_model_cache_multimodal_enabled: false,
@@ -909,8 +935,12 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
   let cacheUsageValidationSplit = false
+  let retryZeroOutput = false
+  let disableNonStream = false
+  let missingOutputTokenMultiplier = 1
   let simulatedModelCacheEnabled = false
   let simulatedModelCacheEstimateMissingInputTokens = false
+  let simulatedModelCacheMissingInputTokenMultiplier = 1
   let simulatedModelCacheTTLSeconds = 86400
   let simulatedModelCacheMinMatchRatio = 0.01
   let simulatedModelCacheMultimodalEnabled = false
@@ -958,6 +988,16 @@ export function transformChannelToFormDefaults(
       claudeBetaQuery = parsed.claude_beta_query === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
+      retryZeroOutput = parsed.retry_zero_output === true
+      disableNonStream = parsed.disable_non_stream === true
+      const outputMultiplier = Number(parsed.missing_output_token_multiplier)
+      if (
+        Number.isFinite(outputMultiplier) &&
+        outputMultiplier >= 0.01 &&
+        outputMultiplier <= 100
+      ) {
+        missingOutputTokenMultiplier = outputMultiplier
+      }
       deepSeekV4RequestSanitizationEnabled =
         parsed.deepseek_v4_request_sanitization === true
       if (
@@ -971,6 +1011,16 @@ export function transformChannelToFormDefaults(
         simulatedModelCacheEnabled = simulatedCache.enabled === true
         simulatedModelCacheEstimateMissingInputTokens =
           simulatedCache.estimate_missing_input_tokens === true
+        const inputMultiplier = Number(
+          simulatedCache.missing_input_token_multiplier
+        )
+        if (
+          Number.isFinite(inputMultiplier) &&
+          inputMultiplier >= 0.01 &&
+          inputMultiplier <= 100
+        ) {
+          simulatedModelCacheMissingInputTokenMultiplier = inputMultiplier
+        }
         const ttlSeconds = Number(simulatedCache.ttl_seconds)
         if (Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
           simulatedModelCacheTTLSeconds = ttlSeconds
@@ -1233,9 +1283,14 @@ export function transformChannelToFormDefaults(
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
+    retry_zero_output: retryZeroOutput,
+    disable_non_stream: disableNonStream,
+    missing_output_token_multiplier: missingOutputTokenMultiplier,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
     simulated_model_cache_estimate_missing_input_tokens:
       simulatedModelCacheEstimateMissingInputTokens,
+    simulated_model_cache_missing_input_token_multiplier:
+      simulatedModelCacheMissingInputTokenMultiplier,
     simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
     simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
     simulated_model_cache_multimodal_enabled:
@@ -1412,15 +1467,47 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.cache_usage_validation_split
   }
 
+  if (formData.retry_zero_output === true) {
+    settingsObj.retry_zero_output = true
+  } else if ('retry_zero_output' in settingsObj) {
+    delete settingsObj.retry_zero_output
+  }
+  if (formData.disable_non_stream === true) {
+    settingsObj.disable_non_stream = true
+  } else if ('disable_non_stream' in settingsObj) {
+    delete settingsObj.disable_non_stream
+  }
+  const missingOutputTokenMultiplier = Number(
+    formData.missing_output_token_multiplier
+  )
+  if (
+    Number.isFinite(missingOutputTokenMultiplier) &&
+    missingOutputTokenMultiplier >= 0.01 &&
+    missingOutputTokenMultiplier <= 100 &&
+    missingOutputTokenMultiplier !== 1
+  ) {
+    settingsObj.missing_output_token_multiplier = missingOutputTokenMultiplier
+  } else if ('missing_output_token_multiplier' in settingsObj) {
+    delete settingsObj.missing_output_token_multiplier
+  }
+
   const simulatedModelCacheEnabled =
     formData.simulated_model_cache_enabled === true
   const simulatedModelCacheEstimateMissingInputTokens =
     formData.simulated_model_cache_estimate_missing_input_tokens === true
+  const missingInputTokenMultiplier = Number(
+    formData.simulated_model_cache_missing_input_token_multiplier
+  )
+  const persistMissingInputTokenMultiplier =
+    Number.isFinite(missingInputTokenMultiplier) &&
+    missingInputTokenMultiplier >= 0.01 &&
+    missingInputTokenMultiplier <= 100 &&
+    missingInputTokenMultiplier !== 1
   const simulatedModelCacheRuntimeActive =
     simulatedModelCacheEnabled ||
     simulatedModelCacheEstimateMissingInputTokens ||
     formData.multi_key_type === 'cache_affinity_least_requests'
-  if (simulatedModelCacheRuntimeActive) {
+  if (simulatedModelCacheRuntimeActive || persistMissingInputTokenMultiplier) {
     const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
     const simulatedModelCache: Record<string, unknown> = {
       enabled: simulatedModelCacheEnabled,
@@ -1431,6 +1518,10 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
     if (simulatedModelCacheEstimateMissingInputTokens) {
       simulatedModelCache.estimate_missing_input_tokens = true
+    }
+    if (persistMissingInputTokenMultiplier) {
+      simulatedModelCache.missing_input_token_multiplier =
+        missingInputTokenMultiplier
     }
     simulatedModelCache.min_match_ratio = Math.min(
       1,

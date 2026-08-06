@@ -107,6 +107,33 @@ func TestChannelOverloadedNeverRetries(t *testing.T) {
 	), 3))
 }
 
+func TestZeroOutputRetriesOnlyAcrossChannels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	zeroOutputErr := types.NewErrorWithStatusCode(
+		errors.New("zero output"),
+		types.ErrorCodeChannelZeroOutput,
+		http.StatusServiceUnavailable,
+	)
+
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, zeroOutputErr, policy, 0))
+	assert.True(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
+
+	ctx.Set("specific_channel_id", 1)
+	assert.False(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
+}
+
+func TestSupportsChannelRequestPolicyOnlyForGenerationEndpoints(t *testing.T) {
+	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, "/v1/chat/completions"))
+	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatOpenAIResponses, relayconstant.RelayModeResponses, "/v1/responses"))
+	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatClaude, 0, "/v1/messages"))
+	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatGemini, relayconstant.RelayModeGemini, "/v1beta/models/gemini:generateContent"))
+	assert.False(t, supportsChannelRequestPolicy(types.RelayFormatGemini, relayconstant.RelayModeGemini, "/v1beta/models/gemini:embedContent"))
+	assert.False(t, supportsChannelRequestPolicy(types.RelayFormatOpenAI, relayconstant.RelayModeEmbeddings, "/v1/embeddings"))
+}
+
 func TestLockedChannelOverloadDoesNotFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originalRedisEnabled := common.RedisEnabled

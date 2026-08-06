@@ -43,6 +43,7 @@ import {
   Code,
   Route,
   Settings,
+  Shuffle,
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react'
@@ -193,6 +194,7 @@ import {
   ChannelAuthSection,
   ChannelBasicSection,
   ChannelEditorLoadingState,
+  ChannelFallbackPolicyFields,
   ChannelModelsSection,
   SimulatedModelCacheFields,
 } from './sections'
@@ -266,6 +268,7 @@ const ADVANCED_SETTINGS_SECTION_IDS = {
   extraSettings: 'channel-section-advanced-extra-settings',
   fieldPassthrough: 'channel-section-advanced-field-passthrough',
   statusCodeRetry: 'channel-section-advanced-status-code-retry',
+  fallbackPolicy: 'channel-section-advanced-fallback-policy',
   responseHeaderTimeout: 'channel-section-advanced-response-header-timeout',
   streamInterruptionBilling:
     'channel-section-advanced-stream-interruption-billing',
@@ -317,8 +320,12 @@ const SENSITIVE_FORM_FIELDS = [
   'disable_task_polling_sleep',
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
+  'retry_zero_output',
+  'disable_non_stream',
+  'missing_output_token_multiplier',
   'simulated_model_cache_enabled',
   'simulated_model_cache_estimate_missing_input_tokens',
+  'simulated_model_cache_missing_input_token_multiplier',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
   'simulated_model_cache_multimodal_enabled',
@@ -390,8 +397,12 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.claude_beta_query ||
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
+    values.retry_zero_output ||
+    values.disable_non_stream ||
+    (values.missing_output_token_multiplier ?? 1) !== 1 ||
     values.simulated_model_cache_enabled ||
     values.simulated_model_cache_estimate_missing_input_tokens ||
+    (values.simulated_model_cache_missing_input_token_multiplier ?? 1) !== 1 ||
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
@@ -870,6 +881,11 @@ export function ChannelMutateDrawer({
   const currentCacheUsageValidationSplit = form.watch(
     'cache_usage_validation_split'
   )
+  const currentRetryZeroOutput = form.watch('retry_zero_output')
+  const currentDisableNonStream = form.watch('disable_non_stream')
+  const currentMissingOutputTokenMultiplier = form.watch(
+    'missing_output_token_multiplier'
+  )
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
@@ -878,6 +894,9 @@ export function ChannelMutateDrawer({
   )
   const currentSimulatedModelCacheMultimodalEnabled = form.watch(
     'simulated_model_cache_multimodal_enabled'
+  )
+  const currentSimulatedModelCacheMissingInputTokenMultiplier = form.watch(
+    'simulated_model_cache_missing_input_token_multiplier'
   )
   const simulatedModelCacheRuntimeActive =
     currentSimulatedModelCacheEnabled ||
@@ -1219,7 +1238,13 @@ export function ChannelMutateDrawer({
     currentSimulatedModelCacheEnabled ||
     currentSimulatedModelCacheEstimateMissingInputTokens ||
     currentSimulatedModelCacheMultimodalEnabled ||
+    (currentSimulatedModelCacheMissingInputTokenMultiplier ?? 1) !== 1 ||
     multiKeyType === 'cache_affinity_least_requests'
+  )
+  const fallbackPolicyConfigured = Boolean(
+    currentRetryZeroOutput ||
+    currentDisableNonStream ||
+    (currentMissingOutputTokenMultiplier ?? 1) !== 1
   )
   const cacheUsageValidationSplitConfigured = Boolean(
     currentCacheUsageValidationSplit
@@ -1246,6 +1271,7 @@ export function ChannelMutateDrawer({
     extraSettingsConfigured ||
     fieldPassthroughConfigured ||
     statusCodeRetryConfigured ||
+    fallbackPolicyConfigured ||
     responseHeaderTimeoutConfigured ||
     streamInterruptionBillingConfigured ||
     cacheUsageValidationSplitConfigured ||
@@ -1282,6 +1308,11 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.statusCodeRetry,
       title: t('Channel Retry Override'),
       configured: statusCodeRetryConfigured,
+    },
+    {
+      id: ADVANCED_SETTINGS_SECTION_IDS.fallbackPolicy,
+      title: t('Channel Fallback Policies'),
+      configured: fallbackPolicyConfigured,
     },
     {
       id: ADVANCED_SETTINGS_SECTION_IDS.streamInterruptionBilling,
@@ -5143,6 +5174,25 @@ export function ChannelMutateDrawer({
                               />
                             </div>
                           </fieldset>
+                        </div>
+
+                        <div
+                          id={ADVANCED_SETTINGS_SECTION_IDS.fallbackPolicy}
+                          className={sideDrawerSectionClassName(
+                            configuredAdvancedSectionClassName(
+                              'scroll-mt-4',
+                              fallbackPolicyConfigured
+                            )
+                          )}
+                        >
+                          <CardHeading
+                            title={t('Channel Fallback Policies')}
+                            icon={<Shuffle className='h-4 w-4' />}
+                          />
+                          <ChannelFallbackPolicyFields
+                            control={form.control}
+                            sensitiveLocked={sensitiveLocked}
+                          />
                         </div>
 
                         <div

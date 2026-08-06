@@ -67,6 +67,34 @@ type ChannelOtherSettings struct {
 	InputTokenRouting                     *InputTokenRoutingSettings         `json:"input_token_routing,omitempty"`
 	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
+	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
+	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
+	MissingOutputTokenMultiplier          *float64                           `json:"missing_output_token_multiplier,omitempty"`
+}
+
+const (
+	DefaultMissingTokenMultiplier = 1.0
+	MinMissingTokenMultiplier     = 0.01
+	MaxMissingTokenMultiplier     = 100.0
+)
+
+func MissingTokenMultiplier(value *float64) float64 {
+	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) ||
+		*value < MinMissingTokenMultiplier || *value > MaxMissingTokenMultiplier {
+		return DefaultMissingTokenMultiplier
+	}
+	return *value
+}
+
+func ValidateMissingTokenMultiplier(name string, value *float64) error {
+	if value == nil {
+		return nil
+	}
+	if math.IsNaN(*value) || math.IsInf(*value, 0) ||
+		*value < MinMissingTokenMultiplier || *value > MaxMissingTokenMultiplier {
+		return fmt.Errorf("%s must be between %.2f and %.0f", name, MinMissingTokenMultiplier, MaxMissingTokenMultiplier)
+	}
+	return nil
 }
 
 type StreamInterruptionBillingMode string
@@ -90,11 +118,12 @@ func (s StreamInterruptionBillingSettings) Validate() error {
 }
 
 type SimulatedModelCacheSettings struct {
-	Enabled                    bool                                   `json:"enabled,omitempty"`
-	EstimateMissingInputTokens bool                                   `json:"estimate_missing_input_tokens,omitempty"`
-	TTLSeconds                 int                                    `json:"ttl_seconds,omitempty"`
-	MinMatchRatio              float64                                `json:"min_match_ratio,omitempty"`
-	Multimodal                 *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
+	Enabled                     bool                                   `json:"enabled,omitempty"`
+	EstimateMissingInputTokens  bool                                   `json:"estimate_missing_input_tokens,omitempty"`
+	MissingInputTokenMultiplier *float64                               `json:"missing_input_token_multiplier,omitempty"`
+	TTLSeconds                  int                                    `json:"ttl_seconds,omitempty"`
+	MinMatchRatio               float64                                `json:"min_match_ratio,omitempty"`
+	Multimodal                  *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
 }
 
 type SimulatedModelCacheMultimodalSettings struct {
@@ -127,6 +156,9 @@ func (s SimulatedModelCacheSettings) IsActive() bool {
 }
 
 func (s SimulatedModelCacheSettings) Validate() error {
+	if err := ValidateMissingTokenMultiplier("simulated_model_cache.missing_input_token_multiplier", s.MissingInputTokenMultiplier); err != nil {
+		return err
+	}
 	if s.Multimodal == nil || !s.Multimodal.Enabled {
 		return nil
 	}

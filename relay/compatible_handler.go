@@ -225,7 +225,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
-		restoreSimulatedModelCacheRecorder(c, recorder)
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+			return policyErr
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
@@ -238,7 +240,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			restoreSimulatedModelCacheRecorder(c, recorder)
 			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
 		} else {
-			finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+			if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage)); policyErr != nil {
+				return policyErr
+			}
 		}
 	}
 

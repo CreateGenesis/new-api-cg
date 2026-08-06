@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 
@@ -32,6 +33,8 @@ type simulatedModelCacheAttempt struct {
 	precomputed                 *service.SimulatedModelCachePartialMatchResult
 	bypassReason                string
 	matchDiagnostics            service.SimulatedModelCachePartialMatch
+	retryZeroOutput             bool
+	missingOutputMultiplier     float64
 }
 
 type simulatedModelCachePartialMatchTask interface {
@@ -42,6 +45,7 @@ type simulatedModelCachePartialMatchTask interface {
 
 type simulatedModelCacheRecorder struct {
 	gin.ResponseWriter
+	outputRecorder           *channelOutputRecorder
 	attempt                  *simulatedModelCacheAttempt
 	body                     bytes.Buffer
 	streamPending            bytes.Buffer
@@ -143,11 +147,11 @@ func (w *simulatedModelCacheRecorder) Status() int {
 }
 
 func (w *simulatedModelCacheRecorder) Size() int {
-	return w.size
+	return w.ResponseWriter.Size()
 }
 
 func (w *simulatedModelCacheRecorder) Written() bool {
-	return w.written
+	return w.ResponseWriter.Written()
 }
 
 func (w *simulatedModelCacheRecorder) Flush() {
@@ -522,10 +526,12 @@ func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]
 
 func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) *simulatedModelCacheAttempt {
 	settings, configured := simulatedModelCacheSettings(info)
+	outputPolicyActive := info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.RetryZeroOutput &&
+		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
 	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
 	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)
 	routingActive := routingPreparation != nil && info != nil && info.ChannelMeta != nil && routingPreparation.ChannelID == info.ChannelMeta.ChannelId
-	if ((!configured || !settings.IsActive()) && !routingActive) || len(requestBody) == 0 {
+	if (!configured || !settings.IsActive()) && !routingActive && !outputPolicyActive {
 		return nil
 	}
 	format := info.GetFinalRequestRelayFormat()
@@ -534,11 +540,15 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	attempt := &simulatedModelCacheAttempt{
-		settings:       settings,
-		visible:        settings.Enabled,
-		cacheModelName: simulatedModelCacheModelName(info),
+		settings:                settings,
+		visible:                 settings.Enabled,
+		cacheModelName:          simulatedModelCacheModelName(info),
+		retryZeroOutput:         outputPolicyActive,
+		missingOutputMultiplier: dto.MissingTokenMultiplier(info.ChannelOtherSettings.MissingOutputTokenMultiplier),
 	}
-	attempt.prompt = service.ExtractSimulatedModelCachePrompt(format, attempt.cacheModelName, requestBody, settings)
+	if len(requestBody) > 0 {
+		attempt.prompt = service.ExtractSimulatedModelCachePrompt(format, attempt.cacheModelName, requestBody, settings)
+	}
 	attempt.promptText = attempt.prompt.Text
 	if reason := attempt.prompt.DiagnosticReason(); reason != "" {
 		logger.LogWarn(c, fmt.Sprintf("simulated model cache multimodal prompt barrier: request_id=%s reason=%s", info.RequestId, reason))
@@ -562,7 +572,8 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		if attempt.prompt.IsMultimodal() && strings.TrimSpace(promptText) == "" {
 			promptText = service.ExtractSimulatedModelCachePromptText(format, requestBody)
 		}
-		attempt.missingInputEstimatedTokens = service.EstimateTokenByModel(attempt.cacheModelName, promptText)
+		baseEstimate := service.EstimateTokenByModel(attempt.cacheModelName, promptText)
+		attempt.missingInputEstimatedTokens = scaleMissingTokenEstimate(info, baseEstimate, dto.MissingTokenMultiplier(attempt.settings.MissingInputTokenMultiplier))
 	}
 	if attempt.precomputed == nil || attempt.precomputed.Prepared == nil {
 		startSimulatedModelCachePartialMatch(c, info, attempt)
@@ -611,8 +622,14 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 		stream = info.IsStream
 	}
 	bufferLimit := service.SimulatedModelCacheResponseBufferBytes()
+	var outputRecorder *channelOutputRecorder
+	if attempt.retryZeroOutput {
+		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.missingOutputMultiplier, int(bufferLimit))
+		c.Writer = outputRecorder
+	}
 	recorder := &simulatedModelCacheRecorder{
 		ResponseWriter:      c.Writer,
+		outputRecorder:      outputRecorder,
 		attempt:             attempt,
 		passThrough:         !attempt.visible || stream || (attempt.partialMatch == nil && attempt.precomputed == nil),
 		stream:              stream,
@@ -627,13 +644,18 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	return recorder
 }
 
-func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt, recorder *simulatedModelCacheRecorder, usage *dto.Usage) {
+func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt, recorder *simulatedModelCacheRecorder, usage *dto.Usage) (outputErr *types.NewAPIError) {
 	if attempt == nil || recorder == nil {
-		return
+		return nil
 	}
 	originalWriter := recorder.ResponseWriter
 	c.Writer = originalWriter
 	defer recorder.releaseResponseReservation()
+	defer func() {
+		if recorder.outputRecorder != nil {
+			outputErr = recorder.outputRecorder.finish(c, info, usage)
+		}
+	}()
 
 	if usage == nil {
 		if recorder.stream {
@@ -799,6 +821,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 		info.SimulatedModelCacheInfo.FingerprintVersion = service.SimulatedModelCacheFingerprintVersion
 		info.SimulatedModelCacheInfo.MissingInputEstimatedTokens = missingInputEstimatedTokens
 	}
+	return nil
 }
 
 func simulatedModelCacheOriginalInputTokens(usage *dto.Usage) int {
@@ -831,7 +854,7 @@ func simulatedModelCacheModelName(info *relaycommon.RelayInfo) string {
 	return strings.TrimSpace(info.UpstreamModelName)
 }
 
-func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModelCacheRecorder) {
+func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModelCacheRecorder) *types.NewAPIError {
 	if recorder != nil {
 		if recorder.attempt != nil && recorder.attempt.partialMatch != nil {
 			recorder.attempt.partialMatch.Cancel()
@@ -842,7 +865,14 @@ func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModel
 		}
 		recorder.releaseResponseReservation()
 		c.Writer = recorder.ResponseWriter
+		if recorder.outputRecorder != nil {
+			recorder.outputRecorder.abort(c)
+			if recorder.outputRecorder.policyErr != nil {
+				return channelZeroOutputError(recorder.outputRecorder.policyErr)
+			}
+		}
 	}
+	return nil
 }
 
 func simulatedModelCacheSettings(info *relaycommon.RelayInfo) (dto.SimulatedModelCacheSettings, bool) {
@@ -864,6 +894,19 @@ func isSimulatedModelCacheTextFormat(format types.RelayFormat) bool {
 	switch format {
 	case types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction, types.RelayFormatClaude, types.RelayFormatGemini:
 		return true
+	default:
+		return false
+	}
+}
+
+func isChannelOutputPolicyFormat(format types.RelayFormat, relayMode int) bool {
+	switch format {
+	case types.RelayFormatClaude, types.RelayFormatGemini:
+		return true
+	case types.RelayFormatOpenAI:
+		return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions
+	case types.RelayFormatOpenAIResponses:
+		return relayMode == relayconstant.RelayModeResponses
 	default:
 		return false
 	}

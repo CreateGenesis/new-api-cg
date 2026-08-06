@@ -172,12 +172,16 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		usage, newApiErr = openaichannel.OaiResponsesToChatHandler(c, info, httpResp)
 	}
 	if newApiErr != nil {
-		restoreSimulatedModelCacheRecorder(c, recorder)
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+			return nil, policyErr, false
+		}
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return nil, newApiErr, false
 	}
 	if recorder != nil {
-		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage)
+		if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage); policyErr != nil {
+			return nil, policyErr, false
+		}
 	}
 	return usage, nil, false
 }

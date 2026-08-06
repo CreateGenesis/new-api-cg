@@ -150,7 +150,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
-		restoreSimulatedModelCacheRecorder(c, recorder)
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+			return policyErr
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
@@ -163,7 +165,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			restoreSimulatedModelCacheRecorder(c, recorder)
 			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
 		} else {
-			finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usageDto)
+			if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usageDto); policyErr != nil {
+				return policyErr
+			}
 		}
 	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {

@@ -235,14 +235,18 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
-		restoreSimulatedModelCacheRecorder(c, recorder)
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+			return policyErr
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
 
 	if recorder != nil {
-		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+		if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage)); policyErr != nil {
+			return policyErr
+		}
 	}
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil

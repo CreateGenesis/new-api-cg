@@ -211,7 +211,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for {
 		relayInfo.RetryIndex = interChannelRetryState.Count()
-		channel, channelErr := getChannel(c, relayInfo, selectParam)
+		channel, channelErr := getEligibleChannel(c, relayInfo, selectParam, relayFormat)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
@@ -560,6 +560,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 		channelID := c.GetInt("channel_id")
 		currentChannel, currentChannelErr := model.CacheGetChannel(channelID)
 		if currentChannelErr == nil && currentChannel != nil {
+			if selectParam != nil {
+				if _, excluded := selectParam.ExcludedChannelIDs[currentChannel.Id]; excluded {
+					return selectChannelByInputTokenRouting(c, info, selectParam)
+				}
+			}
 			if selectParam == nil || selectParam.InputTokenEstimates == nil {
 				return currentChannel, nil
 			}
@@ -583,6 +588,66 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 		}, nil
 	}
 	return selectChannelByInputTokenRouting(c, info, selectParam)
+}
+
+func getEligibleChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam, relayFormat types.RelayFormat) (*model.Channel, *types.NewAPIError) {
+	skippedNonStream := false
+	for {
+		channel, channelErr := getChannel(c, info, selectParam)
+		if channelErr != nil || channel == nil {
+			if channelErr == nil && skippedNonStream {
+				return nil, types.NewErrorWithStatusCode(
+					errors.New("no eligible channel accepts non-stream requests"),
+					types.ErrorCodeChannelNonStreamDisabled,
+					http.StatusServiceUnavailable,
+					types.ErrOptionWithSkipRetry(),
+				)
+			}
+			return channel, channelErr
+		}
+		if info.IsStream || !supportsChannelRequestPolicy(relayFormat, info.RelayMode, c.Request.URL.Path) || !channel.GetOtherSettings().DisableNonStream {
+			return channel, nil
+		}
+		if requestPinsChannel(c) {
+			return nil, types.NewErrorWithStatusCode(
+				errors.New("the selected channel does not accept non-stream requests"),
+				types.ErrorCodeChannelNonStreamDisabled,
+				http.StatusServiceUnavailable,
+				types.ErrOptionWithSkipRetry(),
+			)
+		}
+
+		skippedNonStream = true
+		selectParam.ExcludeUnavailableChannel(channel)
+		service.ClearRequestChannelAffinitySelection(c)
+		logger.LogInfo(c, fmt.Sprintf("skipping channel %d because non-stream requests are disabled", channel.Id))
+	}
+}
+
+func supportsChannelRequestPolicy(relayFormat types.RelayFormat, relayMode int, requestPath string) bool {
+	switch relayFormat {
+	case types.RelayFormatClaude:
+		return true
+	case types.RelayFormatGemini:
+		return relayMode == relayconstant.RelayModeGemini && !strings.Contains(requestPath, "embed")
+	case types.RelayFormatOpenAI:
+		return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions
+	case types.RelayFormatOpenAIResponses:
+		return relayMode == relayconstant.RelayModeResponses
+	default:
+		return false
+	}
+}
+
+func requestPinsChannel(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if _, pinned := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); pinned {
+		return true
+	}
+	_, pinned := c.Get("specific_channel_id")
+	return pinned
 }
 
 func prepareMultiKeyChannelRetry(c *gin.Context, channel *model.Channel, info *relaycommon.RelayInfo) (*model.Channel, *types.NewAPIError) {
@@ -843,9 +908,12 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 		return relayRetryEvaluation{reason: "budget_exhausted"}
 	}
 	if !allowSpecificChannelRetry {
-		if _, ok := c.Get("specific_channel_id"); ok {
+		if requestPinsChannel(c) {
 			return relayRetryEvaluation{reason: "specific_channel"}
 		}
+	}
+	if openaiErr.GetErrorCode() == types.ErrorCodeChannelZeroOutput && allowSpecificChannelRetry {
+		return relayRetryEvaluation{reason: "zero_output"}
 	}
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelStreamError {
 		if allowSpecificChannelRetry {

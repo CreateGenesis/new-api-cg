@@ -51,7 +51,9 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	}
 	if err.GetErrorCode() == types.ErrorCodeChannelStreamError ||
 		err.GetErrorCode() == types.ErrorCodeChannelResponseHeaderTimeout ||
-		err.GetErrorCode() == types.ErrorCodeChannelResponseBodyTimeout {
+		err.GetErrorCode() == types.ErrorCodeChannelResponseBodyTimeout ||
+		err.GetErrorCode() == types.ErrorCodeChannelZeroOutput ||
+		err.GetErrorCode() == types.ErrorCodeChannelNonStreamDisabled {
 		return false
 	}
 	if types.IsChannelError(err) {

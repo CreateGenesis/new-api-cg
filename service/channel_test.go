@@ -53,3 +53,21 @@ func TestShouldDisableChannelExcludesResponseBodyTimeout(t *testing.T) {
 
 	assert.False(t, ShouldDisableChannel(timeoutErr))
 }
+
+func TestShouldDisableChannelExcludesChannelFallbackPolicyErrors(t *testing.T) {
+	originalEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = originalEnabled })
+
+	for _, code := range []types.ErrorCode{
+		types.ErrorCodeChannelZeroOutput,
+		types.ErrorCodeChannelNonStreamDisabled,
+	} {
+		err := types.NewErrorWithStatusCode(
+			errors.New("channel fallback policy"),
+			code,
+			http.StatusServiceUnavailable,
+		)
+		assert.False(t, ShouldDisableChannel(err))
+	}
+}

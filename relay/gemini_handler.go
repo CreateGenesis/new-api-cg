@@ -202,13 +202,17 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
-		restoreSimulatedModelCacheRecorder(c, recorder)
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+			return policyErr
+		}
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
 
 	if recorder != nil {
-		finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage))
+		if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage)); policyErr != nil {
+			return policyErr
+		}
 	}
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	return nil
