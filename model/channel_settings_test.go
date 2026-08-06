@@ -70,6 +70,22 @@ func TestChannelValidateSettingsAcceptsStreamInterruptionBillingModes(t *testing
 	}
 }
 
+func TestChannelValidateSettingsEnforcesRequestModePolicyExclusivity(t *testing.T) {
+	for _, settings := range []string{
+		`{}`,
+		`{"disable_stream":true}`,
+		`{"disable_non_stream":true}`,
+	} {
+		channel := &Channel{OtherSettings: settings}
+		require.NoError(t, channel.ValidateSettings(), "settings=%s", settings)
+	}
+
+	channel := &Channel{OtherSettings: `{"disable_stream":true,"disable_non_stream":true}`}
+	err := channel.ValidateSettings()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot both be enabled")
+}
+
 func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,

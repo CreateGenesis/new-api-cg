@@ -55,6 +55,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'retry_zero_output',
+  'disable_stream',
   'disable_non_stream',
   'missing_output_token_multiplier',
   'simulated_model_cache_enabled',

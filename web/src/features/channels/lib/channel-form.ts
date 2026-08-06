@@ -367,6 +367,7 @@ export const channelFormSchema = z
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
     retry_zero_output: z.boolean().optional(),
+    disable_stream: z.boolean().optional(),
     disable_non_stream: z.boolean().optional(),
     missing_output_token_multiplier: z.number().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
@@ -610,6 +611,12 @@ export const channelFormSchema = z
       data.simulated_model_cache_enabled ||
       data.simulated_model_cache_estimate_missing_input_tokens ||
       data.multi_key_type === 'cache_affinity_least_requests'
+    if (data.disable_stream && data.disable_non_stream) {
+      const message =
+        'Stream and non-stream request disabling cannot both be enabled.'
+      addRequiredIssue(ctx, 'disable_stream', message)
+      addRequiredIssue(ctx, 'disable_non_stream', message)
+    }
     for (const fieldName of [
       'missing_output_token_multiplier',
       'simulated_model_cache_missing_input_token_multiplier',
@@ -832,6 +839,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
   retry_zero_output: false,
+  disable_stream: false,
   disable_non_stream: false,
   missing_output_token_multiplier: 1,
   simulated_model_cache_enabled: false,
@@ -936,6 +944,7 @@ export function transformChannelToFormDefaults(
   let disableTaskPollingSleep = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
+  let disableStream = false
   let disableNonStream = false
   let missingOutputTokenMultiplier = 1
   let simulatedModelCacheEnabled = false
@@ -989,6 +998,7 @@ export function transformChannelToFormDefaults(
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
+      disableStream = parsed.disable_stream === true
       disableNonStream = parsed.disable_non_stream === true
       const outputMultiplier = Number(parsed.missing_output_token_multiplier)
       if (
@@ -1284,6 +1294,7 @@ export function transformChannelToFormDefaults(
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
     retry_zero_output: retryZeroOutput,
+    disable_stream: disableStream,
     disable_non_stream: disableNonStream,
     missing_output_token_multiplier: missingOutputTokenMultiplier,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
@@ -1471,6 +1482,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.retry_zero_output = true
   } else if ('retry_zero_output' in settingsObj) {
     delete settingsObj.retry_zero_output
+  }
+  if (formData.disable_stream === true) {
+    settingsObj.disable_stream = true
+  } else if ('disable_stream' in settingsObj) {
+    delete settingsObj.disable_stream
   }
   if (formData.disable_non_stream === true) {
     settingsObj.disable_non_stream = true

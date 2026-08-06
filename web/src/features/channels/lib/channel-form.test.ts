@@ -206,12 +206,12 @@ describe('channel fallback policy settings', () => {
   test('loads and saves fallback switches and output multiplier', () => {
     const form = transformChannelToFormDefaults(
       testChannel(
-        '{"retry_zero_output":true,"disable_non_stream":true,"missing_output_token_multiplier":1.75}'
+        '{"retry_zero_output":true,"disable_stream":true,"missing_output_token_multiplier":1.75}'
       )
     )
 
     assert.equal(form.retry_zero_output, true)
-    assert.equal(form.disable_non_stream, true)
+    assert.equal(form.disable_stream, true)
     assert.equal(form.missing_output_token_multiplier, 1.75)
 
     const payload = transformFormDataToCreatePayload({
@@ -226,7 +226,7 @@ describe('channel fallback policy settings', () => {
     const settings = JSON.parse(String(payload.channel.settings))
 
     assert.equal(settings.retry_zero_output, true)
-    assert.equal(settings.disable_non_stream, true)
+    assert.equal(settings.disable_stream, true)
     assert.equal(settings.missing_output_token_multiplier, 1.75)
   })
 
@@ -248,6 +248,29 @@ describe('channel fallback policy settings', () => {
     assert.equal(settings.missing_output_token_multiplier, 2)
   })
 
+  test('loads and saves the non-stream request policy independently', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel('{"disable_non_stream":true}')
+    )
+
+    assert.equal(form.disable_stream, false)
+    assert.equal(form.disable_non_stream, true)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.disable_stream, undefined)
+    assert.equal(settings.disable_non_stream, true)
+  })
+
   test('omits disabled fallback defaults and rejects invalid multipliers', () => {
     const payload = transformFormDataToCreatePayload({
       ...CHANNEL_FORM_DEFAULT_VALUES,
@@ -261,6 +284,7 @@ describe('channel fallback policy settings', () => {
     const settings = JSON.parse(String(payload.channel.settings))
 
     assert.equal(settings.retry_zero_output, undefined)
+    assert.equal(settings.disable_stream, undefined)
     assert.equal(settings.disable_non_stream, undefined)
     assert.equal(settings.missing_output_token_multiplier, undefined)
 
@@ -271,6 +295,20 @@ describe('channel fallback policy settings', () => {
       })
       assert.equal(parsed.success, false)
     }
+  })
+
+  test('rejects disabling stream and non-stream requests together', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      disable_stream: true,
+      disable_non_stream: true,
+    })
+
+    assert.equal(parsed.success, false)
+    if (parsed.success) return
+    const paths = new Set(parsed.error.issues.map((issue) => issue.path[0]))
+    assert.equal(paths.has('disable_stream'), true)
+    assert.equal(paths.has('disable_non_stream'), true)
   })
 })
 

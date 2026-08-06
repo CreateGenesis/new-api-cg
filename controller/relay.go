@@ -591,36 +591,50 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 }
 
 func getEligibleChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam, relayFormat types.RelayFormat) (*model.Channel, *types.NewAPIError) {
-	skippedNonStream := false
+	requestMode := "non-stream"
+	disabledErrorCode := types.ErrorCodeChannelNonStreamDisabled
+	if info.IsStream {
+		requestMode = "stream"
+		disabledErrorCode = types.ErrorCodeChannelStreamDisabled
+	}
+	skippedDisabledMode := false
 	for {
 		channel, channelErr := getChannel(c, info, selectParam)
 		if channelErr != nil || channel == nil {
-			if channelErr == nil && skippedNonStream {
+			if channelErr == nil && skippedDisabledMode {
 				return nil, types.NewErrorWithStatusCode(
-					errors.New("no eligible channel accepts non-stream requests"),
-					types.ErrorCodeChannelNonStreamDisabled,
+					fmt.Errorf("no eligible channel accepts %s requests", requestMode),
+					disabledErrorCode,
 					http.StatusServiceUnavailable,
 					types.ErrOptionWithSkipRetry(),
 				)
 			}
 			return channel, channelErr
 		}
-		if info.IsStream || !supportsChannelRequestPolicy(relayFormat, info.RelayMode, c.Request.URL.Path) || !channel.GetOtherSettings().DisableNonStream {
+		if !supportsChannelRequestPolicy(relayFormat, info.RelayMode, c.Request.URL.Path) {
+			return channel, nil
+		}
+		settings := channel.GetOtherSettings()
+		requestModeDisabled := settings.DisableNonStream
+		if info.IsStream {
+			requestModeDisabled = settings.DisableStream
+		}
+		if !requestModeDisabled {
 			return channel, nil
 		}
 		if requestPinsChannel(c) {
 			return nil, types.NewErrorWithStatusCode(
-				errors.New("the selected channel does not accept non-stream requests"),
-				types.ErrorCodeChannelNonStreamDisabled,
+				fmt.Errorf("the selected channel does not accept %s requests", requestMode),
+				disabledErrorCode,
 				http.StatusServiceUnavailable,
 				types.ErrOptionWithSkipRetry(),
 			)
 		}
 
-		skippedNonStream = true
+		skippedDisabledMode = true
 		selectParam.ExcludeUnavailableChannel(channel)
 		service.ClearRequestChannelAffinitySelection(c)
-		logger.LogInfo(c, fmt.Sprintf("skipping channel %d because non-stream requests are disabled", channel.Id))
+		logger.LogInfo(c, fmt.Sprintf("skipping channel %d because %s requests are disabled", channel.Id, requestMode))
 	}
 }
 

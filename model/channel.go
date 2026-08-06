@@ -1196,6 +1196,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := dto.ValidateMissingTokenMultiplier("missing_output_token_multiplier", channelOtherSettings.MissingOutputTokenMultiplier); err != nil {
 		return err
 	}
+	if channelOtherSettings.DisableStream && channelOtherSettings.DisableNonStream {
+		return fmt.Errorf("disable_stream and disable_non_stream cannot both be enabled")
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

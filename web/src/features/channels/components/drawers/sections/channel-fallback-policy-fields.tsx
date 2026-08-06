@@ -31,6 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../../../lib'
+import { isRequestModeSwitchDisabled } from '../../../lib/channel-request-mode-policy'
 
 type ChannelFallbackPolicyFieldsProps = {
   control: Control<ChannelFormValues>
@@ -44,6 +45,14 @@ export function ChannelFallbackPolicyFields(
   const retryZeroOutput = useWatch({
     control: props.control,
     name: 'retry_zero_output',
+  })
+  const disableStream = useWatch({
+    control: props.control,
+    name: 'disable_stream',
+  })
+  const disableNonStream = useWatch({
+    control: props.control,
+    name: 'disable_non_stream',
   })
 
   return (
@@ -79,25 +88,64 @@ export function ChannelFallbackPolicyFields(
 
         <FormField
           control={props.control}
+          name='disable_stream'
+          render={({ field }) => (
+            <FormItem className='px-4 py-3'>
+              <div className='flex items-center justify-between gap-3'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-sm'>
+                    {t('Disable stream requests')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Skip this channel for stream generation requests and route them to another eligible channel.'
+                    )}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    disabled={isRequestModeSwitchDisabled(
+                      field.value,
+                      disableNonStream
+                    )}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </div>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={props.control}
           name='disable_non_stream'
           render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel className='text-sm'>
-                  {t('Disable non-stream requests')}
-                </FormLabel>
-                <FormDescription>
-                  {t(
-                    'Skip this channel for non-stream generation requests and route them to another eligible channel.'
-                  )}
-                </FormDescription>
+            <FormItem className='px-4 py-3'>
+              <div className='flex items-center justify-between gap-3'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-sm'>
+                    {t('Disable non-stream requests')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Skip this channel for non-stream generation requests and route them to another eligible channel.'
+                    )}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    disabled={isRequestModeSwitchDisabled(
+                      field.value,
+                      disableStream
+                    )}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
               </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
+              <FormMessage />
             </FormItem>
           )}
         />

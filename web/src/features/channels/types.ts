@@ -183,6 +183,7 @@ export interface ChannelOtherSettings {
   deepseek_v4_request_sanitization?: boolean
   cache_usage_validation_split?: boolean
   retry_zero_output?: boolean
+  disable_stream?: boolean
   disable_non_stream?: boolean
   missing_output_token_multiplier?: number
   simulated_model_cache?: {

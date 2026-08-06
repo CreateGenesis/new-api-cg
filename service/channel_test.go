@@ -61,6 +61,7 @@ func TestShouldDisableChannelExcludesChannelFallbackPolicyErrors(t *testing.T) {
 
 	for _, code := range []types.ErrorCode{
 		types.ErrorCodeChannelZeroOutput,
+		types.ErrorCodeChannelStreamDisabled,
 		types.ErrorCodeChannelNonStreamDisabled,
 	} {
 		err := types.NewErrorWithStatusCode(

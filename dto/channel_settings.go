@@ -68,6 +68,7 @@ type ChannelOtherSettings struct {
 	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
+	DisableStream                         bool                               `json:"disable_stream,omitempty"`
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
 	MissingOutputTokenMultiplier          *float64                           `json:"missing_output_token_multiplier,omitempty"`
 }

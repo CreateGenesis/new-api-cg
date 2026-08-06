@@ -524,6 +524,125 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	assert.Equal(t, []string{"2"}, disableNonStreamCtx.GetStringSlice("use_channel"))
 	assert.Equal(t, http.StatusOK, disableNonStreamRecorder.Code)
 
+	channels[0].OtherSettings = `{"disable_stream":true}`
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)
+	attemptsMu.Lock()
+	attempts = nil
+	streamFallback = true
+	attemptsMu.Unlock()
+	disableStreamRecorder := httptest.NewRecorder()
+	disableStreamCtx, _ := gin.CreateTestContext(disableStreamRecorder)
+	disableStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true}`, modelName)),
+	)
+	disableStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	disableStreamCtx.Set(common.RequestIdKey, "relay-disable-stream-rerouted")
+	common.SetContextKey(disableStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(disableStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(disableStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(disableStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(disableStreamCtx, &channels[0], modelName))
+
+	Relay(disableStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	disableStreamAttempts := append([]string(nil), attempts...)
+	attempts = nil
+	streamFallback = false
+	succeedOnKey = "channel-1"
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-2"}, disableStreamAttempts)
+	assert.Equal(t, []string{"2"}, disableStreamCtx.GetStringSlice("use_channel"))
+	assert.Equal(t, http.StatusOK, disableStreamRecorder.Code)
+	assert.Contains(t, disableStreamRecorder.Body.String(), "stream fallback ok")
+
+	streamDisabledNonStreamRecorder := httptest.NewRecorder()
+	streamDisabledNonStreamCtx, _ := gin.CreateTestContext(streamDisabledNonStreamRecorder)
+	streamDisabledNonStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	streamDisabledNonStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	streamDisabledNonStreamCtx.Set(common.RequestIdKey, "relay-disable-stream-allows-non-stream")
+	common.SetContextKey(streamDisabledNonStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(streamDisabledNonStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(streamDisabledNonStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(streamDisabledNonStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(streamDisabledNonStreamCtx, &channels[0], modelName))
+
+	Relay(streamDisabledNonStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	streamDisabledNonStreamAttempts := append([]string(nil), attempts...)
+	attempts = nil
+	succeedOnKey = ""
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1"}, streamDisabledNonStreamAttempts)
+	assert.Equal(t, http.StatusOK, streamDisabledNonStreamRecorder.Code)
+
+	pinnedStreamRecorder := httptest.NewRecorder()
+	pinnedStreamCtx, _ := gin.CreateTestContext(pinnedStreamRecorder)
+	pinnedStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true}`, modelName)),
+	)
+	pinnedStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	pinnedStreamCtx.Set(common.RequestIdKey, "relay-disable-stream-pinned")
+	pinnedStreamCtx.Set("specific_channel_id", channels[0].Id)
+	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(pinnedStreamCtx, &channels[0], modelName))
+
+	Relay(pinnedStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	pinnedStreamAttempts := append([]string(nil), attempts...)
+	attemptsMu.Unlock()
+	assert.Empty(t, pinnedStreamAttempts)
+	assert.Equal(t, http.StatusServiceUnavailable, pinnedStreamRecorder.Code)
+	assert.Contains(t, pinnedStreamRecorder.Body.String(), string(types.ErrorCodeChannelStreamDisabled))
+
+	for i := range channels {
+		channels[i].OtherSettings = `{"disable_stream":true}`
+		require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[i].Id).Update("settings", channels[i].OtherSettings).Error)
+	}
+	attemptsMu.Lock()
+	attempts = nil
+	attemptsMu.Unlock()
+	allStreamDisabledRecorder := httptest.NewRecorder()
+	allStreamDisabledCtx, _ := gin.CreateTestContext(allStreamDisabledRecorder)
+	allStreamDisabledCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true}`, modelName)),
+	)
+	allStreamDisabledCtx.Request.Header.Set("Content-Type", "application/json")
+	allStreamDisabledCtx.Set(common.RequestIdKey, "relay-disable-stream-no-eligible-channel")
+	common.SetContextKey(allStreamDisabledCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(allStreamDisabledCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(allStreamDisabledCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(allStreamDisabledCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(allStreamDisabledCtx, &channels[0], modelName))
+
+	Relay(allStreamDisabledCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	allStreamDisabledAttempts := append([]string(nil), attempts...)
+	attemptsMu.Unlock()
+	assert.Empty(t, allStreamDisabledAttempts)
+	assert.Equal(t, http.StatusServiceUnavailable, allStreamDisabledRecorder.Code)
+	assert.Contains(t, allStreamDisabledRecorder.Body.String(), string(types.ErrorCodeChannelStreamDisabled))
+	require.NoError(t, db.Where("request_id IN ?", []string{
+		"relay-disable-stream-pinned",
+		"relay-disable-stream-no-eligible-channel",
+	}).Delete(&model.Log{}).Error)
+
 	channels[0].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":1,"max_tokens":500000}]}}`
 	channels[1].OtherSettings = `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"ranges":[{"min_tokens":500001,"max_tokens":0}]}}`
 	channels[2].OtherSettings = channels[0].OtherSettings
