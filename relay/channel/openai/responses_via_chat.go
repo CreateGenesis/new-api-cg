@@ -23,7 +23,12 @@ type tntResponsesResponse struct {
 
 type tntResponsesStreamPayload struct {
 	dto.ResponsesStreamResponse
-	Response *tntResponsesResponse `json:"response,omitempty"`
+	Response       *tntResponsesResponse `json:"response,omitempty"`
+	SequenceNumber int                   `json:"sequence_number"`
+	Text           *string               `json:"text,omitempty"`
+	Arguments      *string               `json:"arguments,omitempty"`
+	Name           *string               `json:"name,omitempty"`
+	LogProbs       *[]any                `json:"logprobs,omitempty"`
 }
 
 func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) *tntResponsesResponse {
@@ -42,6 +47,29 @@ func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.O
 	response.TopP = 1
 	if request.TopP != nil {
 		response.TopP = *request.TopP
+	}
+	response.Instructions = request.Instructions
+	response.Tools = request.GetToolsMap()
+	if response.Tools == nil {
+		response.Tools = make([]map[string]any, 0)
+	}
+	response.ToolChoice = request.ToolChoice
+	if len(response.ToolChoice) == 0 {
+		response.ToolChoice = []byte(`"auto"`)
+	}
+	response.Truncation = request.Truncation
+	if len(response.Truncation) == 0 {
+		response.Truncation = []byte(`"disabled"`)
+	}
+	response.ParallelToolCalls = true
+	if len(request.ParallelToolCalls) > 0 && common.GetJsonType(request.ParallelToolCalls) == "boolean" {
+		_ = common.Unmarshal(request.ParallelToolCalls, &response.ParallelToolCalls)
+	}
+	response.Reasoning = request.Reasoning
+	response.User = request.User
+	response.Metadata = request.Metadata
+	if len(response.Metadata) == 0 {
+		response.Metadata = []byte(`{}`)
 	}
 
 	return &tntResponsesResponse{
@@ -120,14 +148,33 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
+	sequenceNumber := 0
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		payload := any(event.Payload)
-		if tntResponse := tntResponsesResponseForRequest(info, event.Payload.Response); tntResponse != nil {
-			payload = tntResponsesStreamPayload{
-				ResponsesStreamResponse: event.Payload,
-				Response:                tntResponse,
+		if info.IsTNTTencentOpenAIConversion() {
+			streamResponse := event.Payload
+			if event.Type == "response.reasoning_summary_text.done" {
+				streamResponse.Part = nil
 			}
+			tntPayload := tntResponsesStreamPayload{
+				ResponsesStreamResponse: streamResponse,
+				Response:                tntResponsesResponseForRequest(info, event.Payload.Response),
+				SequenceNumber:          sequenceNumber,
+			}
+			switch event.Type {
+			case "response.output_text.delta", "response.output_text.done":
+				emptyLogProbs := make([]any, 0)
+				tntPayload.LogProbs = &emptyLogProbs
+			}
+			if event.Type == "response.output_text.done" || event.Type == "response.reasoning_summary_text.done" {
+				tntPayload.Text = &event.DoneText
+			}
+			if event.Type == "response.function_call_arguments.done" {
+				tntPayload.Arguments = &event.DoneArguments
+				tntPayload.Name = &event.FunctionName
+			}
+			payload = tntPayload
 		}
 		data, err := common.Marshal(payload)
 		if err != nil {
@@ -135,6 +182,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return false
 		}
 		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data))
+		sequenceNumber++
 		return true
 	}
 

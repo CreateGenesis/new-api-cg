@@ -212,13 +212,13 @@ func ConvertTNTTencentResponsesRequest(request *dto.OpenAIResponsesRequest) (*dt
 	}
 	stream := true
 	converted := &dto.GeneralOpenAIRequest{
-		Model:               base.Model,
-		Messages:            base.Messages,
-		Stream:              &stream,
-		MaxCompletionTokens: base.MaxCompletionTokens,
-		Temperature:         base.Temperature,
-		TopP:                base.TopP,
-		ToolChoice:          base.ToolChoice,
+		Model:       base.Model,
+		Messages:    base.Messages,
+		Stream:      &stream,
+		MaxTokens:   base.MaxCompletionTokens,
+		Temperature: base.Temperature,
+		TopP:        base.TopP,
+		ToolChoice:  base.ToolChoice,
 	}
 	for _, tool := range base.Tools {
 		if tool.Type == "" || tool.Type == "function" {

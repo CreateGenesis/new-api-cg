@@ -132,7 +132,8 @@ func TestConvertTNTTencentResponsesRequestForcesStreamingAndFlattensInput(t *tes
 	require.NoError(t, err)
 	require.NotNil(t, converted.Stream)
 	assert.True(t, *converted.Stream)
-	assert.Same(t, request.MaxOutputTokens, converted.MaxCompletionTokens)
+	assert.Same(t, request.MaxOutputTokens, converted.MaxTokens)
+	assert.Nil(t, converted.MaxCompletionTokens)
 	assert.Same(t, request.Temperature, converted.Temperature)
 	assert.Same(t, request.TopP, converted.TopP)
 
@@ -151,7 +152,8 @@ func TestConvertTNTTencentResponsesRequestForcesStreamingAndFlattensInput(t *tes
 	require.NoError(t, err)
 	var body map[string]any
 	require.NoError(t, common.Unmarshal(encoded, &body))
-	assert.Contains(t, body, "max_completion_tokens")
+	assert.Contains(t, body, "max_tokens")
+	assert.NotContains(t, body, "max_completion_tokens")
 	assert.Contains(t, body, "temperature")
 	assert.Contains(t, body, "top_p")
 }
