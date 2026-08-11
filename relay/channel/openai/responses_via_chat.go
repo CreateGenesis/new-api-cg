@@ -16,6 +16,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type tntResponsesResponse struct {
+	*dto.OpenAIResponsesResponse
+	MaxOutputTokens *uint `json:"max_output_tokens"`
+}
+
+type tntResponsesStreamPayload struct {
+	dto.ResponsesStreamResponse
+	Response *tntResponsesResponse `json:"response,omitempty"`
+}
+
+func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) *tntResponsesResponse {
+	if info == nil || response == nil || !info.IsTNTTencentOpenAIConversion() {
+		return nil
+	}
+	request, ok := info.Request.(*dto.OpenAIResponsesRequest)
+	if !ok || request == nil {
+		return nil
+	}
+
+	response.Temperature = 1
+	if request.Temperature != nil {
+		response.Temperature = *request.Temperature
+	}
+	response.TopP = 1
+	if request.TopP != nil {
+		response.TopP = *request.TopP
+	}
+
+	return &tntResponsesResponse{
+		OpenAIResponsesResponse: response,
+		MaxOutputTokens:         request.MaxOutputTokens,
+	}
+}
+
 func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -58,7 +92,11 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 
-	responseBody, err := common.Marshal(responsesResp)
+	responseValue := any(responsesResp)
+	if tntResponse := tntResponsesResponseForRequest(info, responsesResp); tntResponse != nil {
+		responseValue = tntResponse
+	}
+	responseBody, err := common.Marshal(responseValue)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
@@ -84,7 +122,14 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	streamErr := (*types.NewAPIError)(nil)
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
-		data, err := common.Marshal(event.Payload)
+		payload := any(event.Payload)
+		if tntResponse := tntResponsesResponseForRequest(info, event.Payload.Response); tntResponse != nil {
+			payload = tntResponsesStreamPayload{
+				ResponsesStreamResponse: event.Payload,
+				Response:                tntResponse,
+			}
+		}
+		data, err := common.Marshal(payload)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
