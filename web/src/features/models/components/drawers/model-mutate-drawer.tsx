@@ -77,6 +77,7 @@ import {
   getOptionValue,
 } from '@/features/system-settings/hooks/use-system-options'
 import { useUpdateOption } from '@/features/system-settings/hooks/use-update-option'
+import { DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON } from '@/features/system-settings/models/response-content-retry-policy'
 import { normalizeJsonString } from '@/features/system-settings/models/utils'
 import type { ModelSettings } from '@/features/system-settings/types'
 import { safeJsonParse } from '@/features/system-settings/utils/json-parser'
@@ -211,6 +212,7 @@ export function ModelMutateDrawer({
       AutomaticDisableStatusCodes: '401',
       AutomaticRetryStatusCodes:
         '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
+      ResponseContentRetryPolicy: DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON,
       'monitor_setting.auto_test_channel_enabled': false,
       'monitor_setting.auto_test_channel_minutes': 10,
       'monitor_setting.channel_test_mode': 'scheduled_all',

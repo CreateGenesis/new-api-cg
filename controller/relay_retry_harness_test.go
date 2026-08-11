@@ -26,14 +26,16 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	gin.SetMode(gin.TestMode)
 
 	var (
-		attemptsMu            sync.Mutex
-		attempts              []string
-		succeedOnAttempt      int
-		succeedOnKey          string
-		routeOnBoundedHTTP400 bool
-		streamFallback        bool
-		zeroOutputFallback    bool
-		zeroOutputStream      bool
+		attemptsMu              sync.Mutex
+		attempts                []string
+		succeedOnAttempt        int
+		succeedOnKey            string
+		routeOnBoundedHTTP400   bool
+		streamFallback          bool
+		zeroOutputFallback      bool
+		zeroOutputStream        bool
+		responseContentFallback bool
+		responseContentStream   bool
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptsMu.Lock()
@@ -51,7 +53,28 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		useStreamFallback := streamFallback
 		useZeroOutputFallback := zeroOutputFallback
 		useZeroOutputStream := zeroOutputStream
+		useResponseContentFallback := responseContentFallback
+		useResponseContentStream := responseContentStream
 		attemptsMu.Unlock()
+		if useResponseContentFallback {
+			if useResponseContentStream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if channelKey == "channel-1" {
+					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"[内容\"}}]}\n\n"))
+					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已过滤]\"}}]}\n\n"))
+					return
+				}
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"response content stream fallback ok\"}}]}\n\ndata: [DONE]\n\n"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if channelKey == "channel-1" {
+				_, _ = w.Write([]byte(`{"id":"matched-channel-1","choices":[{"message":{"role":"assistant","content":" [内容已过滤]"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"response-content-fallback","choices":[{"message":{"role":"assistant","content":"response content fallback ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
 		if useZeroOutputFallback {
 			if useZeroOutputStream {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -172,6 +195,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	originalRetryRanges := append([]operation_setting.StatusCodeRange(nil), operation_setting.AutomaticRetryStatusCodeRanges...)
 	originalModelRatios := ratio_setting.ModelRatio2JSONString()
 	originalFreeModelPreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+	originalResponseContentPolicy := operation_setting.ResponseContentRetryPolicy2JSONString()
 	common.RetryTimes = 10
 	common.LogConsumeEnabled = true
 	common.RelayDebugLogEnabled = true
@@ -180,6 +204,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	constant.StreamingTimeout = 30
 	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 503, End: 503}}
 	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
+	require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(`{"enabled":true,"rules":[{"mode":"prefix","content":"[内容已过滤]"}]}`))
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{"%s":0}`, modelName)))
 	t.Cleanup(func() {
 		common.RetryTimes = originalRetryTimes
@@ -190,6 +215,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		constant.StreamingTimeout = originalStreamingTimeout
 		operation_setting.AutomaticRetryStatusCodeRanges = originalRetryRanges
 		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = originalFreeModelPreConsume
+		require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(originalResponseContentPolicy))
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
 	})
 	service.InitHttpClient()
@@ -428,6 +454,67 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	var firstChannelStatus int
 	require.NoError(t, db.Model(&model.Channel{}).Select("status").Where("id = ?", channels[0].Id).Scan(&firstChannelStatus).Error)
 	assert.Equal(t, common.ChannelStatusEnabled, firstChannelStatus)
+
+	common.RetryTimes = 2
+	attemptsMu.Lock()
+	attempts = nil
+	responseContentFallback = true
+	responseContentStream = false
+	attemptsMu.Unlock()
+	contentRecorder := httptest.NewRecorder()
+	contentCtx, _ := gin.CreateTestContext(contentRecorder)
+	contentCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	contentCtx.Request.Header.Set("Content-Type", "application/json")
+	contentCtx.Set(common.RequestIdKey, "relay-response-content-recovered")
+	common.SetContextKey(contentCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(contentCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(contentCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(contentCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(contentCtx, &channels[0], modelName))
+
+	Relay(contentCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	contentAttempts := append([]string(nil), attempts...)
+	attempts = nil
+	responseContentStream = true
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, contentAttempts)
+	assert.Equal(t, http.StatusOK, contentRecorder.Code)
+	assert.Contains(t, contentRecorder.Body.String(), "response content fallback ok")
+	assert.NotContains(t, contentRecorder.Body.String(), "内容已过滤")
+
+	contentStreamRecorder := httptest.NewRecorder()
+	contentStreamCtx, _ := gin.CreateTestContext(contentStreamRecorder)
+	contentStreamCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}],"stream":true}`, modelName)),
+	)
+	contentStreamCtx.Request.Header.Set("Content-Type", "application/json")
+	contentStreamCtx.Set(common.RequestIdKey, "relay-response-content-stream-recovered")
+	common.SetContextKey(contentStreamCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(contentStreamCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(contentStreamCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(contentStreamCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(contentStreamCtx, &channels[0], modelName))
+
+	Relay(contentStreamCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	contentStreamAttempts := append([]string(nil), attempts...)
+	attempts = nil
+	responseContentFallback = false
+	responseContentStream = false
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, contentStreamAttempts)
+	assert.Equal(t, http.StatusOK, contentStreamRecorder.Code)
+	assert.Contains(t, contentStreamRecorder.Body.String(), "response content stream fallback ok")
+	assert.NotContains(t, contentStreamRecorder.Body.String(), "内容已过滤")
 
 	channels[0].OtherSettings = `{"retry_zero_output":true}`
 	channels[1].OtherSettings = `{}`

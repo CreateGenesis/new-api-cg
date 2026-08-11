@@ -125,13 +125,33 @@ func TestZeroOutputRetriesOnlyAcrossChannels(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
 }
 
-func TestSupportsChannelRequestPolicyOnlyForGenerationEndpoints(t *testing.T) {
-	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, "/v1/chat/completions"))
-	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatOpenAIResponses, relayconstant.RelayModeResponses, "/v1/responses"))
-	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatClaude, 0, "/v1/messages"))
-	assert.True(t, supportsChannelRequestPolicy(types.RelayFormatGemini, relayconstant.RelayModeGemini, "/v1beta/models/gemini:generateContent"))
-	assert.False(t, supportsChannelRequestPolicy(types.RelayFormatGemini, relayconstant.RelayModeGemini, "/v1beta/models/gemini:embedContent"))
-	assert.False(t, supportsChannelRequestPolicy(types.RelayFormatOpenAI, relayconstant.RelayModeEmbeddings, "/v1/embeddings"))
+func TestResponseContentMatchRetriesOnlyAcrossChannels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	matchedErr := types.NewErrorWithStatusCode(
+		errors.New("matched configured response content"),
+		types.ErrorCodeChannelResponseContentMatch,
+		http.StatusServiceUnavailable,
+	)
+
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, matchedErr, policy, 0))
+	assert.True(t, shouldRetryWithPolicy(ctx, matchedErr, policy, 0))
+
+	ctx.Set("specific_channel_id", 1)
+	assert.False(t, shouldRetryWithPolicy(ctx, matchedErr, policy, 0))
+}
+
+func TestChannelRequestPolicyCoversAllKnownRequestModes(t *testing.T) {
+	streamDisabled := &model.Channel{OtherSettings: `{"disable_stream":true}`}
+	nonStreamDisabled := &model.Channel{OtherSettings: `{"disable_non_stream":true}`}
+
+	assert.False(t, service.ChannelAcceptsRequestMode(streamDisabled, types.RequestModeStream))
+	assert.True(t, service.ChannelAcceptsRequestMode(streamDisabled, types.RequestModeNonStream))
+	assert.False(t, service.ChannelAcceptsRequestMode(nonStreamDisabled, types.RequestModeNonStream))
+	assert.True(t, service.ChannelAcceptsRequestMode(nonStreamDisabled, types.RequestModeStream))
+	assert.True(t, service.ChannelAcceptsRequestMode(nonStreamDisabled, types.RequestModeUnknown))
 }
 
 func TestLockedChannelOverloadDoesNotFallback(t *testing.T) {

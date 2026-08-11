@@ -17,6 +17,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,7 @@ type simulatedModelCacheAttempt struct {
 	bypassReason                string
 	matchDiagnostics            service.SimulatedModelCachePartialMatch
 	retryZeroOutput             bool
+	responseContentRetryPolicy  operation_setting.ResponseContentRetryPolicy
 	missingOutputMultiplier     float64
 }
 
@@ -526,8 +528,12 @@ func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]
 
 func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) *simulatedModelCacheAttempt {
 	settings, configured := simulatedModelCacheSettings(info)
-	outputPolicyActive := info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.RetryZeroOutput &&
+	retryZeroOutput := info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.RetryZeroOutput &&
 		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
+	responseContentRetryPolicy := operation_setting.GetResponseContentRetryPolicy()
+	responseContentRetryActive := info != nil && responseContentRetryPolicy.Enabled && len(responseContentRetryPolicy.Rules) > 0 &&
+		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
+	outputPolicyActive := retryZeroOutput || responseContentRetryActive
 	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
 	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)
 	routingActive := routingPreparation != nil && info != nil && info.ChannelMeta != nil && routingPreparation.ChannelID == info.ChannelMeta.ChannelId
@@ -535,16 +541,20 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		return nil
 	}
 	format := info.GetFinalRequestRelayFormat()
-	if !isSimulatedModelCacheTextFormat(format) {
+	if !isSimulatedModelCacheTextFormat(format) && !outputPolicyActive {
 		return nil
 	}
 
 	attempt := &simulatedModelCacheAttempt{
-		settings:                settings,
-		visible:                 settings.Enabled,
-		cacheModelName:          simulatedModelCacheModelName(info),
-		retryZeroOutput:         outputPolicyActive,
-		missingOutputMultiplier: dto.MissingTokenMultiplier(info.ChannelOtherSettings.MissingOutputTokenMultiplier),
+		settings:                   settings,
+		visible:                    settings.Enabled,
+		cacheModelName:             simulatedModelCacheModelName(info),
+		retryZeroOutput:            retryZeroOutput,
+		responseContentRetryPolicy: responseContentRetryPolicy,
+		missingOutputMultiplier:    dto.MissingTokenMultiplier(info.ChannelOtherSettings.MissingOutputTokenMultiplier),
+	}
+	if !isSimulatedModelCacheTextFormat(format) {
+		return attempt
 	}
 	if len(requestBody) > 0 {
 		attempt.prompt = service.ExtractSimulatedModelCachePrompt(format, attempt.cacheModelName, requestBody, settings)
@@ -623,8 +633,8 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	}
 	bufferLimit := service.SimulatedModelCacheResponseBufferBytes()
 	var outputRecorder *channelOutputRecorder
-	if attempt.retryZeroOutput {
-		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.missingOutputMultiplier, int(bufferLimit))
+	if attempt.retryZeroOutput || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
+		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.retryZeroOutput, attempt.responseContentRetryPolicy, attempt.missingOutputMultiplier, int(bufferLimit))
 		c.Writer = outputRecorder
 	}
 	recorder := &simulatedModelCacheRecorder{
@@ -868,7 +878,7 @@ func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModel
 		if recorder.outputRecorder != nil {
 			recorder.outputRecorder.abort(c)
 			if recorder.outputRecorder.policyErr != nil {
-				return channelZeroOutputError(recorder.outputRecorder.policyErr)
+				return channelOutputPolicyError(recorder.outputRecorder.policyErr)
 			}
 		}
 	}

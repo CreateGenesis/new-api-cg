@@ -210,6 +210,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 9. 发送请求
+	if err := channel.ValidateChannelRequestMode(info); err != nil {
+		return nil, service.TaskErrorFromAPIError(types.NewError(err, types.ErrorCodeDoRequestFailed))
+	}
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		var overloadErr *types.NewAPIError

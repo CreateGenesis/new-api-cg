@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -553,11 +554,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	if admission, ok := c.Get("overload_admission"); ok {
 		if admit, valid := admission.(func(*model.Channel, bool) *types.NewAPIError); valid {
 			if overloadErr := admit(channel, channelLocked); overloadErr != nil {
-				return &dto.MidjourneyResponse{Code: 4, Description: string(types.ErrorCodeChannelOverloaded), Result: overloadErr.Error()}
+				return &dto.MidjourneyResponse{Code: 4, Description: string(overloadErr.GetErrorCode()), Result: overloadErr.Error()}
 			}
 		}
 	}
 	relayInfo.InitChannelMeta(c)
+	if err := relaychannel.ValidateChannelRequestMode(relayInfo); err != nil {
+		apiErr := types.NewError(err, types.ErrorCodeDoRequestFailed)
+		return &dto.MidjourneyResponse{Code: 4, Description: string(apiErr.GetErrorCode()), Result: apiErr.Error()}
+	}
 	baseURL = c.GetString("base_url")
 	fullRequestURL = fmt.Sprintf("%s%s", baseURL, requestURL)
 

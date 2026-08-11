@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -27,7 +28,7 @@ func TestChannelOutputRecorderKeepsEmptyStreamUncommitted(t *testing.T) {
 		IsStream:        true,
 		OriginModelName: "gpt-test",
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(": ping\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":0}}\n\ndata: [DONE]\n\n")
@@ -50,7 +51,7 @@ func TestChannelOutputRecorderKeepsEmptyNonStreamUncommitted(t *testing.T) {
 		OriginModelName: "gpt-test",
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
@@ -73,7 +74,7 @@ func TestChannelOutputRecorderEstimatesAndPatchesValidNonStreamOutput(t *testing
 		OriginModelName: "gpt-test",
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1.5, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.5, 64*1024)
 	ctx.Writer = recorder
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 
@@ -103,7 +104,7 @@ func TestChannelOutputRecorderPreservesFirstStatusCodeBeforeCommit(t *testing.T)
 		RelayMode:       relayconstant.RelayModeChatCompletions,
 		OriginModelName: "gpt-test",
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
 	ctx.Writer = recorder
 
 	recorder.WriteHeader(299)
@@ -128,7 +129,7 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 		OriginModelName:    "gpt-test",
 		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1.5, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.5, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
@@ -157,7 +158,7 @@ func TestChannelOutputRecorderPatchesHeldStreamUsageAfterEstimation(t *testing.T
 		OriginModelName:    "gpt-test",
 		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, 1.25, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.25, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")

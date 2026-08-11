@@ -14,41 +14,48 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
 var errChannelOutputPrefixTooLarge = errors.New("channel response before effective output exceeds the inspection limit")
+var errResponseContentMatched = errors.New("upstream response matched a configured fallback rule")
 
 type channelOutputRecorder struct {
 	gin.ResponseWriter
-	header            http.Header
-	format            types.RelayFormat
-	relayMode         int
-	model             string
-	stream            bool
-	multiplier        float64
-	bufferLimit       int
-	status            int
-	statusWritten     bool
-	committed         bool
-	effectiveOutput   bool
-	holdingStreamTail bool
-	body              bytes.Buffer
-	streamPending     bytes.Buffer
-	streamPrefix      bytes.Buffer
-	streamTail        bytes.Buffer
-	outputText        strings.Builder
-	policyErr         error
+	header               http.Header
+	format               types.RelayFormat
+	relayMode            int
+	model                string
+	stream               bool
+	retryZeroOutput      bool
+	multiplier           float64
+	bufferLimit          int
+	status               int
+	statusWritten        bool
+	committed            bool
+	nonStreamPassThrough bool
+	effectiveOutput      bool
+	holdingStreamTail    bool
+	body                 bytes.Buffer
+	streamPending        bytes.Buffer
+	streamPrefix         bytes.Buffer
+	streamTail           bytes.Buffer
+	outputText           strings.Builder
+	contentMatcher       *responseContentMatcher
+	policyErr            error
 }
 
-func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, multiplier float64, bufferLimit int) *channelOutputRecorder {
+func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, contentPolicy operation_setting.ResponseContentRetryPolicy, multiplier float64, bufferLimit int) *channelOutputRecorder {
 	recorder := &channelOutputRecorder{
-		ResponseWriter: writer,
-		header:         writer.Header().Clone(),
-		multiplier:     multiplier,
-		bufferLimit:    bufferLimit,
-		status:         http.StatusOK,
+		ResponseWriter:  writer,
+		header:          writer.Header().Clone(),
+		retryZeroOutput: retryZeroOutput,
+		multiplier:      multiplier,
+		bufferLimit:     bufferLimit,
+		status:          http.StatusOK,
+		contentMatcher:  newResponseContentMatcher(contentPolicy),
 	}
 	if info != nil {
 		recorder.format = info.RelayFormat
@@ -91,7 +98,25 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 	w.statusWritten = true
 	if !w.stream {
+		if w.nonStreamPassThrough {
+			return w.ResponseWriter.Write(data)
+		}
 		if w.body.Len()+len(data) > w.bufferLimit {
+			if !w.retryZeroOutput {
+				w.contentMatcher.disable()
+				w.nonStreamPassThrough = true
+				w.header.Del("Content-Length")
+				if err := w.commitHeader(); err != nil {
+					w.policyErr = err
+					return 0, err
+				}
+				if err := w.writeCommitted(w.body.Bytes()); err != nil {
+					w.policyErr = err
+					return 0, err
+				}
+				w.body.Reset()
+				return w.ResponseWriter.Write(data)
+			}
 			w.policyErr = errChannelOutputPrefixTooLarge
 			return 0, w.policyErr
 		}
@@ -99,8 +124,17 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 
 	if w.streamPending.Len()+w.streamPrefix.Len()+w.streamTail.Len()+len(data) > w.bufferLimit && !w.committed {
-		w.policyErr = errChannelOutputPrefixTooLarge
-		return 0, w.policyErr
+		if w.retryZeroOutput && !w.effectiveOutput {
+			w.policyErr = errChannelOutputPrefixTooLarge
+			return 0, w.policyErr
+		}
+		w.contentMatcher.disable()
+		if w.readyToCommitStream() {
+			if err := w.commitBufferedStream(); err != nil {
+				w.policyErr = err
+				return 0, err
+			}
+		}
 	}
 	_, _ = w.streamPending.Write(data)
 	if err := w.processStreamEvents(); err != nil {
@@ -142,9 +176,10 @@ func (w *channelOutputRecorder) processStreamEvents() error {
 			return nil
 		}
 		event := w.streamPending.Next(boundaryIndex + boundaryLength)
-		isTail := w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event)
-		if !shouldSkipTerminalOutputObservation(w.format, event, w.effectiveOutput) {
-			w.observeStreamEvent(event)
+		isTail := w.retryZeroOutput && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
+		observeOutput := !shouldSkipTerminalOutputObservation(w.format, event, w.effectiveOutput)
+		if err := w.observeStreamEvent(event, observeOutput); err != nil {
+			return err
 		}
 		if isTail {
 			w.holdingStreamTail = true
@@ -158,68 +193,78 @@ func (w *channelOutputRecorder) processStreamEvents() error {
 			continue
 		}
 		_, _ = w.streamPrefix.Write(event)
-		if w.effectiveOutput {
-			if err := w.commitHeader(); err != nil {
+		if w.readyToCommitStream() {
+			if err := w.commitBufferedStream(); err != nil {
 				return err
 			}
-			if err := w.writeCommitted(w.streamPrefix.Bytes()); err != nil {
-				return err
-			}
-			w.streamPrefix.Reset()
-			w.ResponseWriter.Flush()
 		}
 	}
 }
 
-func (w *channelOutputRecorder) observeStreamEvent(event []byte) {
+func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput bool) error {
 	data, ok := simulatedModelCacheSSEData(event)
 	if !ok || string(data) == "[DONE]" {
-		return
+		return nil
 	}
 	var payload map[string]any
 	if common.Unmarshal(data, &payload) != nil {
-		return
+		return nil
 	}
-	if observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText) {
+	if observeOutput && observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText) {
 		w.effectiveOutput = true
 	}
+	observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, true)
+	if w.contentMatcher != nil && w.contentMatcher.matched {
+		return errResponseContentMatched
+	}
+	return nil
 }
 
 func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
 	c.Writer = w.ResponseWriter
 	if w.policyErr != nil {
 		w.abortCommittedStream()
-		return channelZeroOutputError(w.policyErr)
+		return channelOutputPolicyError(w.policyErr)
+	}
+	if w.nonStreamPassThrough {
+		return nil
 	}
 
 	if w.stream {
 		if err := w.finishPendingStreamBytes(); err != nil {
 			w.abortCommittedStream()
-			return channelZeroOutputError(err)
+			return channelOutputPolicyError(err)
 		}
 	} else {
 		var payload map[string]any
-		if common.Unmarshal(w.body.Bytes(), &payload) == nil && observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText) {
-			w.effectiveOutput = true
+		if common.Unmarshal(w.body.Bytes(), &payload) == nil {
+			if observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText) {
+				w.effectiveOutput = true
+			}
+			observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, false)
 		}
 	}
-
-	normalized := service.NormalizeUsageForBilling(usage)
-	if normalized.OutputTokens == 0 && !w.effectiveOutput {
-		return channelZeroOutputError(errors.New("upstream returned zero output tokens without effective output"))
+	if w.contentMatcher != nil && w.contentMatcher.finish() {
+		return channelResponseContentMatchError()
 	}
 
 	estimatedOutput := false
-	if normalized.OutputTokens == 0 {
-		baseEstimate := service.EstimateTokenByModel(w.model, w.outputText.String())
-		if baseEstimate <= 0 {
-			baseEstimate = 1
+	if w.retryZeroOutput {
+		normalized := service.NormalizeUsageForBilling(usage)
+		if normalized.OutputTokens == 0 && !w.effectiveOutput {
+			return channelZeroOutputError(errors.New("upstream returned zero output tokens without effective output"))
 		}
-		estimatedTokens := scaleMissingTokenEstimate(info, baseEstimate, w.multiplier)
-		if estimatedTokens <= 0 {
-			estimatedTokens = 1
+		if normalized.OutputTokens == 0 {
+			baseEstimate := service.EstimateTokenByModel(w.model, w.outputText.String())
+			if baseEstimate <= 0 {
+				baseEstimate = 1
+			}
+			estimatedTokens := scaleMissingTokenEstimate(info, baseEstimate, w.multiplier)
+			if estimatedTokens <= 0 {
+				estimatedTokens = 1
+			}
+			estimatedOutput = service.ApplyMissingOutputEstimate(usage, estimatedTokens)
 		}
-		estimatedOutput = service.ApplyMissingOutputEstimate(usage, estimatedTokens)
 	}
 
 	if !w.stream {
@@ -264,10 +309,11 @@ func (w *channelOutputRecorder) finishPendingStreamBytes() error {
 	}
 	pending := append([]byte(nil), w.streamPending.Bytes()...)
 	w.streamPending.Reset()
-	if !shouldSkipTerminalOutputObservation(w.format, pending, w.effectiveOutput) {
-		w.observeStreamEvent(pending)
+	observeOutput := !shouldSkipTerminalOutputObservation(w.format, pending, w.effectiveOutput)
+	if err := w.observeStreamEvent(pending, observeOutput); err != nil {
+		return err
 	}
-	if w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending) {
+	if w.retryZeroOutput && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
 		w.holdingStreamTail = true
 		_, _ = w.streamTail.Write(pending)
 		return nil
@@ -276,15 +322,30 @@ func (w *channelOutputRecorder) finishPendingStreamBytes() error {
 		return w.writeCommitted(pending)
 	}
 	_, _ = w.streamPrefix.Write(pending)
-	if w.effectiveOutput {
-		if err := w.commitHeader(); err != nil {
+	if w.readyToCommitStream() {
+		if err := w.commitBufferedStream(); err != nil {
 			return err
 		}
-		if err := w.writeCommitted(w.streamPrefix.Bytes()); err != nil {
-			return err
-		}
-		w.streamPrefix.Reset()
 	}
+	return nil
+}
+
+func (w *channelOutputRecorder) readyToCommitStream() bool {
+	if w.contentMatcher != nil && !w.contentMatcher.resolvedWithoutMatch() {
+		return false
+	}
+	return !w.retryZeroOutput || w.effectiveOutput
+}
+
+func (w *channelOutputRecorder) commitBufferedStream() error {
+	if err := w.commitHeader(); err != nil {
+		return err
+	}
+	if err := w.writeCommitted(w.streamPrefix.Bytes()); err != nil {
+		return err
+	}
+	w.streamPrefix.Reset()
+	w.ResponseWriter.Flush()
 	return nil
 }
 
@@ -340,6 +401,17 @@ func (w *channelOutputRecorder) writeCommitted(data []byte) error {
 
 func channelZeroOutputError(err error) *types.NewAPIError {
 	return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelZeroOutput, http.StatusServiceUnavailable)
+}
+
+func channelResponseContentMatchError() *types.NewAPIError {
+	return types.NewErrorWithStatusCode(errResponseContentMatched, types.ErrorCodeChannelResponseContentMatch, http.StatusServiceUnavailable)
+}
+
+func channelOutputPolicyError(err error) *types.NewAPIError {
+	if errors.Is(err, errResponseContentMatched) {
+		return channelResponseContentMatchError()
+	}
+	return channelZeroOutputError(err)
 }
 
 func scaleMissingTokenEstimate(info *relaycommon.RelayInfo, baseTokens int, multiplier float64) int {

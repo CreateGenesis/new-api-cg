@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -202,6 +203,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		InputTokenEstimates: inputTokenEstimatesForRouting(relayFormat, relayInfo.RelayMode, tokens, meta, relayInfo.OriginModelName),
 		AutoGroupIndex:      common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
 		AutoGroupSelected:   relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
+		ClientRequestMode:   relayInfo.ClientRequestMode,
 	}
 	interChannelRetryState := &service.InterChannelRetryState{}
 	inputTokenRoutingUpgrades := 0
@@ -211,7 +213,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for {
 		relayInfo.RetryIndex = interChannelRetryState.Count()
-		channel, channelErr := getEligibleChannel(c, relayInfo, selectParam, relayFormat)
+		channel, channelErr := getEligibleChannel(c, relayInfo, selectParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
@@ -290,15 +292,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 
 			service.BeginRelayDebugAttempt(c, "relay", relayDebugAttemptMeta(c, channel))
-			switch relayFormat {
-			case types.RelayFormatOpenAIRealtime:
-				newAPIError = relay.WssHelper(c, relayInfo)
-			case types.RelayFormatClaude:
-				newAPIError = relay.ClaudeHelper(c, relayInfo)
-			case types.RelayFormatGemini:
-				newAPIError = geminiRelayHandler(c, relayInfo)
-			default:
-				newAPIError = relayHandler(c, relayInfo)
+			if modeErr := relaychannel.ValidateChannelRequestMode(relayInfo); modeErr != nil {
+				newAPIError = types.NewError(modeErr, types.ErrorCodeDoRequestFailed)
+			} else {
+				switch relayFormat {
+				case types.RelayFormatOpenAIRealtime:
+					newAPIError = relay.WssHelper(c, relayInfo)
+				case types.RelayFormatClaude:
+					newAPIError = relay.ClaudeHelper(c, relayInfo)
+				case types.RelayFormatGemini:
+					newAPIError = geminiRelayHandler(c, relayInfo)
+				default:
+					newAPIError = relayHandler(c, relayInfo)
+				}
 			}
 			if newAPIError != nil {
 				newAPIError = service.NormalizeViolationFeeError(newAPIError)
@@ -385,10 +391,35 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 }
 
 func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam, channel *model.Channel, channelLocked bool) (*model.Channel, *service.OverloadLease, *types.NewAPIError) {
-	if _, specified := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specified {
-		return channel, nil, nil
-	}
 	for {
+		if !service.ChannelAcceptsRequestMode(channel, selectParam.ClientRequestMode) {
+			if requestPinsChannel(c) || channelLocked {
+				return channel, nil, channelRequestModeError(selectParam.ClientRequestMode, true)
+			}
+			selectParam.RequestModeFiltered = true
+			selectParam.ExcludeUnavailableChannel(channel)
+			next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(selectParam)
+			if selectErr != nil {
+				return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
+			}
+			if next == nil {
+				return channel, nil, channelRequestModeError(selectParam.ClientRequestMode, false)
+			}
+			service.ClearRequestChannelAffinitySelection(c)
+			if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.OriginModelName); setupErr != nil {
+				return channel, nil, setupErr
+			}
+			if selectParam.TokenGroup == "auto" {
+				common.SetContextKey(c, constant.ContextKeyAutoGroup, selectGroup)
+			}
+			info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+			info.InitChannelMeta(c)
+			channel = next
+			continue
+		}
+		if _, specified := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specified {
+			return channel, nil, nil
+		}
 		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		lease, scope, err := service.AcquireChannelOverloadLease(c.Request.Context(), channel, keyIndex)
 		if err != nil {
@@ -590,67 +621,40 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 	return selectChannelByInputTokenRouting(c, info, selectParam)
 }
 
-func getEligibleChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam, relayFormat types.RelayFormat) (*model.Channel, *types.NewAPIError) {
-	requestMode := "non-stream"
-	disabledErrorCode := types.ErrorCodeChannelNonStreamDisabled
-	if info.IsStream {
-		requestMode = "stream"
-		disabledErrorCode = types.ErrorCodeChannelStreamDisabled
-	}
+func getEligibleChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam) (*model.Channel, *types.NewAPIError) {
 	skippedDisabledMode := false
 	for {
 		channel, channelErr := getChannel(c, info, selectParam)
 		if channelErr != nil || channel == nil {
-			if channelErr == nil && skippedDisabledMode {
-				return nil, types.NewErrorWithStatusCode(
-					fmt.Errorf("no eligible channel accepts %s requests", requestMode),
-					disabledErrorCode,
-					http.StatusServiceUnavailable,
-					types.ErrOptionWithSkipRetry(),
-				)
+			if channelErr == nil && (skippedDisabledMode || selectParam.RequestModeFiltered) {
+				return nil, channelRequestModeError(info.ClientRequestMode, false)
 			}
 			return channel, channelErr
 		}
-		if !supportsChannelRequestPolicy(relayFormat, info.RelayMode, c.Request.URL.Path) {
-			return channel, nil
-		}
-		settings := channel.GetOtherSettings()
-		requestModeDisabled := settings.DisableNonStream
-		if info.IsStream {
-			requestModeDisabled = settings.DisableStream
-		}
-		if !requestModeDisabled {
+		if info.ClientRequestMode == types.RequestModeUnknown || service.ChannelAcceptsRequestMode(channel, info.ClientRequestMode) {
 			return channel, nil
 		}
 		if requestPinsChannel(c) {
-			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("the selected channel does not accept %s requests", requestMode),
-				disabledErrorCode,
-				http.StatusServiceUnavailable,
-				types.ErrOptionWithSkipRetry(),
-			)
+			return nil, channelRequestModeError(info.ClientRequestMode, true)
 		}
 
 		skippedDisabledMode = true
 		selectParam.ExcludeUnavailableChannel(channel)
 		service.ClearRequestChannelAffinitySelection(c)
-		logger.LogInfo(c, fmt.Sprintf("skipping channel %d because %s requests are disabled", channel.Id, requestMode))
+		logger.LogInfo(c, fmt.Sprintf("skipping channel %d because %s requests are disabled", channel.Id, info.ClientRequestMode.String()))
 	}
 }
 
-func supportsChannelRequestPolicy(relayFormat types.RelayFormat, relayMode int, requestPath string) bool {
-	switch relayFormat {
-	case types.RelayFormatClaude:
-		return true
-	case types.RelayFormatGemini:
-		return relayMode == relayconstant.RelayModeGemini && !strings.Contains(requestPath, "embed")
-	case types.RelayFormatOpenAI:
-		return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions
-	case types.RelayFormatOpenAIResponses:
-		return relayMode == relayconstant.RelayModeResponses
-	default:
-		return false
+func channelRequestModeError(requestMode types.RequestMode, selected bool) *types.NewAPIError {
+	errorCode := types.ErrorCodeChannelNonStreamDisabled
+	if requestMode == types.RequestModeStream {
+		errorCode = types.ErrorCodeChannelStreamDisabled
 	}
+	message := fmt.Sprintf("no eligible channel accepts %s requests", requestMode.String())
+	if selected {
+		message = fmt.Sprintf("the selected channel does not accept %s requests", requestMode.String())
+	}
+	return types.NewErrorWithStatusCode(errors.New(message), errorCode, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 }
 
 func requestPinsChannel(c *gin.Context) bool {
@@ -929,6 +933,9 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelZeroOutput && allowSpecificChannelRetry {
 		return relayRetryEvaluation{reason: "zero_output"}
 	}
+	if openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseContentMatch && allowSpecificChannelRetry {
+		return relayRetryEvaluation{reason: "response_content_match"}
+	}
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelStreamError {
 		if allowSpecificChannelRetry {
 			return relayRetryEvaluation{reason: "stream_error"}
@@ -1132,6 +1139,7 @@ func RelayMidjourney(c *gin.Context) {
 				RequestPath:       c.Request.URL.Path,
 				AutoGroupIndex:    common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
 				AutoGroupSelected: relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
+				ClientRequestMode: relayInfo.ClientRequestMode,
 			}
 			selected, lease, newAPIError := acquireRelayOverloadLease(c, relayInfo, selectParam, channel, locked)
 			if newAPIError != nil {
@@ -1174,11 +1182,13 @@ func RelayMidjourney(c *gin.Context) {
 	//err = relayMidjourneySubmit(c, relayMode)
 	log.Println(mjErr)
 	if mjErr != nil {
-		if mjErr.Description == string(types.ErrorCodeChannelOverloaded) {
+		if mjErr.Description == string(types.ErrorCodeChannelOverloaded) ||
+			mjErr.Description == string(types.ErrorCodeChannelStreamDisabled) ||
+			mjErr.Description == string(types.ErrorCodeChannelNonStreamDisabled) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"description": mjErr.Result,
 				"type":        "new_api_error",
-				"code":        types.ErrorCodeChannelOverloaded,
+				"code":        mjErr.Description,
 			})
 			return
 		}
@@ -1268,6 +1278,7 @@ func RelayTask(c *gin.Context) {
 		RequestPath:       c.Request.URL.Path,
 		AutoGroupIndex:    common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
 		AutoGroupSelected: relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
+		ClientRequestMode: relayInfo.ClientRequestMode,
 	}
 	interChannelRetryState := &service.InterChannelRetryState{}
 
@@ -1277,6 +1288,12 @@ func RelayTask(c *gin.Context) {
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			if !service.ChannelAcceptsRequestMode(channel, relayInfo.ClientRequestMode) {
+				modeErr := channelRequestModeError(relayInfo.ClientRequestMode, true)
+				taskErr = service.TaskErrorFromAPIError(modeErr)
+				service.RecordRelayDebugStageError(c, "channel_selection", relayDebugAttemptMeta(c, channel), modeErr, service.RelayDebugDecision{Action: "stop", Reason: "request_mode_disabled"})
+				break
+			}
 			if interChannelRetryState.Count() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
@@ -1285,10 +1302,14 @@ func RelayTask(c *gin.Context) {
 				}
 			}
 		} else {
-			channel, channelErr = getChannel(c, relayInfo, selectParam)
+			channel, channelErr = getEligibleChannel(c, relayInfo, selectParam)
 			if channelErr != nil {
 				logger.LogError(c, channelErr.Error())
-				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
+				if channelErr.GetErrorCode() == types.ErrorCodeChannelStreamDisabled || channelErr.GetErrorCode() == types.ErrorCodeChannelNonStreamDisabled {
+					taskErr = service.TaskErrorFromAPIError(channelErr)
+				} else {
+					taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
+				}
 				service.RecordRelayDebugStageError(c, "channel_selection", service.RelayDebugAttemptMeta{}, channelErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 				break
 			}

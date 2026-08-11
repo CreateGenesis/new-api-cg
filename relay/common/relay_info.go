@@ -98,6 +98,7 @@ type RelayInfo struct {
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
+	ClientRequestMode      types.RequestMode
 	IsGeminiBatchEmbedding bool
 	IsPlayground           bool
 	UsePrice               bool
@@ -380,6 +381,9 @@ var streamSupportedChannels = map[int]bool{
 func GenRelayInfoWs(c *gin.Context, ws *websocket.Conn) *RelayInfo {
 	info := genBaseRelayInfo(c, nil)
 	info.RelayFormat = types.RelayFormatOpenAIRealtime
+	info.ClientRequestMode = types.RequestModeStream
+	info.IsStream = true
+	c.Set(string(constant.ContextKeyIsStream), true)
 	info.ClientWs = ws
 	info.InputAudioFormat = "pcm16"
 	info.OutputAudioFormat = "pcm16"
@@ -522,6 +526,12 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		RequestURLPath:  c.Request.URL.String(),
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
+		ClientRequestMode: func() types.RequestMode {
+			if request == nil {
+				return types.RequestModeUnknown
+			}
+			return types.RequestModeFromStream(isStream)
+		}(),
 
 		StartTime:         startTime,
 		FirstResponseTime: startTime.Add(-time.Second),
@@ -611,9 +621,11 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		return nil, errors.New("request is not a OpenAIResponsesCompactionRequest")
 	case types.RelayFormatTask:
 		info = genBaseRelayInfo(c, nil)
+		info.ClientRequestMode = types.RequestModeNonStream
 		info.TaskRelayInfo = &TaskRelayInfo{}
 	case types.RelayFormatMjProxy:
 		info = genBaseRelayInfo(c, nil)
+		info.ClientRequestMode = types.RequestModeNonStream
 		info.TaskRelayInfo = &TaskRelayInfo{}
 	default:
 		err = errors.New("invalid relay format")

@@ -21,7 +21,6 @@ import { useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import * as z from 'zod'
 
 import {
   Form,
@@ -56,64 +55,17 @@ import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
-
-const numericString = z.string().refine((value) => {
-  const trimmed = value.trim()
-  if (!trimmed) return true
-  return !Number.isNaN(Number(trimmed)) && Number(trimmed) >= 0
-}, 'Enter a non-negative number or leave empty')
-
-const channelTestModes = ['scheduled_all', 'passive_recovery'] as const
-type ChannelTestMode = (typeof channelTestModes)[number]
-
-const routingReliabilitySchema = z
-  .object({
-    RetryTimes: z.coerce.number().min(0).max(10),
-    ChannelDisableThreshold: numericString,
-    AutomaticDisableChannelEnabled: z.boolean(),
-    AutomaticEnableChannelEnabled: z.boolean(),
-    AutomaticDisableKeywords: z.string(),
-    AutomaticDisableStatusCodes: z.string(),
-    AutomaticRetryStatusCodes: z.string(),
-    monitor_setting: z.object({
-      auto_test_channel_enabled: z.boolean(),
-      auto_test_channel_minutes: z.coerce
-        .number()
-        .int()
-        .min(1, 'Interval must be at least 1 minute'),
-      channel_test_mode: z.enum(channelTestModes),
-    }),
-  })
-  .superRefine((values, ctx) => {
-    const disableParsed = parseHttpStatusCodeRules(
-      values.AutomaticDisableStatusCodes
-    )
-    if (!disableParsed.ok) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['AutomaticDisableStatusCodes'],
-        message: `Invalid status code rules: ${disableParsed.invalidTokens.join(
-          ', '
-        )}`,
-      })
-    }
-
-    const retryParsed = parseHttpStatusCodeRules(
-      values.AutomaticRetryStatusCodes
-    )
-    if (!retryParsed.ok) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['AutomaticRetryStatusCodes'],
-        message: `Invalid status code rules: ${retryParsed.invalidTokens.join(
-          ', '
-        )}`,
-      })
-    }
-  })
-
-type RoutingReliabilityFormValues = z.output<typeof routingReliabilitySchema>
-type RoutingReliabilityFormInput = z.input<typeof routingReliabilitySchema>
+import { ResponseContentRetryEditor } from './response-content-retry-editor'
+import {
+  parseResponseContentRetryPolicy,
+  serializeResponseContentRetryPolicy,
+} from './response-content-retry-policy'
+import {
+  createRoutingReliabilitySchema,
+  type ChannelTestMode,
+  type RoutingReliabilityFormInput,
+  type RoutingReliabilityFormValues,
+} from './routing-reliability-schema'
 
 type RoutingReliabilitySectionProps = {
   defaultValues: {
@@ -127,6 +79,7 @@ type RoutingReliabilitySectionProps = {
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
+    ResponseContentRetryPolicy: string
   }
 }
 
@@ -145,6 +98,7 @@ type NormalizedRoutingReliabilityValues = {
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
+  ResponseContentRetryPolicy: string
 }
 
 function normalizeChannelTestMode(value?: string): ChannelTestMode {
@@ -172,6 +126,9 @@ const buildFormDefaults = (
       defaults['monitor_setting.channel_test_mode']
     ),
   },
+  response_content_retry_policy: parseResponseContentRetryPolicy(
+    defaults.ResponseContentRetryPolicy
+  ),
 })
 
 const normalizeDefaults = (
@@ -197,6 +154,9 @@ const normalizeDefaults = (
   'monitor_setting.channel_test_mode': normalizeChannelTestMode(
     defaults['monitor_setting.channel_test_mode']
   ),
+  ResponseContentRetryPolicy: serializeResponseContentRetryPolicy(
+    parseResponseContentRetryPolicy(defaults.ResponseContentRetryPolicy)
+  ),
 })
 
 const normalizeFormValues = (
@@ -220,6 +180,9 @@ const normalizeFormValues = (
   'monitor_setting.auto_test_channel_minutes':
     values.monitor_setting.auto_test_channel_minutes,
   'monitor_setting.channel_test_mode': values.monitor_setting.channel_test_mode,
+  ResponseContentRetryPolicy: serializeResponseContentRetryPolicy(
+    values.response_content_retry_policy
+  ),
 })
 
 export function RoutingReliabilitySection({
@@ -227,6 +190,10 @@ export function RoutingReliabilitySection({
 }: RoutingReliabilitySectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const routingReliabilitySchema = useMemo(
+    () => createRoutingReliabilitySchema(t),
+    [t]
+  )
   const baselineRef = useRef<NormalizedRoutingReliabilityValues>(
     normalizeDefaults(defaultValues)
   )
@@ -348,6 +315,13 @@ export function RoutingReliabilitySection({
               />
             </div>
           </div>
+
+          <Separator />
+
+          <ResponseContentRetryEditor
+            form={form}
+            disabled={updateOption.isPending}
+          />
 
           <Separator />
 

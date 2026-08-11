@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { SettingsPage } from '../components/settings-page'
 import type { ModelSettings } from '../types'
+import { DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON } from './response-content-retry-policy'
 import {
   MODELS_DEFAULT_SECTION,
   getModelsSectionContent,
@@ -71,6 +72,7 @@ const defaultModelSettings: ModelSettings = {
   AutomaticDisableStatusCodes: '401',
   AutomaticRetryStatusCodes:
     '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
+  ResponseContentRetryPolicy: DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON,
   'monitor_setting.auto_test_channel_enabled': false,
   'monitor_setting.auto_test_channel_minutes': 10,
   'monitor_setting.channel_test_mode': 'scheduled_all',

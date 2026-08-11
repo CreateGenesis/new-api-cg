@@ -148,6 +148,7 @@ func InitOptionMap() {
 	common.OptionMap["UserTokensPerMinuteLimit"] = strconv.Itoa(setting.GetUserTokensPerMinuteLimit())
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap[operation_setting.HeaderRewritePresetsOptionKey] = operation_setting.HeaderRewritePresets2JSONString()
+	common.OptionMap[operation_setting.ResponseContentRetryPolicyOptionKey] = operation_setting.ResponseContentRetryPolicy2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
 	common.OptionMap["CacheRatio"] = ratio_setting.CacheRatio2JSONString()
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
@@ -279,6 +280,11 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	if key == operation_setting.HeaderRewritePresetsOptionKey {
 		if err := operation_setting.UpdateHeaderRewritePresetsByJSONString(value); err != nil {
+			return err
+		}
+	}
+	if key == operation_setting.ResponseContentRetryPolicyOptionKey {
+		if err := operation_setting.UpdateResponseContentRetryPolicyByJSONString(value); err != nil {
 			return err
 		}
 	}
@@ -621,6 +627,10 @@ func updateOptionMap(key string, value string) (err error) {
 }
 
 func validateOptionBeforeWrite(key string, value string) error {
+	if key == operation_setting.ResponseContentRetryPolicyOptionKey {
+		_, err := operation_setting.ParseResponseContentRetryPolicyJSONString(value)
+		return err
+	}
 	if key == "UserConcurrentRequestLimit" || key == "UserTokensPerMinuteLimit" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 0 || limit > setting.MaxUserRequestLimit {

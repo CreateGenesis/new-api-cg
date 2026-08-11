@@ -1,10 +1,13 @@
 package common
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,4 +60,33 @@ func TestRelayInfoConsumesStreamProtocolEndRequirementPerHandler(t *testing.T) {
 
 	require.True(t, info.ConsumeStreamProtocolEndRequirement())
 	require.False(t, info.ConsumeStreamProtocolEndRequirement())
+}
+
+func TestGenRelayInfoFreezesClientRequestMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stream := true
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info, err := GenRelayInfo(ctx, types.RelayFormatOpenAI, &dto.GeneralOpenAIRequest{Stream: &stream}, nil)
+	require.NoError(t, err)
+	require.Equal(t, types.RequestModeStream, info.ClientRequestMode)
+
+	info.IsStream = false
+	require.Equal(t, types.RequestModeStream, info.ClientRequestMode)
+}
+
+func TestGenRelayInfoAssignsExplicitModesForRealtimeAndTasks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	realtimeContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	realtimeContext.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	realtime, err := GenRelayInfo(realtimeContext, types.RelayFormatOpenAIRealtime, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, types.RequestModeStream, realtime.ClientRequestMode)
+	require.True(t, realtime.IsStream)
+
+	taskContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	taskContext.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	task, err := GenRelayInfo(taskContext, types.RelayFormatTask, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, types.RequestModeNonStream, task.ClientRequestMode)
 }

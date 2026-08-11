@@ -63,6 +63,7 @@ const (
 	ErrorCodeChannelResponseBodyTimeout   ErrorCode = "channel:response_body_timeout"
 	ErrorCodeChannelStreamError           ErrorCode = "channel:stream_error"
 	ErrorCodeChannelZeroOutput            ErrorCode = "channel:zero_output"
+	ErrorCodeChannelResponseContentMatch  ErrorCode = "channel:response_content_match"
 	ErrorCodeChannelStreamDisabled        ErrorCode = "channel:stream_disabled"
 	ErrorCodeChannelNonStreamDisabled     ErrorCode = "channel:non_stream_disabled"
 	ErrorCodeChannelOverloaded            ErrorCode = "channel_overloaded"

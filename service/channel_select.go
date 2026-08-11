@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -9,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -46,6 +48,23 @@ type ChannelSelectParam struct {
 	MaxPriority         *int64
 	AutoGroupIndex      int
 	AutoGroupSelected   bool
+	ClientRequestMode   types.RequestMode
+	RequestModeFiltered bool
+}
+
+func ChannelAcceptsRequestMode(channel *model.Channel, requestMode types.RequestMode) bool {
+	if channel == nil {
+		return false
+	}
+	settings := channel.GetOtherSettings()
+	switch requestMode {
+	case types.RequestModeStream:
+		return !settings.DisableStream
+	case types.RequestModeNonStream:
+		return !settings.DisableNonStream
+	default:
+		return true
+	}
 }
 
 func (p *ChannelSelectParam) ExcludeAttemptedChannel(channel *model.Channel) {
@@ -85,6 +104,18 @@ func (p *ChannelSelectParam) excludeSelectedChannel(channel *model.Channel) {
 //   - When GetRandomSatisfiedChannel returns nil (priorities exhausted), moves to next group.
 //     当 GetRandomSatisfiedChannel 返回 nil（优先级用完）时，切换到下一个分组。
 func CacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, string, error) {
+	for {
+		channel, selectGroup, err := cacheGetRandomSatisfiedChannel(param)
+		if err != nil || channel == nil || ChannelAcceptsRequestMode(channel, param.ClientRequestMode) {
+			return channel, selectGroup, err
+		}
+		param.RequestModeFiltered = true
+		param.ExcludeUnavailableChannel(channel)
+		logger.LogInfo(param.Ctx, fmt.Sprintf("skipping channel %d because %s requests are disabled", channel.Id, param.ClientRequestMode.String()))
+	}
+}
+
+func cacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup

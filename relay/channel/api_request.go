@@ -370,7 +370,31 @@ func applyHeaderRewriteToRequest(req *http.Request, info *common.RelayInfo, c *g
 	return nil
 }
 
+func ValidateChannelRequestMode(info *common.RelayInfo) error {
+	if info == nil || info.ChannelMeta == nil || info.IsChannelTest || info.ClientRequestMode == types.RequestModeUnknown {
+		return nil
+	}
+	settings := info.ChannelOtherSettings
+	disabled := settings.DisableNonStream
+	errorCode := types.ErrorCodeChannelNonStreamDisabled
+	if info.ClientRequestMode == types.RequestModeStream {
+		disabled = settings.DisableStream
+		errorCode = types.ErrorCodeChannelStreamDisabled
+	}
+	if !disabled {
+		return nil
+	}
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("the selected channel does not accept %s requests", info.ClientRequestMode.String()),
+		errorCode,
+		http.StatusServiceUnavailable,
+	)
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if err := ValidateChannelRequestMode(info); err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -410,6 +434,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if err := ValidateChannelRequestMode(info); err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -446,6 +473,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 }
 
 func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*websocket.Conn, error) {
+	if err := ValidateChannelRequestMode(info); err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -553,6 +583,9 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
+	if err := ValidateChannelRequestMode(info); err != nil {
+		return nil, err
+	}
 	return doRequest(c, req, info)
 }
 
@@ -933,6 +966,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 }
 
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if err := ValidateChannelRequestMode(info); err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.BuildRequestURL(info)
 	if err != nil {
 		return nil, err
