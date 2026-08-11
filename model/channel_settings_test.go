@@ -86,6 +86,38 @@ func TestChannelValidateSettingsEnforcesRequestModePolicyExclusivity(t *testing.
 	assert.Contains(t, err.Error(), "cannot both be enabled")
 }
 
+func TestChannelValidateSettingsScopesTNTTencentConversion(t *testing.T) {
+	t.Run("accepts Anthropic channel", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"tnt_tencent_openai_conversion":true}`,
+		}
+		require.NoError(t, channel.ValidateSettings())
+	})
+
+	t.Run("rejects other channel types", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeOpenAI,
+			OtherSettings: `{"tnt_tencent_openai_conversion":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported for Anthropic channels")
+	})
+
+	t.Run("rejects body passthrough", func(t *testing.T) {
+		setting := `{"pass_through_body_enabled":true}`
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			Setting:       &setting,
+			OtherSettings: `{"tnt_tencent_openai_conversion":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+}
+
 func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,

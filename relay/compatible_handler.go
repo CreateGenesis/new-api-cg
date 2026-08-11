@@ -15,6 +15,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -25,6 +26,7 @@ import (
 
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 
 	textReq, ok := info.Request.(*dto.GeneralOpenAIRequest)
 	if !ok {
@@ -73,6 +75,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
+		!tntTencentConversion &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -99,7 +102,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
 
-	if passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled {
+	if !tntTencentConversion && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -180,6 +183,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if tntTencentConversion {
+			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
 
 		jsonData, sanitization, err := deepseek.SanitizeV4RequestJSON(jsonData, info)
 		if err != nil {
@@ -213,9 +222,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	if resp != nil {
 		httpResp = resp.(*http.Response)
-		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		if !tntTencentConversion {
+			info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		}
 		if httpResp.StatusCode != http.StatusOK {
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			if tntTencentConversion {
+				return service.MapTNTTencentUpstreamError(newApiErr, httpResp.StatusCode)
+			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 			return newApiErr

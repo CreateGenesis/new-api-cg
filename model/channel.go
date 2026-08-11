@@ -1199,6 +1199,14 @@ func (channel *Channel) ValidateSettings() error {
 	if channelOtherSettings.DisableStream && channelOtherSettings.DisableNonStream {
 		return fmt.Errorf("disable_stream and disable_non_stream cannot both be enabled")
 	}
+	if channelOtherSettings.TNTTencentOpenAIConversion {
+		if channel.Type != constant.ChannelTypeAnthropic {
+			return fmt.Errorf("tnt_tencent_openai_conversion is only supported for Anthropic channels")
+		}
+		if channelParams.PassThroughBodyEnabled {
+			return fmt.Errorf("tnt_tencent_openai_conversion and pass_through_body_enabled cannot both be enabled")
+		}
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

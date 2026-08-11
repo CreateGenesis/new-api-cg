@@ -389,6 +389,11 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err := applyHeaderRewriteToRequest(req, info, c); err != nil {
 		return nil, err
 	}
+	if finalizer, ok := a.(RequestHeaderFinalizer); ok {
+		if err := finalizer.FinalizeRequestHeader(c, req, info); err != nil {
+			return nil, fmt.Errorf("finalize request header failed: %w", err)
+		}
+	}
 	if err := service.CommitChannelOverloadLease(c); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeChannelOverloaded, types.ErrOptionWithStatusCode(http.StatusServiceUnavailable), types.ErrOptionWithSkipRetry())
 	}

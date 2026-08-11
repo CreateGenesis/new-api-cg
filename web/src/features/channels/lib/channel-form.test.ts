@@ -793,3 +793,72 @@ describe('channel form overload protection', () => {
     assert.equal(parsed.success, false)
   })
 })
+
+describe('TNT Tencent-style OpenAI conversion settings', () => {
+  test('loads and saves the setting only for Anthropic channels', () => {
+    const channel = testChannel(
+      '{"tnt_tencent_openai_conversion":true,"retry_zero_output":true}'
+    )
+    channel.type = 14
+
+    const form = transformChannelToFormDefaults(channel)
+    assert.equal(form.tnt_tencent_openai_conversion, true)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'tnt',
+      key: 'sk-test',
+      models: 'kimi-k3',
+      group: ['default'],
+      status: 1,
+      type: 14,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.tnt_tencent_openai_conversion, true)
+    assert.equal(settings.retry_zero_output, true)
+  })
+
+  test('removes the setting after changing to another channel type', () => {
+    const channel = testChannel(
+      '{"tnt_tencent_openai_conversion":true,"retry_zero_output":true}'
+    )
+    channel.type = 14
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'other',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.tnt_tencent_openai_conversion, undefined)
+    assert.equal(settings.retry_zero_output, true)
+  })
+
+  test('rejects request body passthrough on an enabled TNT channel', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'tnt',
+      key: 'sk-test',
+      models: 'kimi-k3',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      pass_through_body_enabled: true,
+      tnt_tencent_openai_conversion: true,
+    })
+
+    assert.equal(parsed.success, false)
+    if (!parsed.success) {
+      const paths = new Set(
+        parsed.error.issues.map((issue) => issue.path.join('.'))
+      )
+      assert.ok(paths.has('pass_through_body_enabled'))
+      assert.ok(paths.has('tnt_tencent_openai_conversion'))
+    }
+  })
+})

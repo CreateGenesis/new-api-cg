@@ -4886,6 +4886,8 @@
     "times": "回",
     "Timing": "所要時間",
     "Tip": "ヒント",
+    "TNT Tencent-style OpenAI Conversion": "TNT Tencent方式のOpenAI変換",
+    "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.": "TNT Tencent方式のOpenAI変換は、リクエスト本文のパススルーと同時に有効にできません。",
     "to access this resource.": "このリソースにアクセスするには。",
     "To Anthropic Messages": "Anthropic Messages へ",
     "to confirm": "確認する",

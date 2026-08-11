@@ -197,6 +197,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	info.RequireStreamProtocolEnd()
 	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		var sanitizeErr error
+		data, sanitizeErr = sanitizeTNTStreamData(info, data)
+		if sanitizeErr != nil {
+			sr.Error(sanitizeErr)
+			return
+		}
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
@@ -295,6 +301,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	tntResponseSanitized := info.IsTNTTencentOpenAIConversion()
+	if tntResponseSanitized {
+		if err := relayconvert.SanitizeTNTTencentChatResponse(&simpleResponse); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+	}
 	responseModelModified := rewriteTextResponseModel(info, &simpleResponse)
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
@@ -335,7 +347,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified || responseModelModified {
+		if usageModified || responseModelModified || tntResponseSanitized {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
@@ -346,6 +358,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			}
 			if responseModelModified {
 				bodyMap["model"] = simpleResponse.Model
+			}
+			if tntResponseSanitized {
+				bodyMap["choices"] = simpleResponse.Choices
 			}
 			responseBody, _ = common.Marshal(bodyMap)
 		}

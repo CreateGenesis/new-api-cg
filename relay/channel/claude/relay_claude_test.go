@@ -43,6 +43,58 @@ func commonPointer[T any](value T) *T {
 	return &value
 }
 
+func TestTNTTencentRequestURLAndFinalHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatClaude,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl: "https://tnt.example/",
+			ApiKey:         "secret",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				TNTTencentOpenAIConversion: true,
+			},
+		},
+	}
+
+	requestURL, err := adaptor.GetRequestURL(info)
+	require.NoError(t, err)
+	assert.Equal(t, "https://tnt.example/v1/chat/completions", requestURL)
+
+	req := httptest.NewRequest(http.MethodPost, requestURL, nil)
+	req.Header.Set("Authorization", "Bearer rewritten")
+	req.Header.Set("X-Api-Key", "leaked")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("OpenAI-Project", "project")
+	req.Header.Set("X-Stainless-Runtime", "go")
+	req.Header.Set("X-Codex-Turn-State", "state")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Content-Length", "999")
+	req.Header.Set("X-Keep", "kept")
+	req.Host = "rewritten.example"
+	require.NoError(t, adaptor.FinalizeRequestHeader(c, req, info))
+
+	assert.Equal(t, "Bearer secret", req.Header.Get("Authorization"))
+	assert.Equal(t, "ChatGPT/1.0", req.Header.Get("User-Agent"))
+	assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+	assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	assert.Empty(t, req.Header.Get("X-Api-Key"))
+	assert.Empty(t, req.Header.Get("Anthropic-Version"))
+	assert.Empty(t, req.Header.Get("OpenAI-Project"))
+	assert.Empty(t, req.Header.Get("X-Stainless-Runtime"))
+	assert.Empty(t, req.Header.Get("X-Codex-Turn-State"))
+	assert.Empty(t, req.Header.Get("Connection"))
+	assert.Empty(t, req.Header.Get("Content-Length"))
+	assert.Empty(t, req.Host)
+	assert.Equal(t, "kept", req.Header.Get("X-Keep"))
+
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	require.NoError(t, adaptor.FinalizeRequestHeader(c, req, info))
+	assert.Equal(t, "App/1.0", req.Header.Get("User-Agent"))
+}
+
 func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 	tests := []struct {
 		name string

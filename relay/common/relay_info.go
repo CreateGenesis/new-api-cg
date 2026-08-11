@@ -197,6 +197,10 @@ type RelayInfo struct {
 	*TaskRelayInfo
 }
 
+func (info *RelayInfo) IsTNTTencentOpenAIConversion() bool {
+	return info != nil && info.ChannelOtherSettings.TNTTencentOpenAIConversion
+}
+
 type SimulatedModelCacheInfo struct {
 	Mode                        string  `json:"mode"`
 	MatchRatio                  float64 `json:"match_ratio"`

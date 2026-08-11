@@ -64,6 +64,35 @@ func TestResetStatusCode(t *testing.T) {
 	}
 }
 
+func TestMapTNTTencentUpstreamError(t *testing.T) {
+	testCases := []struct {
+		name       string
+		upstream   int
+		wantStatus int
+		wantType   string
+	}{
+		{name: "unauthorized", upstream: http.StatusUnauthorized, wantStatus: http.StatusInternalServerError, wantType: "api_error"},
+		{name: "forbidden", upstream: http.StatusForbidden, wantStatus: http.StatusInternalServerError, wantType: "api_error"},
+		{name: "rate limited", upstream: http.StatusTooManyRequests, wantStatus: http.StatusTooManyRequests, wantType: "rate_limit_error"},
+		{name: "overloaded", upstream: http.StatusBadGateway, wantStatus: 529, wantType: "overloaded_error"},
+		{name: "bad request", upstream: http.StatusBadRequest, wantStatus: http.StatusBadRequest, wantType: "api_error"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			original := types.WithOpenAIError(types.OpenAIError{Message: "upstream failed", Type: "upstream"}, testCase.upstream)
+			original.SetUpstreamResponse(testCase.upstream, `{"error":"raw"}`)
+
+			mapped := MapTNTTencentUpstreamError(original, testCase.upstream)
+
+			require.Equal(t, testCase.wantStatus, mapped.StatusCode)
+			require.Equal(t, testCase.wantType, mapped.ToOpenAIError().Type)
+			require.Equal(t, testCase.upstream, mapped.GetUpstreamStatusCode())
+			require.Equal(t, `{"error":"raw"}`, mapped.GetUpstreamResponse())
+		})
+	}
+}
+
 func TestRelayErrorHandlerTruncatesInvalidJSONBodyInLog(t *testing.T) {
 	withDebugEnabled(t, false)
 

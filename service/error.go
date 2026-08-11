@@ -159,6 +159,28 @@ func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) 
 	}
 }
 
+func MapTNTTencentUpstreamError(newApiErr *types.NewAPIError, upstreamStatus int) *types.NewAPIError {
+	if newApiErr == nil {
+		return nil
+	}
+	mappedStatus := upstreamStatus
+	errorType := "api_error"
+	switch {
+	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
+		mappedStatus = http.StatusInternalServerError
+	case upstreamStatus == http.StatusTooManyRequests:
+		errorType = "rate_limit_error"
+	case upstreamStatus >= http.StatusInternalServerError:
+		mappedStatus = 529
+		errorType = "overloaded_error"
+	}
+	openAIError := newApiErr.ToOpenAIError()
+	openAIError.Type = errorType
+	mapped := types.WithOpenAIError(openAIError, mappedStatus)
+	mapped.SetUpstreamResponse(newApiErr.GetUpstreamStatusCode(), newApiErr.GetUpstreamResponse())
+	return mapped
+}
+
 func parseStatusCodeMappingValue(value any) (int, bool) {
 	switch v := value.(type) {
 	case string:

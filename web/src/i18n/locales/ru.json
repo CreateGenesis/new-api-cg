@@ -4886,6 +4886,8 @@
     "times": "раз",
     "Timing": "Время",
     "Tip": "Совет",
+    "TNT Tencent-style OpenAI Conversion": "TNT-преобразование OpenAI в стиле Tencent",
+    "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.": "Преобразование OpenAI в стиле Tencent TNT нельзя включать одновременно со сквозной передачей тела запроса.",
     "to access this resource.": "для доступа к этому ресурсу.",
     "To Anthropic Messages": "В Anthropic Messages",
     "to confirm": "для подтверждения",

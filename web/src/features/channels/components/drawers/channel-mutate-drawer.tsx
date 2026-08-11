@@ -308,6 +308,7 @@ const SENSITIVE_FORM_FIELDS = [
   'proxy',
   'proxy_fallback_direct',
   'pass_through_body_enabled',
+  'tnt_tencent_openai_conversion',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -394,6 +395,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.force_format ||
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
+    (values.type === 14 && values.tnt_tencent_openai_conversion) ||
     values.system_prompt_override ||
     values.claude_beta_query ||
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
@@ -864,6 +866,9 @@ export function ChannelMutateDrawer({
   const currentForceFormat = form.watch('force_format')
   const currentThinkingToContent = form.watch('thinking_to_content')
   const currentPassThroughBodyEnabled = form.watch('pass_through_body_enabled')
+  const currentTNTTencentOpenAIConversion = form.watch(
+    'tnt_tencent_openai_conversion'
+  )
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
@@ -1209,6 +1214,7 @@ export function ChannelMutateDrawer({
     currentForceFormat ||
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
+    (currentType === 14 && currentTNTTencentOpenAIConversion) ||
     currentDisableTaskPollingSleep ||
     (currentType === 43 && currentDeepSeekV4RequestSanitizationEnabled) ||
     currentProxy?.trim() ||
@@ -5375,6 +5381,7 @@ export function ChannelMutateDrawer({
                                           'Pass request body directly to upstream'
                                         )}
                                       </FormDescription>
+                                      <FormMessage />
                                     </div>
                                     <FormControl>
                                       <Switch
@@ -5385,6 +5392,31 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+
+                              {currentType === 14 && (
+                                <FormField
+                                  control={form.control}
+                                  name='tnt_tencent_openai_conversion'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t(
+                                            'TNT Tencent-style OpenAI Conversion'
+                                          )}
+                                        </FormLabel>
+                                        <FormMessage />
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
 
                               {currentType === 43 && (
                                 <FormField

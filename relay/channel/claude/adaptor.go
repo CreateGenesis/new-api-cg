@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
+	openaiadapter "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -26,6 +29,9 @@ func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	if info.IsTNTTencentOpenAIConversion() {
+		return relayconvert.ConvertTNTTencentClaudeRequest(request)
+	}
 	return request, nil
 }
 
@@ -43,6 +49,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.IsTNTTencentOpenAIConversion() {
+		return fmt.Sprintf("%s/v1/chat/completions", strings.TrimRight(info.ChannelBaseUrl, "/")), nil
+	}
 	requestURL := fmt.Sprintf("%s/v1/messages", info.ChannelBaseUrl)
 	if !shouldAppendClaudeBetaQuery(info) {
 		return requestURL, nil
@@ -81,6 +90,11 @@ func CommonClaudeHeadersOperation(c *gin.Context, req *http.Header, info *relayc
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
+	if info.IsTNTTencentOpenAIConversion() {
+		channel.SetupApiRequestHeader(info, c, req)
+		req.Set("Authorization", "Bearer "+info.ApiKey)
+		return nil
+	}
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("x-api-key", info.ApiKey)
 	anthropicVersion := c.Request.Header.Get("anthropic-version")
@@ -92,9 +106,40 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	return nil
 }
 
+func (a *Adaptor) FinalizeRequestHeader(_ *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
+	if !info.IsTNTTencentOpenAIConversion() {
+		return nil
+	}
+	for name := range req.Header {
+		lower := strings.ToLower(name)
+		if lower == "authorization" || lower == "x-api-key" || lower == "anthropic-version" ||
+			lower == "openai-organization" || lower == "openai-project" || lower == "openai-beta" ||
+			lower == "x-app" || lower == "host" || lower == "content-length" || lower == "connection" ||
+			strings.HasPrefix(lower, "x-stainless-") || strings.HasPrefix(lower, "x-codex-") {
+			req.Header.Del(name)
+		}
+	}
+	req.Host = ""
+	userAgent := "App/1.0"
+	if info.RelayFormat == types.RelayFormatClaude {
+		userAgent = "ChatGPT/1.0"
+	}
+	req.Header.Set("Authorization", "Bearer "+info.ApiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", userAgent)
+	return nil
+}
+
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
+	}
+	if info.IsTNTTencentOpenAIConversion() {
+		if err := relayconvert.SanitizeTNTTencentChatRequest(request); err != nil {
+			return nil, err
+		}
+		return request, nil
 	}
 	result, err := relayconvert.ConvertRequest(c, info, types.RelayFormatClaude, request)
 	if err != nil {
@@ -113,7 +158,9 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
+	if info.IsTNTTencentOpenAIConversion() {
+		return relayconvert.ConvertTNTTencentResponsesRequest(&request)
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -122,6 +169,23 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info.IsTNTTencentOpenAIConversion() {
+		info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+		upstreamStream := resp != nil && strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+		if upstreamStream {
+			if !info.IsStream {
+				return openaiadapter.OaiChatBufferedStreamHandler(c, info, resp)
+			}
+			if info.RelayMode == relayconstant.RelayModeResponses {
+				return openaiadapter.OaiChatToResponsesStreamHandler(c, info, resp)
+			}
+			return openaiadapter.OaiStreamHandler(c, info, resp)
+		}
+		if info.RelayMode == relayconstant.RelayModeResponses {
+			return openaiadapter.OaiChatToResponsesHandler(c, info, resp)
+		}
+		return openaiadapter.OpenaiHandler(c, info, resp)
+	}
 	info.FinalRequestRelayFormat = types.RelayFormatClaude
 	if info.IsStream {
 		return ClaudeStreamHandler(c, resp, info)

@@ -4886,6 +4886,8 @@
     "times": "次",
     "Timing": "耗時",
     "Tip": "提示",
+    "TNT Tencent-style OpenAI Conversion": "TNT 騰訊式 OpenAI 轉換",
+    "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.": "TNT 騰訊式 OpenAI 轉換不能與請求本文透傳同時啟用。",
     "to access this resource.": "存取此資源。",
     "To Anthropic Messages": "轉 Anthropic Messages",
     "to confirm": "以確認",

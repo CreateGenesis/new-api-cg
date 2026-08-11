@@ -31,6 +31,11 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err := common.Unmarshal(body, &chatResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	if info.IsTNTTencentOpenAIConversion() {
+		if err := relayconvert.SanitizeTNTTencentChatResponse(&chatResp); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+	}
 	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -109,6 +114,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			logger.LogError(c, "failed to unmarshal chat stream response: "+err.Error())
 			sr.Error(err)
 			return
+		}
+		if info.IsTNTTencentOpenAIConversion() {
+			relayconvert.SanitizeTNTTencentChatStreamChunk(&chunk)
 		}
 		if chunk.IsFinished() && info.StreamStatus != nil {
 			info.StreamStatus.MarkProtocolEnd("finish_reason")

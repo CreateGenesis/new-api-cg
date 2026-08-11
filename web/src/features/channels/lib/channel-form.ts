@@ -348,6 +348,7 @@ export const channelFormSchema = z
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
     proxy_fallback_direct: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
+    tnt_tencent_openai_conversion: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -617,6 +618,16 @@ export const channelFormSchema = z
       addRequiredIssue(ctx, 'disable_stream', message)
       addRequiredIssue(ctx, 'disable_non_stream', message)
     }
+    if (
+      data.type === 14 &&
+      data.tnt_tencent_openai_conversion &&
+      data.pass_through_body_enabled
+    ) {
+      const message =
+        'TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.'
+      addRequiredIssue(ctx, 'tnt_tencent_openai_conversion', message)
+      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
+    }
     for (const fieldName of [
       'missing_output_token_multiplier',
       'simulated_model_cache_missing_input_token_multiplier',
@@ -820,6 +831,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   proxy: '',
   proxy_fallback_direct: false,
   pass_through_body_enabled: false,
+  tnt_tencent_openai_conversion: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -942,6 +954,7 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
+  let tntTencentOpenAIConversion = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
   let disableStream = false
@@ -996,6 +1009,8 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      tntTencentOpenAIConversion =
+        channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
       disableStream = parsed.disable_stream === true
@@ -1290,6 +1305,7 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
@@ -1451,12 +1467,20 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
     settingsObj.allow_speed = formData.allow_speed === true
     settingsObj.claude_beta_query = formData.claude_beta_query === true
+    if (formData.tnt_tencent_openai_conversion === true) {
+      settingsObj.tnt_tencent_openai_conversion = true
+    } else if ('tnt_tencent_openai_conversion' in settingsObj) {
+      delete settingsObj.tnt_tencent_openai_conversion
+    }
   } else {
     if ('allow_speed' in settingsObj) {
       delete settingsObj.allow_speed
     }
     if ('claude_beta_query' in settingsObj) {
       delete settingsObj.claude_beta_query
+    }
+    if ('tnt_tencent_openai_conversion' in settingsObj) {
+      delete settingsObj.tnt_tencent_openai_conversion
     }
   }
 

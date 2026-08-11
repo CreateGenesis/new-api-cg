@@ -14,6 +14,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -22,6 +23,7 @@ import (
 
 func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		switch info.ApiType {
 		case appconstant.APITypeOpenAI, appconstant.APITypeCodex:
@@ -82,7 +84,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	adaptor.Init(info)
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+	if !tntTencentConversion && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
@@ -115,6 +117,12 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if tntTencentConversion {
+			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)
 		cacheAttempt = prepareSimulatedModelCacheAttempt(c, info, jsonData)
@@ -141,6 +149,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 		if httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			if tntTencentConversion {
+				return service.MapTNTTencentUpstreamError(newAPIError, httpResp.StatusCode)
+			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 			return newAPIError

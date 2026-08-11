@@ -15,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/types"
@@ -25,6 +26,7 @@ import (
 func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 
 	info.InitChannelMeta(c)
+	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 
 	claudeReq, ok := info.Request.(*dto.ClaudeRequest)
 
@@ -133,7 +135,8 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
-	if !model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
+	if !tntTencentConversion &&
+		!model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
 		result, convErr := service.ConvertRequest(c, info, types.RelayFormatOpenAI, request)
@@ -159,7 +162,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+	if !tntTencentConversion && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -193,6 +196,12 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if tntTencentConversion {
+			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
 
 		jsonData, sanitization, err := deepseek.SanitizeV4RequestJSON(jsonData, info)
 		if err != nil {
@@ -223,9 +232,14 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	if resp != nil {
 		httpResp = resp.(*http.Response)
-		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		if !tntTencentConversion {
+			info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		}
 		if httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			if tntTencentConversion {
+				return service.MapTNTTencentUpstreamError(newAPIError, httpResp.StatusCode)
+			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 			return newAPIError

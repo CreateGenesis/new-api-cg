@@ -66,6 +66,7 @@ type ChannelOtherSettings struct {
 	ResponseHeaderTimeout                 *ResponseHeaderTimeoutSettings     `json:"response_header_timeout,omitempty"`
 	InputTokenRouting                     *InputTokenRoutingSettings         `json:"input_token_routing,omitempty"`
 	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
+	TNTTencentOpenAIConversion            bool                               `json:"tnt_tencent_openai_conversion,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`

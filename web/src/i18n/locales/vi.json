@@ -4886,6 +4886,8 @@
     "times": "lần",
     "Timing": "Thời gian",
     "Tip": "Mẹo",
+    "TNT Tencent-style OpenAI Conversion": "Chuyển đổi OpenAI kiểu Tencent TNT",
+    "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.": "Không thể bật chuyển đổi OpenAI kiểu Tencent TNT cùng với chế độ chuyển tiếp nguyên trạng nội dung yêu cầu.",
     "to access this resource.": "để truy cập tài nguyên này.",
     "To Anthropic Messages": "Sang Anthropic Messages",
     "to confirm": "Chờ xác nhận",

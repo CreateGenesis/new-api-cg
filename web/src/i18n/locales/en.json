@@ -4886,6 +4886,8 @@
     "times": "times",
     "Timing": "Timing",
     "Tip": "Tip",
+    "TNT Tencent-style OpenAI Conversion": "TNT Tencent-style OpenAI Conversion",
+    "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.": "TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.",
     "to access this resource.": "to access this resource.",
     "To Anthropic Messages": "To Anthropic Messages",
     "to confirm": "to confirm",
