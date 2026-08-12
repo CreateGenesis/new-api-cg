@@ -217,8 +217,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(geminiResponseStr)})
-		_ = helper.FlushWriter(c)
+		if err := helper.StringData(c, string(geminiResponseStr)); err != nil {
+			if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+				return false
+			}
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			return false
+		}
 		return true
 	}
 
@@ -229,8 +234,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				return true
 			}
 			if err := helper.ObjectData(c, &value); err != nil {
-				if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
-					return true
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return false
 				}
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
@@ -241,8 +246,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				return true
 			}
 			if err := helper.ObjectData(c, value); err != nil {
-				if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
-					return true
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return false
 				}
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
@@ -250,8 +255,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return true
 		case dto.ClaudeResponse:
 			if err := helper.ClaudeData(c, value); err != nil {
-				if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
-					return true
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return false
 				}
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
@@ -262,8 +267,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				return true
 			}
 			if err := helper.ClaudeData(c, *value); err != nil {
-				if shouldSettleClientDisconnectWithStreamPolicy(c, info) {
-					return true
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return false
 				}
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
@@ -315,23 +320,29 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 		for _, result := range results {
 			if !sendStreamResult(result) {
-				sr.Stop(streamErr)
+				if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+					sr.ClientGone(info.StreamStatus.Snapshot().EndError)
+				} else {
+					sr.Stop(streamErr)
+				}
 				return
 			}
 		}
 	})
 
+	usage := state.Usage()
+	if usage == nil || usage.TotalTokens == 0 {
+		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		state.SetUsage(usage)
+	}
+	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		return usage, nil
+	}
 	if streamErr != nil {
 		return nil, streamErr
 	}
 	if streamRetryErr != nil {
 		return nil, streamRetryErr
-	}
-
-	usage := state.Usage()
-	if usage == nil || usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		state.SetUsage(usage)
 	}
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil {
@@ -348,9 +359,10 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	if info.RelayFormat == types.RelayFormatOpenAI && info.ShouldIncludeUsage && usage != nil {
 		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, createAt, info.UpstreamModelName, *usage)); err != nil {
-			if !shouldSettleClientDisconnectWithStreamPolicy(c, info) {
-				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+				return usage, nil
 			}
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
 	}
 

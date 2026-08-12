@@ -20,6 +20,19 @@ func TestStreamStatus_SetEndReason_FirstWins(t *testing.T) {
 	assert.Nil(t, s.EndError)
 }
 
+func TestStreamStatus_MarkClientGone_OverridesEarlierEndReason(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonEOF, nil)
+	connectionReset := fmt.Errorf("write: connection reset by peer")
+
+	s.MarkClientGone(connectionReset)
+
+	snapshot := s.Snapshot()
+	assert.Equal(t, StreamEndReasonClientGone, snapshot.EndReason)
+	assert.ErrorIs(t, snapshot.EndError, connectionReset)
+}
+
 func TestStreamStatus_SetEndReason_WithError(t *testing.T) {
 	t.Parallel()
 	s := NewStreamStatus()

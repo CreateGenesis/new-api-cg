@@ -1,13 +1,18 @@
 package helper
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"syscall"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -60,28 +65,35 @@ func SetEventStreamHeaders(c *gin.Context) {
 
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	if requestContextDone(c) {
-		return nil
+		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
 	jsonData, err := common.Marshal(resp)
 	if err != nil {
 		common.SysError("error marshalling stream response: " + err.Error())
-	} else {
-		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+		return err
 	}
-	_ = FlushWriter(c)
-	return nil
+	if err := (common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}).Render(c.Writer); err != nil {
+		return err
+	}
+	if err := (common.CustomEvent{Data: "data: " + string(jsonData)}).Render(c.Writer); err != nil {
+		return err
+	}
+	return FlushWriter(c)
 }
 
-func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
+func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) error {
 	if requestContextDone(c) {
-		return
+		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
-	_ = FlushWriter(c)
+	if err := (common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}).Render(c.Writer); err != nil {
+		return err
+	}
+	if err := (common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)}).Render(c.Writer); err != nil {
+		return err
+	}
+	return FlushWriter(c)
 }
 
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
@@ -89,8 +101,12 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
+	if err := (common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)}).Render(c.Writer); err != nil {
+		return err
+	}
+	if err := (common.CustomEvent{Data: fmt.Sprintf("data: %s", data)}).Render(c.Writer); err != nil {
+		return err
+	}
 	return FlushWriter(c)
 }
 
@@ -103,8 +119,41 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: "data: " + str})
+	if err := (common.CustomEvent{Data: "data: " + str}).Render(c.Writer); err != nil {
+		return err
+	}
 	return FlushWriter(c)
+}
+
+func IsClientDisconnectError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if requestContextDone(c) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, io.ErrShortWrite) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError)
+}
+
+func HandleStreamClientDisconnect(c *gin.Context, info *relaycommon.RelayInfo, result *StreamResult, err error) bool {
+	if !IsClientDisconnectError(c, err) {
+		return false
+	}
+	if result != nil {
+		result.ClientGone(err)
+	} else if info != nil && info.StreamStatus != nil {
+		info.StreamStatus.MarkClientGone(err)
+	}
+	return true
 }
 
 func PingData(c *gin.Context) error {

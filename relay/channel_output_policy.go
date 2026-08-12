@@ -443,7 +443,7 @@ func (w *channelOutputRecorder) markClientGone(c *gin.Context, info *relaycommon
 	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 		err = c.Request.Context().Err()
 	}
-	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+	info.StreamStatus.MarkClientGone(err)
 }
 
 func channelZeroOutputError(err error) *types.NewAPIError {

@@ -31,7 +31,7 @@ type StreamErrorEntry struct {
 type StreamStatus struct {
 	EndReason StreamEndReason
 	EndError  error
-	endOnce   sync.Once
+	endSet    bool
 
 	mu                  sync.Mutex
 	Errors              []StreamErrorEntry
@@ -59,12 +59,25 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	if s == nil {
 		return
 	}
-	s.endOnce.Do(func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.EndReason = reason
-		s.EndError = err
-	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.endSet {
+		return
+	}
+	s.EndReason = reason
+	s.EndError = err
+	s.endSet = true
+}
+
+func (s *StreamStatus) MarkClientGone(err error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.EndReason = StreamEndReasonClientGone
+	s.EndError = err
+	s.endSet = true
 }
 
 func (s *StreamStatus) RequireProtocolEnd() {
@@ -145,6 +158,10 @@ func (s *StreamStatus) IsInterrupted() bool {
 		return false
 	}
 	return !s.IsNormalEnd() || s.HasErrors()
+}
+
+func (s *StreamStatus) IsClientGone() bool {
+	return s != nil && s.Snapshot().EndReason == StreamEndReasonClientGone
 }
 
 func (s *StreamStatus) Snapshot() StreamStatusSnapshot {

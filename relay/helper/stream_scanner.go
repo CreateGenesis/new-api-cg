@@ -79,6 +79,38 @@ type StreamScannerOptions struct {
 	BufferedResponse bool
 }
 
+type streamDeliveryWriter struct {
+	gin.ResponseWriter
+	context *gin.Context
+	status  *relaycommon.StreamStatus
+}
+
+func (w *streamDeliveryWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *streamDeliveryWriter) Write(data []byte) (int, error) {
+	written, err := w.ResponseWriter.Write(data)
+	if err == nil && written != len(data) {
+		err = io.ErrShortWrite
+	}
+	if IsClientDisconnectError(w.context, err) {
+		w.status.MarkClientGone(err)
+	}
+	return written, err
+}
+
+func (w *streamDeliveryWriter) WriteString(data string) (int, error) {
+	written, err := w.ResponseWriter.WriteString(data)
+	if err == nil && written != len(data) {
+		err = io.ErrShortWrite
+	}
+	if IsClientDisconnectError(w.context, err) {
+		w.status.MarkClientGone(err)
+	}
+	return written, err
+}
+
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) *types.NewAPIError {
 	return StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{}, dataHandler)
 }
@@ -94,6 +126,9 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 	if info.ConsumeStreamProtocolEndRequirement() {
 		info.StreamStatus.RequireProtocolEnd()
 	}
+	originalWriter := c.Writer
+	c.Writer = &streamDeliveryWriter{ResponseWriter: originalWriter, context: c, status: info.StreamStatus}
+	defer func() { c.Writer = originalWriter }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -192,7 +227,11 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 					}()
 					if err != nil {
 						logger.LogError(c, "ping data error: "+err.Error())
-						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPingFail, err)
+						if IsClientDisconnectError(c, err) {
+							info.StreamStatus.MarkClientGone(err)
+						} else {
+							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPingFail, err)
+						}
 						stop()
 						return
 					}
@@ -240,6 +279,9 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 					payloadSent = true
 				}
 			}()
+			if info.StreamStatus.IsClientGone() {
+				return
+			}
 			if sr.IsStopped() {
 				return
 			}
@@ -324,7 +366,7 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 	case <-c.Request.Context().Done():
 		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
 		// 避免为已放弃的请求继续消费上游 token。
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+		info.StreamStatus.MarkClientGone(c.Request.Context().Err())
 	}
 
 	cleanup()
@@ -335,6 +377,7 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 	}
 
 	if info.StreamStatus.IsInterrupted() &&
+		!info.StreamStatus.IsClientGone() &&
 		!payloadSent &&
 		c.Request.Context().Err() == nil {
 		return types.NewErrorWithStatusCode(

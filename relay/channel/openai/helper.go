@@ -146,18 +146,6 @@ func markResponsesStreamProtocolEnd(info *relaycommon.RelayInfo, eventType strin
 	}
 }
 
-func shouldSettleClientDisconnectWithStreamPolicy(c *gin.Context, info *relaycommon.RelayInfo) bool {
-	if c == nil || c.Request == nil || c.Request.Context().Err() == nil || info == nil || info.ChannelMeta == nil {
-		return false
-	}
-	settings := info.ChannelOtherSettings.StreamInterruptionBilling
-	if settings == nil {
-		return false
-	}
-	return settings.Mode == dto.StreamInterruptionBillingModeInputOnlyFree ||
-		settings.Mode == dto.StreamInterruptionBillingModeAllInterruptedFree
-}
-
 func processCompletionsStreamResponse(streamResponse dto.CompletionsStreamResponse, responseTextBuilder *strings.Builder) {
 	for _, choice := range streamResponse.Choices {
 		responseTextBuilder.WriteString(choice.Text)

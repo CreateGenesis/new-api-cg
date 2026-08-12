@@ -41,6 +41,13 @@ func (r *StreamResult) Done() {
 	r.stopped = true
 }
 
+// ClientGone stops stream processing without turning a downstream delivery
+// failure into an upstream/channel error.
+func (r *StreamResult) ClientGone(err error) {
+	r.status.MarkClientGone(err)
+	r.stopped = true
+}
+
 // IsStopped returns whether Stop() or Done() was called during this chunk.
 func (r *StreamResult) IsStopped() bool {
 	return r.stopped

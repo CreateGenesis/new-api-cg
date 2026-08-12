@@ -18,6 +18,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type cancelingResponseWriter struct {
+	gin.ResponseWriter
+	cancel context.CancelFunc
+}
+
+func (w *cancelingResponseWriter) Write([]byte) (int, error) {
+	w.cancel()
+	return 0, context.Canceled
+}
+
+func (w *cancelingResponseWriter) WriteString(string) (int, error) {
+	w.cancel()
+	return 0, context.Canceled
+}
+
 func TestOaiResponsesToChatStreamClientDisconnectUsesBillingPolicy(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
@@ -43,6 +58,31 @@ func TestOaiResponsesToChatStreamClientDisconnectUsesBillingPolicy(t *testing.T)
 	decision := service.EvaluateStreamInterruptionBilling(info, usage.CompletionTokens, 123)
 	require.True(t, decision.Applied)
 	require.Zero(t, decision.FinalQuota)
+}
+
+func TestOaiResponsesToChatStreamClientDisconnectWithoutBillingPolicy(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n"
+	c, _, resp, info := newResponsesChatTestContext(t, body, true)
+	requestContext, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestContext)
+	c.Writer = &cancelingResponseWriter{ResponseWriter: c.Writer, cancel: cancel}
+
+	usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.Snapshot().EndReason)
+	decision := service.EvaluateStreamInterruptionBilling(info, usage.CompletionTokens, 123)
+	require.False(t, decision.Applied)
+	require.Equal(t, 123, decision.FinalQuota)
 }
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {

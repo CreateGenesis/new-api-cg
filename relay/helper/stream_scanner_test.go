@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,6 +23,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type failingStreamResponseWriter struct {
+	gin.ResponseWriter
+	err error
+}
+
+func (w *failingStreamResponseWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func (w *failingStreamResponseWriter) WriteString(string) (int, error) {
+	return 0, w.err
+}
 
 func init() {
 	gin.SetMode(gin.TestMode)
@@ -339,6 +354,65 @@ func TestStreamScannerHandler_PingSentDuringSlowUpstream(t *testing.T) {
 	pingCount := strings.Count(body, ": PING")
 	assert.GreaterOrEqual(t, pingCount, 1,
 		"expected at least 1 ping during slow stream with 1s interval; got %d", pingCount)
+}
+
+func TestStreamScannerHandler_PingWriteResetIsClientGone(t *testing.T) {
+	setting := operation_setting.GetGeneralSetting()
+	oldEnabled := setting.PingIntervalEnabled
+	oldSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalEnabled = true
+	setting.PingIntervalSeconds = 1
+	t.Cleanup(func() {
+		setting.PingIntervalEnabled = oldEnabled
+		setting.PingIntervalSeconds = oldSeconds
+	})
+
+	upstreamReader, upstreamWriter := io.Pipe()
+	t.Cleanup(func() { _ = upstreamWriter.Close() })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	connectionReset := fmt.Errorf("write: %w", syscall.ECONNRESET)
+	failingWriter := &failingStreamResponseWriter{ResponseWriter: c.Writer, err: connectionReset}
+	c.Writer = failingWriter
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	streamErr := StreamScannerHandler(c, &http.Response{Body: upstreamReader}, info, func(string, *StreamResult) {})
+
+	require.Nil(t, streamErr)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.Snapshot().EndReason)
+	assert.ErrorIs(t, info.StreamStatus.Snapshot().EndError, connectionReset)
+	assert.Same(t, failingWriter, c.Writer)
+}
+
+func TestStreamScannerHandler_NonNetworkPingFailureRemainsChannelError(t *testing.T) {
+	setting := operation_setting.GetGeneralSetting()
+	oldEnabled := setting.PingIntervalEnabled
+	oldSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalEnabled = true
+	setting.PingIntervalSeconds = 1
+	t.Cleanup(func() {
+		setting.PingIntervalEnabled = oldEnabled
+		setting.PingIntervalSeconds = oldSeconds
+	})
+
+	upstreamReader, upstreamWriter := io.Pipe()
+	t.Cleanup(func() { _ = upstreamWriter.Close() })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	writeFailure := errors.New("synthetic writer failure")
+	c.Writer = &failingStreamResponseWriter{ResponseWriter: c.Writer, err: writeFailure}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	streamErr := StreamScannerHandler(c, &http.Response{Body: upstreamReader}, info, func(string, *StreamResult) {})
+
+	require.NotNil(t, streamErr)
+	assert.Equal(t, types.ErrorCodeChannelStreamError, streamErr.GetErrorCode())
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonPingFail, info.StreamStatus.Snapshot().EndReason)
+	assert.ErrorIs(t, info.StreamStatus.Snapshot().EndError, writeFailure)
 }
 
 func TestStreamScannerHandler_PingDisabledByRelayInfo(t *testing.T) {

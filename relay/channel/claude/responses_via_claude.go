@@ -104,7 +104,14 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 					sr.Stop(streamErr)
 					return
 				}
-				helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded))
+				if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded)); err != nil {
+					if helper.HandleStreamClientDisconnect(c, info, sr, err) {
+						return
+					}
+					streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+					sr.Stop(streamErr)
+					return
+				}
 			}
 		}
 	})
@@ -113,6 +120,9 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 	}
 	if retryErr != nil {
 		return nil, retryErr
+	}
+	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		return state.Usage(), nil
 	}
 	finalResults, err := relayconvert.FinalizeStreamResponse(c, info, state)
 	if err != nil {
@@ -130,7 +140,12 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 		if err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 		}
-		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded))
+		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded)); err != nil {
+			if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+				return state.Usage(), nil
+			}
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.Snapshot().ProtocolEndReceived && strings.TrimSpace(state.UsageText()) != "" {
 		info.StreamStatus.MarkProtocolEnd("converted_response_completed")

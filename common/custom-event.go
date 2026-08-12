@@ -63,9 +63,23 @@ func encode(writer io.Writer, event CustomEvent) error {
 }
 
 func writeData(w stringWriter, data interface{}) error {
-	dataReplacer.WriteString(w, fmt.Sprint(data))
-	if strings.HasPrefix(data.(string), "data") {
-		w.writeString("\n\n")
+	value := fmt.Sprint(data)
+	replaced := dataReplacer.Replace(value)
+	written, err := w.writeString(replaced)
+	if err != nil {
+		return err
+	}
+	if written != len(replaced) {
+		return io.ErrShortWrite
+	}
+	if strings.HasPrefix(value, "data") {
+		written, err = w.writeString("\n\n")
+		if err != nil {
+			return err
+		}
+		if written != 2 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }

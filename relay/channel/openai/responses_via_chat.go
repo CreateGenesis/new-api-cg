@@ -230,7 +230,13 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data))
+		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data)); err != nil {
+			if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+				return false
+			}
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			return false
+		}
 		sequenceNumber++
 		return true
 	}
@@ -282,7 +288,11 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				return
 			}
 			if !sendEvent(event) {
-				sr.Stop(streamErr)
+				if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+					sr.ClientGone(info.StreamStatus.Snapshot().EndError)
+				} else {
+					sr.Stop(streamErr)
+				}
 				return
 			}
 		}
@@ -299,6 +309,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	if usage == nil || usage.TotalTokens == 0 {
 		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		state.SetUsage(usage)
+	}
+	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		return usage, nil
 	}
 
 	finalResults, err := relayconvert.FinalizeStreamResponse(c, info, state)

@@ -138,7 +138,12 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 					eventData = patchClaudeMessageDeltaUsageData(eventData, buildMessageDeltaPatchUsage(filteredResponse, claudeInfo))
 				}
 			}
-			helper.ClaudeChunkData(c, *filteredResponse, eventData)
+			if err := helper.ClaudeChunkData(c, *filteredResponse, eventData); err != nil {
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return nil
+				}
+				return types.NewError(err, types.ErrorCodeBadResponse)
+			}
 		} else if info.RelayFormat == types.RelayFormatOpenAI {
 			response := StreamResponseClaude2OpenAI(filteredResponse)
 
@@ -222,6 +227,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 	if streamRetryErr != nil {
 		return nil, streamRetryErr
+	}
+	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		return claudeInfo.Usage, nil
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
