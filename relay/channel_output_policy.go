@@ -26,6 +26,7 @@ type channelOutputRecorder struct {
 	gin.ResponseWriter
 	header               http.Header
 	format               types.RelayFormat
+	info                 *relaycommon.RelayInfo
 	relayMode            int
 	model                string
 	stream               bool
@@ -46,12 +47,14 @@ type channelOutputRecorder struct {
 	outputText           strings.Builder
 	contentMatcher       *responseContentMatcher
 	policyErr            error
+	deliveryErr          error
 }
 
 func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, contentPolicy operation_setting.ResponseContentRetryPolicy, multiplier float64, bufferLimit int) *channelOutputRecorder {
 	recorder := &channelOutputRecorder{
 		ResponseWriter:  writer,
 		header:          writer.Header().Clone(),
+		info:            info,
 		retryZeroOutput: retryZeroOutput,
 		multiplier:      multiplier,
 		bufferLimit:     bufferLimit,
@@ -95,13 +98,16 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	if w.policyErr != nil {
 		return 0, w.policyErr
 	}
+	if w.deliveryErr != nil {
+		return 0, w.deliveryErr
+	}
 	if len(data) == 0 {
 		return 0, nil
 	}
 	w.statusWritten = true
 	if !w.stream {
 		if w.nonStreamPassThrough {
-			return w.ResponseWriter.Write(data)
+			return w.writeDownstream(data)
 		}
 		if w.body.Len()+len(data) > w.bufferLimit {
 			if !w.retryZeroOutput {
@@ -113,11 +119,10 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 					return 0, err
 				}
 				if err := w.writeCommitted(w.body.Bytes()); err != nil {
-					w.policyErr = err
 					return 0, err
 				}
 				w.body.Reset()
-				return w.ResponseWriter.Write(data)
+				return w.writeDownstream(data)
 			}
 			w.policyErr = errChannelOutputPrefixTooLarge
 			return 0, w.policyErr
@@ -140,7 +145,9 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 	_, _ = w.streamPending.Write(data)
 	if err := w.processStreamEvents(); err != nil {
-		w.policyErr = err
+		if w.deliveryErr == nil {
+			w.policyErr = err
+		}
 		return 0, err
 	}
 	return len(data), nil
@@ -224,6 +231,10 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 
 func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
 	c.Writer = w.ResponseWriter
+	if w.deliveryErr != nil {
+		w.markClientGone(c, info)
+		return nil
+	}
 	if w.policyErr != nil {
 		w.abortCommittedStream()
 		return channelOutputPolicyError(w.policyErr)
@@ -234,6 +245,10 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 
 	if w.stream {
 		if err := w.finishPendingStreamBytes(); err != nil {
+			if w.deliveryErr != nil {
+				w.markClientGone(c, info)
+				return nil
+			}
 			w.abortCommittedStream()
 			return channelOutputPolicyError(err)
 		}
@@ -278,8 +293,9 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		if err := w.commitHeader(); err != nil {
 			return channelZeroOutputError(err)
 		}
-		if _, err := w.ResponseWriter.Write(body); err != nil {
-			return channelZeroOutputError(err)
+		if _, err := w.writeDownstream(body); err != nil {
+			w.markClientGone(c, info)
+			return nil
 		}
 		return nil
 	}
@@ -289,7 +305,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 			return channelZeroOutputError(err)
 		}
 		if err := w.writeCommitted(w.streamPrefix.Bytes()); err != nil {
-			return channelZeroOutputError(err)
+			w.markClientGone(c, info)
+			return nil
 		}
 		w.streamPrefix.Reset()
 	}
@@ -298,7 +315,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		tail = service.PatchSimulatedModelCacheResponseBody(w.format, "text/event-stream", tail, usage, simulatedModelCacheResponseModel(info))
 	}
 	if err := w.writeCommitted(tail); err != nil {
-		return channelZeroOutputError(err)
+		w.markClientGone(c, info)
+		return nil
 	}
 	w.streamTail.Reset()
 	w.ResponseWriter.Flush()
@@ -398,14 +416,34 @@ func (w *channelOutputRecorder) writeCommitted(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	written, err := w.ResponseWriter.Write(data)
+	_, err := w.writeDownstream(data)
 	if err != nil {
 		return err
 	}
-	if written != len(data) {
-		return io.ErrShortWrite
-	}
 	return nil
+}
+
+func (w *channelOutputRecorder) writeDownstream(data []byte) (int, error) {
+	written, err := w.ResponseWriter.Write(data)
+	if err == nil && written != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil && w.deliveryErr == nil {
+		w.deliveryErr = err
+		w.markClientGone(nil, w.info)
+	}
+	return written, err
+}
+
+func (w *channelOutputRecorder) markClientGone(c *gin.Context, info *relaycommon.RelayInfo) {
+	if info == nil || info.StreamStatus == nil {
+		return
+	}
+	err := w.deliveryErr
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		err = c.Request.Context().Err()
+	}
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 }
 
 func channelZeroOutputError(err error) *types.NewAPIError {

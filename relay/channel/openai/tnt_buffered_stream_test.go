@@ -6,16 +6,92 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOaiChatBufferedStreamHandlerDoesNotCommitSSEBeforeJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	setting := operation_setting.GetGeneralSetting()
+	previousPingEnabled := setting.PingIntervalEnabled
+	previousPingSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalEnabled = true
+	setting.PingIntervalSeconds = 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout = previousStreamingTimeout
+		setting.PingIntervalEnabled = previousPingEnabled
+		setting.PingIntervalSeconds = previousPingSeconds
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		IsStream:    false,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				TNTTencentOpenAIConversion: true,
+			},
+		},
+	}
+	upstreamReader, upstreamWriter := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       upstreamReader,
+	}
+	type handlerResult struct {
+		usage  *dto.Usage
+		apiErr *types.NewAPIError
+	}
+	done := make(chan handlerResult, 1)
+	go func() {
+		usage, apiErr := OaiChatBufferedStreamHandler(c, info, resp)
+		done <- handlerResult{usage: usage, apiErr: apiErr}
+	}()
+
+	time.Sleep(1200 * time.Millisecond)
+	assert.Empty(t, recorder.Body.String())
+	assert.Empty(t, recorder.Header().Get("Content-Type"))
+
+	_, err := io.WriteString(upstreamWriter, strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":123,"model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":123,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n"))
+	require.NoError(t, err)
+	require.NoError(t, upstreamWriter.Close())
+
+	select {
+	case result := <-done:
+		require.Nil(t, result.apiErr)
+		require.NotNil(t, result.usage)
+	case <-time.After(5 * time.Second):
+		t.Fatal("buffered stream handler did not finish")
+	}
+	assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	assert.NotContains(t, recorder.Body.String(), ": PING")
+	var output dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &output))
+	require.Len(t, output.Choices, 1)
+	assert.Equal(t, "hello", output.Choices[0].Message.StringContent())
+}
 
 func TestOaiChatBufferedStreamHandlerAggregatesTextToolsUsageAndFinishReason(t *testing.T) {
 	gin.SetMode(gin.TestMode)

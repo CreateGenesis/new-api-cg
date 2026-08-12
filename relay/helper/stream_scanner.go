@@ -75,7 +75,15 @@ func ExtendWriteDeadline(c *gin.Context) {
 	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
 
+type StreamScannerOptions struct {
+	BufferedResponse bool
+}
+
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) *types.NewAPIError {
+	return StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{}, dataHandler)
+}
+
+func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, options StreamScannerOptions, dataHandler func(data string, sr *StreamResult)) *types.NewAPIError {
 
 	if resp == nil || dataHandler == nil {
 		return nil
@@ -110,7 +118,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	generalSettings := operation_setting.GetGeneralSetting()
-	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
+	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing && !options.BufferedResponse
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 	if pingInterval <= 0 {
 		pingInterval = DefaultPingInterval
@@ -146,8 +154,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	defer cleanup()
 
 	scanner.Split(bufio.ScanLines)
-	copyCodexSSEHeaders(c, resp)
-	SetEventStreamHeaders(c)
+	if !options.BufferedResponse {
+		copyCodexSSEHeaders(c, resp)
+		SetEventStreamHeaders(c)
+	}
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)
 
@@ -222,7 +232,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				defer writeMutex.Unlock()
 				// Only adapter payload writes block retry; headers and keepalive pings do not.
 				responseSize := c.Writer.Size()
-				ExtendWriteDeadline(c)
+				if !options.BufferedResponse {
+					ExtendWriteDeadline(c)
+				}
 				dataHandler(data, sr)
 				if c.Writer.Size() > responseSize {
 					payloadSent = true

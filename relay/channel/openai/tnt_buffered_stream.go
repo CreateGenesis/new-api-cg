@@ -50,7 +50,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	var streamErr *types.NewAPIError
 	info.RequireStreamProtocolEnd()
-	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, result *helper.StreamResult) {
+	streamRetryErr := helper.StreamScannerHandlerWithOptions(c, resp, info, helper.StreamScannerOptions{BufferedResponse: true}, func(data string, result *helper.StreamResult) {
 		var errorResp dto.OpenAITextResponse
 		if err := common.UnmarshalJsonStr(data, &errorResp); err == nil {
 			if openAIError := errorResp.GetOpenAIError(); openAIError != nil && openAIError.Type != "" {

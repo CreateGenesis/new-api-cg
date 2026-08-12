@@ -1,22 +1,68 @@
 package relay
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
 	"math"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type failAfterWriteResponseWriter struct {
+	gin.ResponseWriter
+	successfulWrites int
+	writes           int
+	err              error
+}
+
+type closeAwareStreamBody struct {
+	first  []byte
+	served bool
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (b *closeAwareStreamBody) Read(data []byte) (int, error) {
+	if !b.served {
+		b.served = true
+		return copy(data, b.first), nil
+	}
+	<-b.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (b *closeAwareStreamBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func (w *failAfterWriteResponseWriter) Write(data []byte) (int, error) {
+	w.writes++
+	if w.writes > w.successfulWrites {
+		return 0, w.err
+	}
+	return w.ResponseWriter.Write(data)
+}
 
 func TestChannelOutputRecorderKeepsEmptyStreamUncommitted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -144,6 +190,129 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 	assert.Greater(t, usage.CompletionTokens, 0)
 	assert.NotContains(t, response.Body.String(), "\"usage\"")
 	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
+}
+
+func TestChannelOutputRecorderTreatsCommittedWriteFailureAsClientDisconnect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	connectionReset := errors.New("write: connection reset by peer")
+	failingWriter := &failAfterWriteResponseWriter{
+		ResponseWriter:   c.Writer,
+		successfulWrites: 1,
+		err:              connectionReset,
+	}
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		IsStream:        true,
+		OriginModelName: "kimi-k3",
+		StreamStatus:    relaycommon.NewStreamStatus(),
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				KimiK3OfficialCompatibility: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(failingWriter, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	c.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.Contains(t, response.Body.String(), "first")
+
+	_, err = recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n")
+	require.ErrorIs(t, err, connectionReset)
+	require.Nil(t, recorder.finish(c, info, &dto.Usage{CompletionTokens: 1, TotalTokens: 1}))
+	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.Snapshot().EndReason)
+	assert.NotContains(t, response.Body.String(), "second")
+}
+
+func TestChannelOutputRecorderHandlesTCPResetAfterVisibleStreamOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousStreamingTimeout })
+	type handlerResult struct {
+		policyErr  *types.NewAPIError
+		endReason  relaycommon.StreamEndReason
+		upstreamID int
+	}
+	resultChan := make(chan handlerResult, 1)
+	upstreamClosed := make(chan struct{})
+
+	router := gin.New()
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		info := &relaycommon.RelayInfo{
+			RelayFormat:     types.RelayFormatOpenAI,
+			RelayMode:       relayconstant.RelayModeChatCompletions,
+			IsStream:        true,
+			OriginModelName: "kimi-k3",
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "kimi-k3",
+				ChannelOtherSettings: dto.ChannelOtherSettings{
+					KimiK3OfficialCompatibility: true,
+				},
+			},
+		}
+		recorder := newChannelOutputRecorder(c.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+		c.Writer = recorder
+		upstreamBody := &closeAwareStreamBody{
+			first:  []byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n"),
+			closed: upstreamClosed,
+		}
+		resp := &http.Response{Body: upstreamBody}
+		_ = helper.StreamScannerHandler(c, resp, info, func(data string, result *helper.StreamResult) {
+			if err := helper.StringData(c, data); err != nil {
+				result.Error(err)
+			}
+		})
+		_, _ = recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after-reset\"}}]}\n\n")
+		policyErr := recorder.finish(c, info, &dto.Usage{CompletionTokens: 1, TotalTokens: 1})
+		resultChan <- handlerResult{
+			policyErr:  policyErr,
+			endReason:  info.StreamStatus.Snapshot().EndReason,
+			upstreamID: info.ReceivedResponseCount,
+		}
+	})
+
+	server := httptest.NewUnstartedServer(router)
+	server.EnableHTTP2 = false
+	server.Start()
+	t.Cleanup(server.Close)
+	address := server.Listener.Addr().String()
+	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
+	require.NoError(t, err)
+	tcpConnection := connection.(*net.TCPConn)
+	request := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n", address)
+	_, err = io.WriteString(tcpConnection, request)
+	require.NoError(t, err)
+
+	reader := bufio.NewReader(tcpConnection)
+	visibleOutput := false
+	for !visibleOutput {
+		line, readErr := reader.ReadString('\n')
+		require.NoError(t, readErr)
+		visibleOutput = strings.Contains(line, "first")
+	}
+	require.NoError(t, tcpConnection.SetLinger(0))
+	require.NoError(t, tcpConnection.Close())
+
+	select {
+	case <-upstreamClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream body was not closed after the client reset")
+	}
+	select {
+	case result := <-resultChan:
+		require.Nil(t, result.policyErr)
+		assert.Equal(t, relaycommon.StreamEndReasonClientGone, result.endReason)
+		assert.Equal(t, 1, result.upstreamID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay handler did not return after the client reset")
+	}
 }
 
 func TestChannelOutputRecorderPatchesHeldStreamUsageAfterEstimation(t *testing.T) {
