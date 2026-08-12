@@ -145,6 +145,49 @@ func TestOaiChatBufferedStreamHandlerAggregatesTextToolsUsageAndFinishReason(t *
 	assert.JSONEq(t, `{"q":"Provider"}`, toolCalls[0].Function.Arguments)
 }
 
+func TestOaiChatBufferedStreamHandlerStripsTNTJSONFences(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousStreamingTimeout })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		IsStream:    false,
+		Request: &dto.GeneralOpenAIRequest{
+			ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
+		},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				TNTTencentOpenAIConversion: true,
+			},
+		},
+	}
+	sse := strings.Join([]string{
+		"data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"```json\\n{\\\"answer\\\":\"},\"finish_reason\":null}]}",
+		"data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"true}\\n```\"},\"finish_reason\":null}]}",
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":123,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}
+
+	_, apiErr := OaiChatBufferedStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+
+	var output dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &output))
+	require.Len(t, output.Choices, 1)
+	assert.Equal(t, `{"answer":true}`, output.Choices[0].Message.StringContent())
+}
+
 func TestOpenaiHandlerReturnsSanitizedTNTNonStreamResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -171,4 +214,116 @@ func TestOpenaiHandlerReturnsSanitizedTNTNonStreamResponse(t *testing.T) {
 	choices := output["choices"].([]any)
 	message := choices[0].(map[string]any)["message"].(map[string]any)
 	assert.Equal(t, "AI Assistant from Provider", message["content"])
+}
+
+func TestTNTJSONFenceStreamFilterUsesBoundedState(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		Request: &dto.GeneralOpenAIRequest{
+			ResponseFormat: &dto.ResponseFormat{Type: "json_schema"},
+		},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{TNTTencentOpenAIConversion: true},
+		},
+	}
+	filter := newTNTJSONFenceStreamFilter(info)
+	require.NotNil(t, filter)
+
+	inputs := []struct {
+		content      string
+		finishReason *string
+		want         string
+	}{
+		{content: "`", want: ""},
+		{content: "``js", want: ""},
+		{content: "on\r", want: ""},
+		{content: "\n{\"answer\":\"", want: "{\"answer\":\""},
+		{content: strings.Repeat("x", 1024), want: strings.Repeat("x", 1024)},
+		{content: "ok\"}\n`", want: "ok\"}"},
+		{content: "``\r\n", finishReason: pointer("stop"), want: ""},
+	}
+	for _, input := range inputs {
+		chunk := &dto.ChatCompletionsStreamResponse{Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Index:        0,
+			FinishReason: input.finishReason,
+		}}}
+		chunk.Choices[0].Delta.SetContentString(input.content)
+		filter.Filter(chunk)
+		assert.Equal(t, input.want, chunk.Choices[0].Delta.GetContentString())
+		if choice := filter.choices[0]; choice != nil {
+			assert.LessOrEqual(t, len(choice.pending), len("\r\n```\r\n"))
+		}
+	}
+}
+
+func TestTNTJSONFenceStreamFilterDisablesItselfWhenOpeningDoesNotMatch(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		Request: &dto.GeneralOpenAIRequest{ResponseFormat: &dto.ResponseFormat{Type: "json_object"}},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{TNTTencentOpenAIConversion: true},
+		},
+	}
+	filter := newTNTJSONFenceStreamFilter(info)
+	require.NotNil(t, filter)
+
+	first := &dto.ChatCompletionsStreamResponse{Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: 0}}}
+	first.Choices[0].Delta.SetContentString("``not-json")
+	filter.Filter(first)
+	assert.Equal(t, "``not-json", first.Choices[0].Delta.GetContentString())
+	assert.Equal(t, tntJSONFencePassThrough, filter.choices[0].state)
+
+	second := &dto.ChatCompletionsStreamResponse{Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: 0}}}
+	second.Choices[0].Delta.SetContentString("```json must stay")
+	filter.Filter(second)
+	assert.Equal(t, "```json must stay", second.Choices[0].Delta.GetContentString())
+}
+
+func TestTNTJSONFenceStreamFilterOnlyAppliesToStructuredOutputRequests(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		Request: &dto.GeneralOpenAIRequest{},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{TNTTencentOpenAIConversion: true},
+		},
+	}
+	assert.Nil(t, newTNTJSONFenceStreamFilter(info))
+
+	responsesText, err := common.Marshal(map[string]any{
+		"format": map[string]any{"type": "json_schema", "name": "answer", "schema": map[string]any{"type": "object"}},
+	})
+	require.NoError(t, err)
+	info.Request = &dto.OpenAIResponsesRequest{Text: responsesText}
+	assert.NotNil(t, newTNTJSONFenceStreamFilter(info))
+
+	outputFormat, err := common.Marshal(map[string]any{"type": "json_object"})
+	require.NoError(t, err)
+	info.Request = &dto.ClaudeRequest{OutputFormat: outputFormat}
+	assert.NotNil(t, newTNTJSONFenceStreamFilter(info))
+}
+
+func pointer[T any](value T) *T {
+	return &value
+}
+
+func TestOpenaiHandlerStripsTNTJSONFencesFromNonStreamResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		Request:     &dto.GeneralOpenAIRequest{ResponseFormat: &dto.ResponseFormat{Type: "json_object"}},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName:    "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{TNTTencentOpenAIConversion: true},
+		},
+	}
+	body := "{\"id\":\"chat_1\",\"object\":\"chat.completion\",\"created\":123,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"answer\\\":true}\\n```\\n\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}"
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+
+	_, apiErr := OpenaiHandler(c, info, resp)
+	require.Nil(t, apiErr)
+
+	var output dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &output))
+	require.Len(t, output.Choices, 1)
+	assert.Equal(t, `{"answer":true}`, output.Choices[0].Message.StringContent())
 }

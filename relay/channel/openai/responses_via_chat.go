@@ -130,6 +130,8 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if err := relayconvert.SanitizeTNTTencentChatResponse(&chatResp); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
+		jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
+		jsonFenceFilter.FilterResponse(&chatResp)
 	}
 	if info.IsKimiK3OfficialCompatibility() {
 		if matched := relayconvert.ApplyKimiK3StopToChatResponse(&chatResp, relayconvert.KimiK3StopSequencesFromRequest(info.Request)); matched != "" {
@@ -185,6 +187,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	streamErr := (*types.NewAPIError)(nil)
 	sequenceNumber := 0
 	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
+	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
 	if info.IsKimiK3OfficialCompatibility() {
 		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
 	}
@@ -266,6 +269,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if info.IsTNTTencentOpenAIConversion() {
 			relayconvert.SanitizeTNTTencentChatStreamChunk(&chunk)
 		}
+		jsonFenceFilter.Filter(&chunk)
 		stopFilter.Filter(&chunk)
 		if matched := stopFilter.MatchedSequence(); matched != "" {
 			info.KimiK3MatchedStopSequence = matched

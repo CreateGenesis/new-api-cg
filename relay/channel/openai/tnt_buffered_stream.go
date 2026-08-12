@@ -33,6 +33,187 @@ type bufferedChatStream struct {
 	choices map[int]*bufferedChatChoice
 }
 
+const tntJSONOpeningFence = "```json"
+
+var tntJSONClosingFences = []string{
+	"```", "```\n", "```\r\n",
+	"\n```", "\n```\n", "\n```\r\n",
+	"\r\n```", "\r\n```\n", "\r\n```\r\n",
+}
+
+type tntJSONFenceStreamFilter struct {
+	choices map[int]*tntJSONFenceChoiceFilter
+}
+
+type tntJSONFenceChoiceFilter struct {
+	state   uint8
+	pending string
+}
+
+const (
+	tntJSONFenceOpening uint8 = iota
+	tntJSONFenceOpeningLineEnd
+	tntJSONFenceBody
+	tntJSONFencePassThrough
+)
+
+func newTNTJSONFenceStreamFilter(info *relaycommon.RelayInfo) *tntJSONFenceStreamFilter {
+	if info == nil || !info.IsTNTTencentOpenAIConversion() || !isTNTJSONResponseRequest(info.Request) {
+		return nil
+	}
+	return &tntJSONFenceStreamFilter{choices: make(map[int]*tntJSONFenceChoiceFilter)}
+}
+
+func isTNTJSONResponseRequest(request dto.Request) bool {
+	switch typed := request.(type) {
+	case *dto.GeneralOpenAIRequest:
+		return typed != nil && typed.ResponseFormat != nil && isTNTJSONResponseFormatType(typed.ResponseFormat.Type)
+	case *dto.ClaudeRequest:
+		if typed == nil {
+			return false
+		}
+		raw := typed.ResponseFormat
+		if len(raw) == 0 {
+			raw = typed.OutputFormat
+		}
+		var format dto.ResponseFormat
+		return common.Unmarshal(raw, &format) == nil && isTNTJSONResponseFormatType(format.Type)
+	case *dto.OpenAIResponsesRequest:
+		if typed == nil {
+			return false
+		}
+		var text struct {
+			Format dto.ResponseFormat `json:"format"`
+		}
+		return common.Unmarshal(typed.Text, &text) == nil && isTNTJSONResponseFormatType(text.Format.Type)
+	default:
+		return false
+	}
+}
+
+func isTNTJSONResponseFormatType(formatType string) bool {
+	return formatType == "json_object" || formatType == "json_schema"
+}
+
+func (f *tntJSONFenceStreamFilter) Filter(chunk *dto.ChatCompletionsStreamResponse) {
+	if f == nil || chunk == nil {
+		return
+	}
+	for index := range chunk.Choices {
+		choice := &chunk.Choices[index]
+		filter := f.choices[choice.Index]
+		if filter == nil {
+			filter = &tntJSONFenceChoiceFilter{}
+			f.choices[choice.Index] = filter
+		}
+		content := ""
+		if choice.Delta.Content != nil {
+			content = *choice.Delta.Content
+		}
+		filtered := filter.write(content)
+		if choice.FinishReason != nil {
+			filtered += filter.finish()
+			delete(f.choices, choice.Index)
+		}
+		if choice.Delta.Content != nil || filtered != "" {
+			choice.Delta.SetContentString(filtered)
+		}
+	}
+}
+
+func (f *tntJSONFenceStreamFilter) FilterResponse(response *dto.OpenAITextResponse) {
+	if f == nil || response == nil {
+		return
+	}
+	for index := range response.Choices {
+		content := response.Choices[index].Message.StringContent()
+		if content == "" && !response.Choices[index].Message.IsStringContent() {
+			continue
+		}
+		filter := &tntJSONFenceChoiceFilter{}
+		response.Choices[index].Message.SetStringContent(filter.write(content) + filter.finish())
+	}
+}
+
+func (f *tntJSONFenceChoiceFilter) write(content string) string {
+	switch f.state {
+	case tntJSONFenceOpening:
+		f.pending += content
+		if len(f.pending) < len(tntJSONOpeningFence) {
+			if strings.HasPrefix(tntJSONOpeningFence, f.pending) {
+				return ""
+			}
+			f.state = tntJSONFencePassThrough
+			output := f.pending
+			f.pending = ""
+			return output
+		}
+		if !strings.HasPrefix(f.pending, tntJSONOpeningFence) {
+			f.state = tntJSONFencePassThrough
+			output := f.pending
+			f.pending = ""
+			return output
+		}
+		content = f.pending[len(tntJSONOpeningFence):]
+		f.pending = ""
+		f.state = tntJSONFenceOpeningLineEnd
+		return f.write(content)
+	case tntJSONFenceOpeningLineEnd:
+		f.pending += content
+		if f.pending == "" || f.pending == "\r" {
+			return ""
+		}
+		if strings.HasPrefix(f.pending, "\r\n") {
+			content = f.pending[2:]
+		} else if strings.HasPrefix(f.pending, "\n") {
+			content = f.pending[1:]
+		} else {
+			content = f.pending
+		}
+		f.pending = ""
+		f.state = tntJSONFenceBody
+		return f.write(content)
+	case tntJSONFenceBody:
+		candidate := f.pending + content
+		keep := 0
+		for length := 1; length <= len(candidate); length++ {
+			suffix := candidate[len(candidate)-length:]
+			for _, fence := range tntJSONClosingFences {
+				if strings.HasPrefix(fence, suffix) {
+					keep = length
+					break
+				}
+			}
+		}
+		f.pending = candidate[len(candidate)-keep:]
+		return candidate[:len(candidate)-keep]
+	default:
+		return content
+	}
+}
+
+func (f *tntJSONFenceChoiceFilter) finish() string {
+	defer func() {
+		f.pending = ""
+		f.state = tntJSONFencePassThrough
+	}()
+	switch f.state {
+	case tntJSONFenceOpening:
+		return f.pending
+	case tntJSONFenceOpeningLineEnd:
+		return f.pending
+	case tntJSONFenceBody:
+		for _, fence := range tntJSONClosingFences {
+			if f.pending == fence {
+				return ""
+			}
+		}
+		return f.pending
+	default:
+		return ""
+	}
+}
+
 func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -40,6 +221,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	defer service.CloseResponseBodyGracefully(resp)
 
 	buffered := &bufferedChatStream{choices: make(map[int]*bufferedChatChoice)}
+	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
 	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
 	if info.IsKimiK3OfficialCompatibility() {
 		finishReason := "stop"
@@ -68,6 +250,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		if info.IsTNTTencentOpenAIConversion() {
 			relayconvert.SanitizeTNTTencentChatStreamChunk(&chunk)
 		}
+		jsonFenceFilter.Filter(&chunk)
 		stopFilter.Filter(&chunk)
 		if matched := stopFilter.MatchedSequence(); matched != "" {
 			info.KimiK3MatchedStopSequence = matched
@@ -104,7 +287,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	return OpenaiHandler(c, info, synthetic)
 }
 
-func sanitizeTNTStreamData(info *relaycommon.RelayInfo, data string) (string, error) {
+func sanitizeTNTStreamData(info *relaycommon.RelayInfo, filter *tntJSONFenceStreamFilter, data string) (string, error) {
 	if !info.IsTNTTencentOpenAIConversion() || data == "" {
 		return data, nil
 	}
@@ -113,6 +296,7 @@ func sanitizeTNTStreamData(info *relaycommon.RelayInfo, data string) (string, er
 		return "", err
 	}
 	relayconvert.SanitizeTNTTencentChatStreamChunk(&chunk)
+	filter.Filter(&chunk)
 	encoded, err := common.Marshal(chunk)
 	if err != nil {
 		return "", err

@@ -99,7 +99,7 @@ func TestVisibleResponseExtractionIgnoresReasoningToolsAndGeminiThoughts(t *test
 	assert.False(t, thoughtMatcher.matched)
 }
 
-func TestResponsesCompletedEventRemainsVisibleToMatcherAfterReasoningOutput(t *testing.T) {
+func TestResponsesReasoningCommitsBeforeLaterVisibleContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -109,9 +109,10 @@ func TestResponsesCompletedEventRemainsVisibleToMatcherAfterReasoningOutput(t *t
 
 	_, err := recorder.Write([]byte("data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}\n\n"))
 	require.NoError(t, err)
+	assert.Contains(t, response.Body.String(), "thinking")
 	_, err = recorder.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"blocked\"}]}]}}\n\n"))
-	require.ErrorIs(t, err, errResponseContentMatched)
-	assert.Empty(t, response.Body.String())
+	require.NoError(t, err)
+	assert.Contains(t, response.Body.String(), "blocked")
 }
 
 func TestChannelOutputRecorderRejectsMatchedNonStreamWithoutWritingBody(t *testing.T) {

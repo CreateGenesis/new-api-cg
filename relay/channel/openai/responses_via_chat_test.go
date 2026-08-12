@@ -270,6 +270,41 @@ func TestOaiChatToResponsesStreamHandlerRestoresTNTRequestMetadata(t *testing.T)
 	assert.Len(t, completedResponse["tools"], 1)
 }
 
+func TestOaiChatToResponsesStreamHandlerStripsTNTJSONFences(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"```json\\n\"},\"finish_reason\":null}]}",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"{\"answer\":true}"},"finish_reason":null}]}`,
+		"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n```\"},\"finish_reason\":null}]}",
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	info.ChannelMeta.ChannelOtherSettings.TNTTencentOpenAIConversion = true
+	info.ChannelMeta.UpstreamModelName = "kimi-k3"
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	text, err := common.Marshal(map[string]any{
+		"format": map[string]any{"type": "json_object"},
+	})
+	require.NoError(t, err)
+	info.Request = &dto.OpenAIResponsesRequest{Model: "kimi-k3", Text: text}
+
+	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+	assert.Contains(t, got, `\"answer\":true`)
+	assert.NotContains(t, got, "```")
+}
+
 func TestOaiChatToResponsesStreamHandlerDoesNotApplyTNTEnvelopeWithoutFlag(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)

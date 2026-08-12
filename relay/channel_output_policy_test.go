@@ -226,6 +226,98 @@ func TestChannelOutputRecorderCommitsKimiReasoningImmediately(t *testing.T) {
 	assert.True(t, recorder.committed)
 }
 
+func TestChannelOutputRecorderCommitsNonVisibleSemanticOutputImmediately(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    types.RelayFormat
+		relayMode int
+		event     string
+		want      string
+	}{
+		{
+			name:      "OpenAI reasoning",
+			format:    types.RelayFormatOpenAI,
+			relayMode: relayconstant.RelayModeChatCompletions,
+			event:     `{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`,
+			want:      "thinking",
+		},
+		{
+			name:      "OpenAI tool call",
+			format:    types.RelayFormatOpenAI,
+			relayMode: relayconstant.RelayModeChatCompletions,
+			event:     `{"choices":[{"delta":{"tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]}}]}`,
+			want:      "lookup",
+		},
+		{
+			name:      "Responses reasoning",
+			format:    types.RelayFormatOpenAIResponses,
+			relayMode: relayconstant.RelayModeResponses,
+			event:     `{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`,
+			want:      "thinking",
+		},
+		{
+			name:      "Responses tool call",
+			format:    types.RelayFormatOpenAIResponses,
+			relayMode: relayconstant.RelayModeResponses,
+			event:     `{"type":"response.function_call_arguments.delta","delta":"{}"}`,
+			want:      "function_call",
+		},
+		{
+			name:   "Claude thinking",
+			format: types.RelayFormatClaude,
+			event:  `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"thinking"}}`,
+			want:   "thinking",
+		},
+		{
+			name:   "Claude tool use",
+			format: types.RelayFormatClaude,
+			event:  `{"type":"content_block_start","content_block":{"type":"tool_use","name":"lookup","input":{}}}`,
+			want:   "lookup",
+		},
+		{
+			name:   "Gemini thought",
+			format: types.RelayFormatGemini,
+			event:  `{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true}]}}]}`,
+			want:   "thinking",
+		},
+		{
+			name:   "Gemini function call",
+			format: types.RelayFormatGemini,
+			event:  `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]}}]}`,
+			want:   "lookup",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			response := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(response)
+			info := &relaycommon.RelayInfo{
+				RelayFormat:     test.format,
+				RelayMode:       test.relayMode,
+				IsStream:        true,
+				OriginModelName: "test-model",
+				ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+			}
+			recorder := newChannelOutputRecorder(
+				ctx.Writer,
+				info,
+				true,
+				responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
+				1,
+				64*1024,
+			)
+			ctx.Writer = recorder
+
+			_, err := recorder.WriteString("data: " + test.event + "\n\n")
+			require.NoError(t, err)
+			assert.True(t, recorder.committed)
+			assert.Contains(t, response.Body.String(), test.want)
+		})
+	}
+}
+
 func TestChannelOutputRecorderKeepsKimiWhitespaceContentUnderPrefixInspection(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
@@ -261,6 +353,39 @@ func TestChannelOutputRecorderKeepsKimiWhitespaceContentUnderPrefixInspection(t 
 	_, err = recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"[内容已过滤]\"}}]}\n\n")
 	require.ErrorIs(t, err, errResponseContentMatched)
 	assert.Empty(t, response.Body.String())
+}
+
+func TestChannelOutputRecorderReleasesContentAsSoonAsNoRuleCanMatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		IsStream:        true,
+		OriginModelName: "test-model",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+	}
+	recorder := newChannelOutputRecorder(
+		ctx.Writer,
+		info,
+		false,
+		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "内容已过滤"),
+		1,
+		64*1024,
+	)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"内\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.False(t, recorder.committed)
+	assert.Empty(t, response.Body.String())
+
+	_, err = recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"容正常\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.True(t, recorder.committed)
+	assert.Contains(t, response.Body.String(), `"content":"内"`)
+	assert.Contains(t, response.Body.String(), `"content":"容正常"`)
 }
 
 func TestChannelOutputRecorderTreatsCommittedWriteFailureAsClientDisconnect(t *testing.T) {

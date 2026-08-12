@@ -192,7 +192,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamData string
 	var lastStreamDataSent bool
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
-	immediateStreamDelivery := info.IsKimiK3OfficialCompatibility()
+	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
 	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
 	if info.IsKimiK3OfficialCompatibility() {
 		finishReason := "stop"
@@ -218,7 +218,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			lastStreamDataSent = true
 		}
 		var sanitizeErr error
-		data, sanitizeErr = sanitizeTNTStreamData(info, data)
+		data, sanitizeErr = sanitizeTNTStreamData(info, jsonFenceFilter, data)
 		if sanitizeErr != nil {
 			sr.Error(sanitizeErr)
 			return
@@ -255,7 +255,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			lastStreamData = data
 			lastStreamDataSent = false
-			holdForFinal := !immediateStreamDelivery || finished || gjson.Get(data, "usage").IsObject()
+			holdForFinal := gjson.Get(data, "usage").IsObject() && !info.ShouldIncludeUsage &&
+				gjson.Get(data, "choices.0.delta.content").String() == "" &&
+				gjson.Get(data, "choices.0.delta.reasoning_content").String() == "" &&
+				gjson.Get(data, "choices.0.delta.reasoning").String() == ""
 			if !holdForFinal {
 				if err := HandleStreamFormat(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 					if helper.HandleStreamClientDisconnect(c, info, sr, err) {
@@ -354,6 +357,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if err := relayconvert.SanitizeTNTTencentChatResponse(&simpleResponse); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
+		jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
+		jsonFenceFilter.FilterResponse(&simpleResponse)
 	}
 	stopResponseFiltered := false
 	if info.IsKimiK3OfficialCompatibility() {

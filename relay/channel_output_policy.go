@@ -31,7 +31,6 @@ type channelOutputRecorder struct {
 	model                string
 	stream               bool
 	retryZeroOutput      bool
-	kimiK3Compatibility  bool
 	multiplier           float64
 	bufferLimit          int
 	status               int
@@ -66,7 +65,6 @@ func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.Relay
 		recorder.relayMode = info.RelayMode
 		recorder.model = simulatedModelCacheModelName(info)
 		recorder.stream = info.IsStream
-		recorder.kimiK3Compatibility = info.IsKimiK3OfficialCompatibility()
 	}
 	return recorder
 }
@@ -224,8 +222,8 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 		w.effectiveOutput = true
 	}
 	observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, true)
-	if w.kimiK3Compatibility && effectiveOutput && w.contentMatcher != nil && !w.contentMatcher.hasVisibleText() &&
-		isKimiK3ImmediateStreamOutput(w.format, payload) {
+	if effectiveOutput && w.contentMatcher != nil && !w.contentMatcher.hasVisibleText() &&
+		isImmediateNonVisibleStreamOutput(w.format, payload) {
 		w.contentMatcher.disable()
 	}
 	if w.contentMatcher != nil && w.contentMatcher.matched {
@@ -535,7 +533,7 @@ func observeChannelOutputPayload(format types.RelayFormat, relayMode int, payloa
 	}
 }
 
-func isKimiK3ImmediateStreamOutput(format types.RelayFormat, payload map[string]any) bool {
+func isImmediateNonVisibleStreamOutput(format types.RelayFormat, payload map[string]any) bool {
 	switch format {
 	case types.RelayFormatOpenAI:
 		choices, _ := payload["choices"].([]any)
