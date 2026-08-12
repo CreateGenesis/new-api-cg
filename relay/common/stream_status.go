@@ -1,6 +1,8 @@
 package common
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -75,9 +77,16 @@ func (s *StreamStatus) MarkClientGone(err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previousClientGone := s.EndReason == StreamEndReasonClientGone
 	s.EndReason = StreamEndReasonClientGone
-	s.EndError = err
+	if !previousClientGone || (err != nil && (s.EndError == nil || (isContextCompletionError(s.EndError) && !isContextCompletionError(err)))) {
+		s.EndError = err
+	}
 	s.endSet = true
+}
+
+func isContextCompletionError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (s *StreamStatus) RequireProtocolEnd() {

@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -31,6 +32,34 @@ func TestStreamStatus_MarkClientGone_OverridesEarlierEndReason(t *testing.T) {
 	snapshot := s.Snapshot()
 	assert.Equal(t, StreamEndReasonClientGone, snapshot.EndReason)
 	assert.ErrorIs(t, snapshot.EndError, connectionReset)
+}
+
+func TestStreamStatus_MarkClientGone_PreservesConcreteWriteError(t *testing.T) {
+	t.Parallel()
+	connectionReset := fmt.Errorf("write tcp 172.30.0.4:3000->39.108.184.200:39440: write: connection reset by peer")
+
+	resetFirst := NewStreamStatus()
+	resetFirst.MarkClientGone(connectionReset)
+	resetFirst.MarkClientGone(context.Canceled)
+	resetFirst.MarkClientGone(nil)
+	assert.ErrorIs(t, resetFirst.Snapshot().EndError, connectionReset)
+
+	canceledFirst := NewStreamStatus()
+	canceledFirst.MarkClientGone(context.Canceled)
+	canceledFirst.MarkClientGone(connectionReset)
+	assert.ErrorIs(t, canceledFirst.Snapshot().EndError, connectionReset)
+}
+
+func TestStreamStatus_MarkClientGone_ReplacesUnrelatedEndError(t *testing.T) {
+	t.Parallel()
+	status := NewStreamStatus()
+	status.SetEndReason(StreamEndReasonScannerErr, fmt.Errorf("upstream read failed"))
+
+	status.MarkClientGone(context.Canceled)
+
+	snapshot := status.Snapshot()
+	assert.Equal(t, StreamEndReasonClientGone, snapshot.EndReason)
+	assert.ErrorIs(t, snapshot.EndError, context.Canceled)
 }
 
 func TestStreamStatus_SetEndReason_WithError(t *testing.T) {

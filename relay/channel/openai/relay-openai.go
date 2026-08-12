@@ -190,7 +190,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var toolCount int
 	var usage = &dto.Usage{}
 	var lastStreamData string
+	var lastStreamDataSent bool
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
+	immediateStreamDelivery := info.IsKimiK3OfficialCompatibility()
 	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
 	if info.IsKimiK3OfficialCompatibility() {
 		finishReason := "stop"
@@ -205,6 +207,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	info.RequireStreamProtocolEnd()
 	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if lastStreamData != "" && !lastStreamDataSent {
+			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				if helper.HandleStreamClientDisconnect(c, info, sr, err) {
+					return
+				}
+				common.SysLog("error handling stream format: " + err.Error())
+				sr.Error(err)
+			}
+			lastStreamDataSent = true
+		}
 		var sanitizeErr error
 		data, sanitizeErr = sanitizeTNTStreamData(info, data)
 		if sanitizeErr != nil {
@@ -228,25 +240,32 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			data = string(filtered)
 		}
-		if lastStreamData != "" {
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
-				sr.Error(err)
-			}
-		}
 		if len(data) > 0 {
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
 				secondLastStreamData = lastStreamData
 			}
 
-			lastStreamData = data
 			finished, err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount)
 			if err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
 			} else if finished && info.StreamStatus != nil {
 				info.StreamStatus.MarkProtocolEnd("finish_reason")
+			}
+			lastStreamData = data
+			lastStreamDataSent = false
+			holdForFinal := !immediateStreamDelivery || finished || gjson.Get(data, "usage").IsObject()
+			if !holdForFinal {
+				if err := HandleStreamFormat(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+					if helper.HandleStreamClientDisconnect(c, info, sr, err) {
+						return
+					}
+					common.SysLog("error handling stream format: " + err.Error())
+					sr.Error(err)
+					return
+				}
+				lastStreamDataSent = true
 			}
 		}
 	})
@@ -280,8 +299,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		if shouldSendLastResp && !lastStreamDataSent && !info.StreamStatus.IsClientGone() {
+			if err := sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				helper.HandleStreamClientDisconnect(c, info, nil, err)
+			}
 		}
 	}
 
@@ -292,7 +313,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	if !info.StreamStatus.IsClientGone() && (info.RelayFormat == types.RelayFormatOpenAI || !lastStreamDataSent) {
+		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	}
 
 	return usage, nil
 }

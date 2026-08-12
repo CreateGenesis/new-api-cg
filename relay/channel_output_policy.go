@@ -31,7 +31,7 @@ type channelOutputRecorder struct {
 	model                string
 	stream               bool
 	retryZeroOutput      bool
-	kimiK3VisibleOutput  bool
+	kimiK3Compatibility  bool
 	multiplier           float64
 	bufferLimit          int
 	status               int
@@ -66,7 +66,7 @@ func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.Relay
 		recorder.relayMode = info.RelayMode
 		recorder.model = simulatedModelCacheModelName(info)
 		recorder.stream = info.IsStream
-		recorder.kimiK3VisibleOutput = info.IsKimiK3OfficialCompatibility()
+		recorder.kimiK3Compatibility = info.IsKimiK3OfficialCompatibility()
 	}
 	return recorder
 }
@@ -219,10 +219,15 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 	if common.Unmarshal(data, &payload) != nil {
 		return nil
 	}
-	if observeOutput && w.observeEffectiveOutput(payload) {
+	effectiveOutput := observeOutput && w.observeEffectiveOutput(payload)
+	if effectiveOutput {
 		w.effectiveOutput = true
 	}
 	observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, true)
+	if w.kimiK3Compatibility && effectiveOutput && w.contentMatcher != nil && !w.contentMatcher.hasVisibleText() &&
+		isKimiK3ImmediateStreamOutput(w.format, payload) {
+		w.contentMatcher.disable()
+	}
 	if w.contentMatcher != nil && w.contentMatcher.matched {
 		return errResponseContentMatched
 	}
@@ -324,9 +329,6 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (w *channelOutputRecorder) observeEffectiveOutput(payload map[string]any) bool {
-	if w.kimiK3VisibleOutput {
-		return observeKimiK3VisibleOutputPayload(w.format, w.relayMode, payload, &w.outputText)
-	}
 	return observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText)
 }
 
@@ -440,7 +442,7 @@ func (w *channelOutputRecorder) markClientGone(c *gin.Context, info *relaycommon
 		return
 	}
 	err := w.deliveryErr
-	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+	if err == nil && c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 		err = c.Request.Context().Err()
 	}
 	info.StreamStatus.MarkClientGone(err)
@@ -533,120 +535,53 @@ func observeChannelOutputPayload(format types.RelayFormat, relayMode int, payloa
 	}
 }
 
-func observeKimiK3VisibleOutputPayload(format types.RelayFormat, relayMode int, payload map[string]any, output *strings.Builder) bool {
+func isKimiK3ImmediateStreamOutput(format types.RelayFormat, payload map[string]any) bool {
 	switch format {
 	case types.RelayFormatOpenAI:
-		return observeKimiK3OpenAIVisibleOutput(payload, relayMode, output)
+		choices, _ := payload["choices"].([]any)
+		for _, choiceValue := range choices {
+			choice, _ := choiceValue.(map[string]any)
+			for _, key := range []string{"message", "delta"} {
+				message, _ := choice[key].(map[string]any)
+				if hasOutputValue(message["reasoning"]) || hasOutputValue(message["reasoning_content"]) ||
+					hasOutputValue(message["thinking"]) || hasOutputValue(message["tool_calls"]) ||
+					hasOutputValue(message["function_call"]) {
+					return true
+				}
+			}
+		}
 	case types.RelayFormatOpenAIResponses:
-		return observeKimiK3ResponsesVisibleOutput(payload, output)
+		eventType, _ := payload["type"].(string)
+		if strings.Contains(eventType, "reasoning") || strings.Contains(eventType, "function_call") ||
+			strings.Contains(eventType, "computer_call") || strings.Contains(eventType, "image_generation") ||
+			strings.Contains(eventType, "code_interpreter") {
+			return true
+		}
 	case types.RelayFormatClaude:
-		return observeKimiK3ClaudeVisibleOutput(payload, output)
-	default:
-		return observeChannelOutputPayload(format, relayMode, payload, output)
-	}
-}
-
-func observeKimiK3OpenAIVisibleOutput(payload map[string]any, relayMode int, output *strings.Builder) bool {
-	choices, _ := payload["choices"].([]any)
-	effective := false
-	for _, choiceValue := range choices {
-		choice, _ := choiceValue.(map[string]any)
-		if choice == nil {
-			continue
-		}
-		if relayMode == relayconstant.RelayModeCompletions && appendOutputString(output, choice["text"]) {
-			effective = true
-		}
-		for _, key := range []string{"message", "delta"} {
-			value, _ := choice[key].(map[string]any)
-			if value == nil {
-				continue
+		for _, key := range []string{"content_block", "delta"} {
+			block, _ := payload[key].(map[string]any)
+			blockType, _ := block["type"].(string)
+			if blockType == "thinking" || blockType == "thinking_delta" || blockType == "redacted_thinking" ||
+				blockType == "tool_use" || blockType == "server_tool_use" {
+				return true
 			}
-			if observeSemanticOutputValue(value["content"], output) {
-				effective = true
-			}
-			for _, toolKey := range []string{"tool_calls", "function_call"} {
-				if hasOutputValue(value[toolKey]) {
-					appendOutputMarker(output, "tool")
-					effective = true
+		}
+	case types.RelayFormatGemini:
+		candidates, _ := payload["candidates"].([]any)
+		for _, candidateValue := range candidates {
+			candidate, _ := candidateValue.(map[string]any)
+			content, _ := candidate["content"].(map[string]any)
+			parts, _ := content["parts"].([]any)
+			for _, partValue := range parts {
+				part, _ := partValue.(map[string]any)
+				thought, _ := part["thought"].(bool)
+				if (thought && hasOutputValue(part["text"])) || hasOutputValue(part["functionCall"]) {
+					return true
 				}
 			}
 		}
 	}
-	return effective
-}
-
-func observeKimiK3ResponsesVisibleOutput(payload map[string]any, output *strings.Builder) bool {
-	effective := observeKimiK3ResponsesOutputItems(payload["output"], output)
-	if response, ok := payload["response"].(map[string]any); ok && observeKimiK3ResponsesOutputItems(response["output"], output) {
-		effective = true
-	}
-	eventType, _ := payload["type"].(string)
-	if strings.Contains(eventType, "output_text") && observeSemanticOutputValue(payload["delta"], output) {
-		effective = true
-	}
-	if strings.Contains(eventType, "function_call") || strings.Contains(eventType, "computer_call") {
-		appendOutputMarker(output, "tool")
-		effective = true
-	}
-	if item, ok := payload["item"].(map[string]any); ok && observeKimiK3ResponsesOutputItems([]any{item}, output) {
-		effective = true
-	}
-	return effective
-}
-
-func observeKimiK3ResponsesOutputItems(value any, output *strings.Builder) bool {
-	items, _ := value.([]any)
-	effective := false
-	for _, itemValue := range items {
-		item, _ := itemValue.(map[string]any)
-		itemType, _ := item["type"].(string)
-		switch itemType {
-		case "message":
-			if observeSemanticOutputValue(item["content"], output) {
-				effective = true
-			}
-		case "function_call", "custom_tool_call", "computer_call":
-			appendOutputMarker(output, "tool")
-			effective = true
-		}
-	}
-	return effective
-}
-
-func observeKimiK3ClaudeVisibleOutput(payload map[string]any, output *strings.Builder) bool {
-	effective := appendOutputString(output, payload["completion"])
-	if blocks, ok := payload["content"].([]any); ok {
-		for _, blockValue := range blocks {
-			block, _ := blockValue.(map[string]any)
-			if observeKimiK3ClaudeVisibleBlock(block, output) {
-				effective = true
-			}
-		}
-	}
-	for _, key := range []string{"content_block", "delta"} {
-		block, _ := payload[key].(map[string]any)
-		if observeKimiK3ClaudeVisibleBlock(block, output) {
-			effective = true
-		}
-	}
-	return effective
-}
-
-func observeKimiK3ClaudeVisibleBlock(block map[string]any, output *strings.Builder) bool {
-	if block == nil {
-		return false
-	}
-	blockType, _ := block["type"].(string)
-	switch blockType {
-	case "text", "text_delta":
-		return appendOutputString(output, block["text"])
-	case "tool_use", "server_tool_use":
-		appendOutputMarker(output, "tool")
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func observeOpenAIOutput(payload map[string]any, relayMode int, output *strings.Builder) bool {

@@ -192,6 +192,77 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
 }
 
+func TestChannelOutputRecorderCommitsKimiReasoningImmediately(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		IsStream:        true,
+		OriginModelName: "kimi-k3",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				KimiK3OfficialCompatibility: true,
+			},
+		},
+	}
+	info.ActivateKimiK3OfficialCompatibility()
+	recorder := newChannelOutputRecorder(
+		ctx.Writer,
+		info,
+		true,
+		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
+		1,
+		64*1024,
+	)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.Contains(t, response.Body.String(), "thinking")
+	assert.True(t, recorder.committed)
+}
+
+func TestChannelOutputRecorderKeepsKimiWhitespaceContentUnderPrefixInspection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		IsStream:        true,
+		OriginModelName: "kimi-k3",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				KimiK3OfficialCompatibility: true,
+			},
+		},
+	}
+	info.ActivateKimiK3OfficialCompatibility()
+	recorder := newChannelOutputRecorder(
+		ctx.Writer,
+		info,
+		true,
+		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
+		1,
+		64*1024,
+	)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"  \"}}]}\n\n")
+	require.NoError(t, err)
+	assert.False(t, recorder.committed)
+
+	_, err = recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"[内容已过滤]\"}}]}\n\n")
+	require.ErrorIs(t, err, errResponseContentMatched)
+	assert.Empty(t, response.Body.String())
+}
+
 func TestChannelOutputRecorderTreatsCommittedWriteFailureAsClientDisconnect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
@@ -413,7 +484,7 @@ func TestObserveChannelOutputPayloadRecognizesSupportedProtocols(t *testing.T) {
 	assert.False(t, observeChannelOutputPayload(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, empty, &output))
 }
 
-func TestKimiK3OfficialOutputPolicyRetriesReasoningOnlyResponses(t *testing.T) {
+func TestKimiK3OfficialOutputPolicyAcceptsReasoningOnlyResponses(t *testing.T) {
 	tests := []struct {
 		name      string
 		format    types.RelayFormat
@@ -444,8 +515,8 @@ func TestKimiK3OfficialOutputPolicyRetriesReasoningOnlyResponses(t *testing.T) {
 			var payload map[string]any
 			require.NoError(t, common.UnmarshalJsonStr(test.payload, &payload))
 			var output strings.Builder
-			assert.False(t, observeKimiK3VisibleOutputPayload(test.format, test.relayMode, payload, &output))
-			assert.Empty(t, output.String())
+			assert.True(t, observeChannelOutputPayload(test.format, test.relayMode, payload, &output))
+			assert.NotEmpty(t, output.String())
 		})
 	}
 }
@@ -481,7 +552,7 @@ func TestKimiK3OfficialOutputPolicyAcceptsVisibleTextAndTools(t *testing.T) {
 			var payload map[string]any
 			require.NoError(t, common.UnmarshalJsonStr(test.payload, &payload))
 			var output strings.Builder
-			assert.True(t, observeKimiK3VisibleOutputPayload(test.format, test.relayMode, payload, &output))
+			assert.True(t, observeChannelOutputPayload(test.format, test.relayMode, payload, &output))
 			assert.NotEmpty(t, output.String())
 		})
 	}
