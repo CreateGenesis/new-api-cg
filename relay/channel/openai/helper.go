@@ -52,6 +52,9 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		return fmt.Errorf("expected Claude stream responses, got %T", result.Value)
 	}
 	for _, resp := range claudeResponses {
+		if resp.Type == "message_delta" && resp.Delta != nil && info.KimiK3MatchedStopSequence != "" {
+			resp.Delta.StopSequence = &info.KimiK3MatchedStopSequence
+		}
 		helper.ClaudeData(c, *resp)
 	}
 	return nil

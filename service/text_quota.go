@@ -348,9 +348,10 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
-	recordMultiKeyOverloadUsage(ctx, relayInfo, originUsage)
-	recordUserRequestLimitUsage(ctx, relayInfo, originUsage)
-	billingUsage := effectiveBillingUsage(usage)
+	settlementUsage := prepareKimiK3OfficialBilling(relayInfo, usage)
+	recordMultiKeyOverloadUsage(ctx, relayInfo, settlementUsage)
+	recordUserRequestLimitUsage(ctx, relayInfo, settlementUsage)
+	billingUsage := effectiveBillingUsage(settlementUsage)
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}
@@ -430,7 +431,15 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
-	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
+	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), settlementUsage)
+	if relayInfo.KimiK3BillingAudit != nil {
+		adminInfo, ok := other["admin_info"].(map[string]interface{})
+		if !ok || adminInfo == nil {
+			adminInfo = make(map[string]interface{})
+			other["admin_info"] = adminInfo
+		}
+		adminInfo["kimi_k3_billing"] = relayInfo.KimiK3BillingAudit
+	}
 	if summary.CacheUsageValidationSplit {
 		AttachUsageNormalizationAudit(ctx, relayInfo, other, summary.UsageNormalization)
 	}

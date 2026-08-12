@@ -84,6 +84,10 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 }
 
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
+	return handleStreamResponseData(c, info, claudeInfo, nil, data)
+}
+
+func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter, data string) *types.NewAPIError {
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
@@ -93,41 +97,60 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
-	if claudeResponse.Type == "message_stop" && info != nil && info.StreamStatus != nil {
-		info.StreamStatus.MarkProtocolEnd("message_stop")
-	}
-	if claudeResponse.StopReason != "" {
-		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
-	}
-	if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
-		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
-	}
-	if info.RelayFormat == types.RelayFormatClaude {
-		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
-
-		if claudeResponse.Type == "message_start" {
-			// message_start, 获取usage
-			if claudeResponse.Message != nil {
-				info.UpstreamModelName = claudeResponse.Message.Model
+	for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
+		eventData := data
+		if stopFilter != nil {
+			encoded, marshalErr := common.Marshal(filteredResponse)
+			if marshalErr != nil {
+				return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
 			}
-		} else if claudeResponse.Type == "message_delta" {
-			// 确保 message_delta 的 usage 包含完整的 input_tokens 和 cache 相关字段
-			// 解决 AWS Bedrock 等上游返回的 message_delta 缺少这些字段的问题
-			if !shouldSkipClaudeMessageDeltaUsagePatch(info) {
-				data = patchClaudeMessageDeltaUsageData(data, buildMessageDeltaPatchUsage(&claudeResponse, claudeInfo))
+			eventData = string(encoded)
+		}
+		if filteredResponse.Type == "message_stop" && info != nil && info.StreamStatus != nil {
+			info.StreamStatus.MarkProtocolEnd("message_stop")
+		}
+		if filteredResponse.StopReason != "" {
+			maybeMarkClaudeRefusal(c, filteredResponse.StopReason)
+		}
+		if filteredResponse.Delta != nil && filteredResponse.Delta.StopReason != nil {
+			maybeMarkClaudeRefusal(c, *filteredResponse.Delta.StopReason)
+		}
+		if info.RelayFormat == types.RelayFormatClaude {
+			FormatClaudeResponseInfo(filteredResponse, nil, claudeInfo)
+
+			if filteredResponse.Type == "message_start" {
+				// message_start, 获取usage
+				if filteredResponse.Message != nil {
+					info.UpstreamModelName = filteredResponse.Message.Model
+					filteredResponse.Message.Model = info.DownstreamModelName(filteredResponse.Message.Model)
+					if stopFilter != nil || filteredResponse.Message.Model != info.UpstreamModelName {
+						encoded, marshalErr := common.Marshal(filteredResponse)
+						if marshalErr != nil {
+							return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
+						}
+						eventData = string(encoded)
+					}
+				}
+			} else if filteredResponse.Type == "message_delta" {
+				// 确保 message_delta 的 usage 包含完整的 input_tokens 和 cache 相关字段
+				// 解决 AWS Bedrock 等上游返回的 message_delta 缺少这些字段的问题
+				if !shouldSkipClaudeMessageDeltaUsagePatch(info) {
+					eventData = patchClaudeMessageDeltaUsageData(eventData, buildMessageDeltaPatchUsage(filteredResponse, claudeInfo))
+				}
 			}
-		}
-		helper.ClaudeChunkData(c, claudeResponse, data)
-	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		response := StreamResponseClaude2OpenAI(&claudeResponse)
+			helper.ClaudeChunkData(c, *filteredResponse, eventData)
+		} else if info.RelayFormat == types.RelayFormatOpenAI {
+			response := StreamResponseClaude2OpenAI(filteredResponse)
 
-		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
-			return nil
-		}
+			if !FormatClaudeResponseInfo(filteredResponse, response, claudeInfo) {
+				continue
+			}
+			response.Model = info.DownstreamModelName(response.Model)
 
-		err = helper.ObjectData(c, response)
-		if err != nil {
-			logger.LogError(c, "send_stream_response_failed: "+err.Error())
+			err = helper.ObjectData(c, response)
+			if err != nil {
+				logger.LogError(c, "send_stream_response_failed: "+err.Error())
+			}
 		}
 	}
 	return nil
@@ -183,9 +206,13 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
+	var stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter
+	if info.IsKimiK3OfficialCompatibility() {
+		stopFilter = relayconvert.NewKimiK3ClaudeStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	}
 	info.RequireStreamProtocolEnd()
 	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		err = HandleStreamResponseData(c, info, claudeInfo, data)
+		err = handleStreamResponseData(c, info, claudeInfo, stopFilter, data)
 		if err != nil {
 			sr.Stop(err)
 		}
@@ -210,6 +237,10 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	if info.IsKimiK3OfficialCompatibility() {
+		relayconvert.ApplyKimiK3StopToClaudeResponse(&claudeResponse, relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	}
+	claudeResponse.Model = info.DownstreamModelName(claudeResponse.Model)
 	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
 	if claudeInfo.Usage == nil {
 		claudeInfo.Usage = &dto.Usage{}
@@ -229,13 +260,21 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
+		openaiResponse.Model = info.DownstreamModelName(openaiResponse.Model)
 		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
 		responseData, err = common.Marshal(openaiResponse)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		responseData = data
+		if info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.UpstreamModelName {
+			responseData, err = common.Marshal(claudeResponse)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		} else {
+			responseData = data
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {

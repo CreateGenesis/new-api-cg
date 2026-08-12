@@ -143,12 +143,13 @@ func ConvertTNTTencentClaudeRequest(request *dto.ClaudeRequest) (*dto.GeneralOpe
 	}
 	stream := true
 	converted := &dto.GeneralOpenAIRequest{
-		Model:       request.Model,
-		Stream:      &stream,
-		MaxTokens:   request.MaxTokens,
-		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		TopK:        request.TopK,
+		Model:           request.Model,
+		Stream:          &stream,
+		MaxTokens:       request.MaxTokens,
+		ReasoningEffort: request.GetEfforts(),
+		Temperature:     request.Temperature,
+		TopP:            request.TopP,
+		TopK:            request.TopK,
 	}
 	if len(request.StopSequences) == 1 {
 		converted.Stop = request.StopSequences[0]
@@ -212,13 +213,16 @@ func ConvertTNTTencentResponsesRequest(request *dto.OpenAIResponsesRequest) (*dt
 	}
 	stream := true
 	converted := &dto.GeneralOpenAIRequest{
-		Model:       base.Model,
-		Messages:    base.Messages,
-		Stream:      &stream,
-		MaxTokens:   base.MaxCompletionTokens,
-		Temperature: base.Temperature,
-		TopP:        base.TopP,
-		ToolChoice:  base.ToolChoice,
+		Model:            base.Model,
+		Messages:         base.Messages,
+		Stream:           &stream,
+		MaxTokens:        base.MaxCompletionTokens,
+		ReasoningEffort:  base.ReasoningEffort,
+		Temperature:      base.Temperature,
+		TopP:             base.TopP,
+		ResponseFormat:   base.ResponseFormat,
+		ParallelTooCalls: base.ParallelTooCalls,
+		ToolChoice:       base.ToolChoice,
 	}
 	for _, tool := range base.Tools {
 		if tool.Type == "" || tool.Type == "function" {

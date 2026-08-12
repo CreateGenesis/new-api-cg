@@ -349,6 +349,7 @@ export const channelFormSchema = z
     proxy_fallback_direct: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     tnt_tencent_openai_conversion: z.boolean().optional(),
+    kimi_k3_official_compatibility: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -628,6 +629,16 @@ export const channelFormSchema = z
       addRequiredIssue(ctx, 'tnt_tencent_openai_conversion', message)
       addRequiredIssue(ctx, 'pass_through_body_enabled', message)
     }
+    if (
+      [1, 14, 25].includes(data.type) &&
+      data.kimi_k3_official_compatibility &&
+      data.pass_through_body_enabled
+    ) {
+      const message =
+        'Kimi K3 official compatibility cannot be enabled with request body passthrough.'
+      addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
+      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
+    }
     for (const fieldName of [
       'missing_output_token_multiplier',
       'simulated_model_cache_missing_input_token_multiplier',
@@ -832,6 +843,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   proxy_fallback_direct: false,
   pass_through_body_enabled: false,
   tnt_tencent_openai_conversion: false,
+  kimi_k3_official_compatibility: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -955,6 +967,7 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
   let tntTencentOpenAIConversion = false
+  let kimiK3OfficialCompatibility = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
   let disableStream = false
@@ -1011,6 +1024,9 @@ export function transformChannelToFormDefaults(
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       tntTencentOpenAIConversion =
         channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
+      kimiK3OfficialCompatibility =
+        [1, 14, 25].includes(channel.type) &&
+        parsed.kimi_k3_official_compatibility === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
       disableStream = parsed.disable_stream === true
@@ -1306,6 +1322,7 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
+    kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
@@ -1482,6 +1499,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if ('tnt_tencent_openai_conversion' in settingsObj) {
       delete settingsObj.tnt_tencent_openai_conversion
     }
+  }
+
+  if (
+    [1, 14, 25].includes(formData.type) &&
+    formData.kimi_k3_official_compatibility === true
+  ) {
+    settingsObj.kimi_k3_official_compatibility = true
+  } else if ('kimi_k3_official_compatibility' in settingsObj) {
+    delete settingsObj.kimi_k3_official_compatibility
   }
 
   settingsObj.disable_task_polling_sleep =

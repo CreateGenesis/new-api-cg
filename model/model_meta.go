@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 
 	"gorm.io/gorm"
 )
@@ -160,13 +162,15 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 	}
 
 	type row struct {
-		Model       string
-		ChannelType int
+		Model           string
+		ChannelType     int
+		ChannelSettings string
+		ModelMapping    string
 	}
 	var rows []row
 
 	query := DB.Table("abilities").
-		Select("abilities.model as model, channels.type as channel_type").
+		Select("abilities.model as model, channels.type as channel_type, channels.settings as channel_settings, channels.model_mapping as model_mapping").
 		Joins("JOIN channels ON abilities.channel_id = channels.id").
 		Where("abilities.model IN ? AND abilities.enabled = ? AND channels.status = ?", modelNames, true, common.ChannelStatusEnabled).
 		Order("COALESCE(abilities.priority, 0) DESC").
@@ -186,9 +190,47 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 		if _, ok := result[r.Model]; ok {
 			continue
 		}
-		result[r.Model] = r.ChannelType
+		channelType := r.ChannelType
+		if channelMapsModelToKimiK3Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
+			channelType = constant.ChannelTypeMoonshot
+		}
+		result[r.Model] = channelType
 	}
 	return result, nil
+}
+
+func channelMapsModelToKimiK3Official(channelType int, modelName string, settingsJSON string, modelMappingJSON string) bool {
+	switch channelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot:
+	default:
+		return false
+	}
+
+	var settings dto.ChannelOtherSettings
+	if strings.TrimSpace(settingsJSON) == "" || common.UnmarshalJsonStr(settingsJSON, &settings) != nil || !settings.KimiK3OfficialCompatibility {
+		return false
+	}
+
+	mappedModel := strings.TrimSpace(modelName)
+	if strings.TrimSpace(modelMappingJSON) != "" {
+		var mapping map[string]string
+		if common.UnmarshalJsonStr(modelMappingJSON, &mapping) != nil {
+			return false
+		}
+		visited := map[string]struct{}{mappedModel: {}}
+		for {
+			next := strings.TrimSpace(mapping[mappedModel])
+			if next == "" {
+				break
+			}
+			if _, exists := visited[next]; exists {
+				return false
+			}
+			visited[next] = struct{}{}
+			mappedModel = next
+		}
+	}
+	return mappedModel == "kimi-k3"
 }
 
 func SearchModels(keyword string, vendor string, status string, syncOfficial string, offset int, limit int) ([]*Model, int64, error) {

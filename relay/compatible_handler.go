@@ -46,6 +46,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
+	info.ActivateKimiK3OfficialCompatibility()
+	if info.IsKimiK3OfficialCompatibility() {
+		if err := relayconvert.NormalizeKimiK3ChatRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
 
 	includeUsage := true
 	// 判断用户是否需要返回使用情况
@@ -75,7 +81,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
-		!tntTencentConversion &&
+		!tntTencentConversion && !info.IsKimiK3OfficialCompatibility() &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -102,7 +108,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
 
-	if !tntTencentConversion && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.IsKimiK3OfficialCompatibility() && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())

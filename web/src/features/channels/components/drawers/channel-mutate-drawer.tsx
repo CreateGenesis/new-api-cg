@@ -869,6 +869,9 @@ export function ChannelMutateDrawer({
   const currentTNTTencentOpenAIConversion = form.watch(
     'tnt_tencent_openai_conversion'
   )
+  const currentKimiK3OfficialCompatibility = form.watch(
+    'kimi_k3_official_compatibility'
+  )
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
@@ -1215,6 +1218,7 @@ export function ChannelMutateDrawer({
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
     (currentType === 14 && currentTNTTencentOpenAIConversion) ||
+    ([1, 14, 25].includes(currentType) && currentKimiK3OfficialCompatibility) ||
     currentDisableTaskPollingSleep ||
     (currentType === 43 && currentDeepSeekV4RequestSanitizationEnabled) ||
     currentProxy?.trim() ||
@@ -5405,6 +5409,34 @@ export function ChannelMutateDrawer({
                                             'TNT Tencent-style OpenAI Conversion'
                                           )}
                                         </FormLabel>
+                                        <FormMessage />
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
+
+                              {[1, 14, 25].includes(currentType) && (
+                                <FormField
+                                  control={form.control}
+                                  name='kimi_k3_official_compatibility'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('Kimi K3 Official Compatibility')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Align mapped kimi-k3 requests, responses, and billing with the official K3 API.'
+                                          )}
+                                        </FormDescription>
                                         <FormMessage />
                                       </div>
                                       <FormControl>

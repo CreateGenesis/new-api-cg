@@ -182,6 +182,7 @@ export interface ChannelOtherSettings {
   disable_task_polling_sleep?: boolean
   deepseek_v4_request_sanitization?: boolean
   tnt_tencent_openai_conversion?: boolean
+  kimi_k3_official_compatibility?: boolean
   cache_usage_validation_split?: boolean
   retry_zero_output?: boolean
   disable_stream?: boolean

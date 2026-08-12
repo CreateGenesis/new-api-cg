@@ -293,3 +293,89 @@ func TestOaiChatToResponsesStreamHandlerDoesNotApplyTNTEnvelopeWithoutFlag(t *te
 	require.NotNil(t, usage)
 	assert.NotContains(t, recorder.Body.String(), `"sequence_number"`)
 }
+
+func TestOaiChatToResponsesHandlerRestoresKimiK3MetadataAndModel(t *testing.T) {
+	maxOutputTokens := uint(64)
+	temperature := 1.0
+	topP := 0.95
+	c, recorder, resp, info := newResponsesChatTestContext(t, `{
+		"id":"chatcmpl_1",
+		"object":"chat.completion",
+		"created":1710000000,
+		"model":"kimi-k3",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+	}`, false)
+	info.ChannelMeta.ChannelOtherSettings.KimiK3OfficialCompatibility = true
+	info.ChannelMeta.ChannelType = constant.ChannelTypeOpenAI
+	info.ChannelMeta.UpstreamModelName = "kimi-k3"
+	info.UpstreamModelName = "kimi-k3"
+	info.OriginModelName = "client-k3"
+	info.IsModelMapped = true
+	info.ActivateKimiK3OfficialCompatibility()
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.Request = &dto.OpenAIResponsesRequest{
+		Model:           "client-k3",
+		MaxOutputTokens: &maxOutputTokens,
+		Temperature:     &temperature,
+		TopP:            &topP,
+		Metadata:        []byte(`{"trace":"k3"}`),
+		Reasoning:       &dto.Reasoning{Effort: "high"},
+	}
+
+	usage, apiErr := OaiChatToResponsesHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+
+	var got struct {
+		Model           string            `json:"model"`
+		MaxOutputTokens uint              `json:"max_output_tokens"`
+		Temperature     float64           `json:"temperature"`
+		TopP            float64           `json:"top_p"`
+		Metadata        map[string]string `json:"metadata"`
+		Reasoning       *dto.Reasoning    `json:"reasoning"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &got))
+	assert.Equal(t, "client-k3", got.Model)
+	assert.Equal(t, maxOutputTokens, got.MaxOutputTokens)
+	assert.Equal(t, temperature, got.Temperature)
+	assert.Equal(t, topP, got.TopP)
+	assert.Equal(t, map[string]string{"trace": "k3"}, got.Metadata)
+	require.NotNil(t, got.Reasoning)
+	assert.Equal(t, "high", got.Reasoning.Effort)
+}
+
+func TestOaiChatToResponsesStreamHandlerRestoresKimiK3MetadataWithoutTNTEnvelope(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	maxOutputTokens := uint(64)
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	info.ChannelMeta.ChannelOtherSettings.KimiK3OfficialCompatibility = true
+	info.ChannelMeta.ChannelType = constant.ChannelTypeOpenAI
+	info.ChannelMeta.UpstreamModelName = "kimi-k3"
+	info.UpstreamModelName = "kimi-k3"
+	info.ActivateKimiK3OfficialCompatibility()
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.Request = &dto.OpenAIResponsesRequest{Model: "kimi-k3", MaxOutputTokens: &maxOutputTokens}
+
+	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+	assert.Equal(t, 2, strings.Count(got, `"max_output_tokens":64`))
+	assert.NotContains(t, got, `"sequence_number"`)
+	assert.NotContains(t, got, `"max_output_tokens":0`)
+}

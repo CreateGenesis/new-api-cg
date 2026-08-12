@@ -1207,6 +1207,16 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("tnt_tencent_openai_conversion and pass_through_body_enabled cannot both be enabled")
 		}
 	}
+	if channelOtherSettings.KimiK3OfficialCompatibility {
+		switch channel.Type {
+		case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot:
+		default:
+			return fmt.Errorf("kimi_k3_official_compatibility is only supported for OpenAI, Anthropic, and Moonshot channels")
+		}
+		if channelParams.PassThroughBodyEnabled {
+			return fmt.Errorf("kimi_k3_official_compatibility and pass_through_body_enabled cannot both be enabled")
+		}
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

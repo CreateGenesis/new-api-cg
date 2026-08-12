@@ -28,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/common_handler"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/types"
@@ -86,6 +87,19 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 			IncludeUsage: true,
 		}
 	}
+	if info.IsKimiK3OfficialCompatibility() {
+		aiRequest.ReasoningEffort = request.GetEfforts()
+		if len(request.ResponseFormat) > 0 {
+			var responseFormat dto.ResponseFormat
+			if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
+				return nil, fmt.Errorf("invalid response_format: %w", err)
+			}
+			aiRequest.ResponseFormat = &responseFormat
+		}
+		if err := relayconvert.NormalizeKimiK3ChatRequest(aiRequest); err != nil {
+			return nil, err
+		}
+	}
 	return a.ConvertOpenAIRequest(c, info, aiRequest)
 }
 
@@ -103,6 +117,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.IsKimiK3OfficialCompatibility() && info.RelayMode == relayconstant.RelayModeResponses {
+		return fmt.Sprintf("%s/v1/chat/completions", strings.TrimRight(info.ChannelBaseUrl, "/")), nil
+	}
 	if info.RelayMode == relayconstant.RelayModeRealtime {
 		if strings.HasPrefix(info.ChannelBaseUrl, "https://") {
 			baseUrl := strings.TrimPrefix(info.ChannelBaseUrl, "https://")
@@ -602,6 +619,16 @@ func detectImageMimeType(filename string) string {
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	if info.IsKimiK3OfficialCompatibility() {
+		converted, err := relayconvert.ResponsesRequestToChatCompletionsRequest(&request)
+		if err != nil {
+			return nil, err
+		}
+		if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
+			return nil, err
+		}
+		return converted, nil
+	}
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)
 	if effort != "" {
@@ -651,7 +678,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	case relayconstant.RelayModeRerank:
 		usage, err = common_handler.RerankHandler(c, info, resp)
 	case relayconstant.RelayModeResponses:
-		if info.IsStream {
+		if info.IsKimiK3OfficialCompatibility() {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+			if info.IsStream {
+				usage, err = OaiChatToResponsesStreamHandler(c, info, resp)
+			} else {
+				usage, err = OaiChatToResponsesHandler(c, info, resp)
+			}
+		} else if info.IsStream {
 			usage, err = OaiResponsesStreamHandler(c, info, resp)
 		} else {
 			usage, err = OaiResponsesHandler(c, info, resp)

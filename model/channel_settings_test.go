@@ -118,6 +118,40 @@ func TestChannelValidateSettingsScopesTNTTencentConversion(t *testing.T) {
 	})
 }
 
+func TestChannelValidateSettingsScopesKimiK3OfficialCompatibility(t *testing.T) {
+	for _, channelType := range []int{constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot} {
+		channel := &Channel{Type: channelType, OtherSettings: `{"kimi_k3_official_compatibility":true}`}
+		require.NoError(t, channel.ValidateSettings(), "channel type %d", channelType)
+	}
+
+	t.Run("rejects unsupported channel type", func(t *testing.T) {
+		channel := &Channel{Type: constant.ChannelTypeGemini, OtherSettings: `{"kimi_k3_official_compatibility":true}`}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported for OpenAI, Anthropic, and Moonshot")
+	})
+
+	t.Run("rejects body passthrough", func(t *testing.T) {
+		setting := `{"pass_through_body_enabled":true}`
+		channel := &Channel{
+			Type:          constant.ChannelTypeOpenAI,
+			Setting:       &setting,
+			OtherSettings: `{"kimi_k3_official_compatibility":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+
+	t.Run("allows TNT conversion on Anthropic channel", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"kimi_k3_official_compatibility":true,"tnt_tencent_openai_conversion":true}`,
+		}
+		require.NoError(t, channel.ValidateSettings())
+	})
+}
+
 func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,

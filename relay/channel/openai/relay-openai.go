@@ -191,6 +191,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
+	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
+	if info.IsKimiK3OfficialCompatibility() {
+		finishReason := "stop"
+		if info.RelayFormat == types.RelayFormatClaude {
+			finishReason = "stop_sequence"
+		}
+		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request), finishReason)
+	}
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
@@ -202,6 +210,23 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if sanitizeErr != nil {
 			sr.Error(sanitizeErr)
 			return
+		}
+		if stopFilter != nil {
+			var chunk dto.ChatCompletionsStreamResponse
+			if err := common.UnmarshalJsonStr(data, &chunk); err != nil {
+				sr.Error(err)
+				return
+			}
+			stopFilter.Filter(&chunk)
+			if matched := stopFilter.MatchedSequence(); matched != "" {
+				info.KimiK3MatchedStopSequence = matched
+			}
+			filtered, err := common.Marshal(chunk)
+			if err != nil {
+				sr.Error(err)
+				return
+			}
+			data = string(filtered)
 		}
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
@@ -307,6 +332,20 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 	}
+	stopResponseFiltered := false
+	if info.IsKimiK3OfficialCompatibility() {
+		stopSequences := relayconvert.KimiK3StopSequencesFromRequest(info.Request)
+		if len(stopSequences) > 0 {
+			finishReason := "stop"
+			if info.RelayFormat == types.RelayFormatClaude {
+				finishReason = "stop_sequence"
+			}
+			if matched := relayconvert.ApplyKimiK3StopToChatResponse(&simpleResponse, stopSequences, finishReason); matched != "" {
+				info.KimiK3MatchedStopSequence = matched
+			}
+			stopResponseFiltered = true
+		}
+	}
 	responseModelModified := rewriteTextResponseModel(info, &simpleResponse)
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
@@ -347,7 +386,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified || responseModelModified || tntResponseSanitized {
+		if usageModified || responseModelModified || tntResponseSanitized || stopResponseFiltered {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
@@ -359,7 +398,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			if responseModelModified {
 				bodyMap["model"] = simpleResponse.Model
 			}
-			if tntResponseSanitized {
+			if tntResponseSanitized || stopResponseFiltered {
 				bodyMap["choices"] = simpleResponse.Choices
 			}
 			responseBody, _ = common.Marshal(bodyMap)
@@ -376,6 +415,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		convertResult, err := relayconvert.ConvertResponse(c, info, types.RelayFormatClaude, &simpleResponse)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		if claudeResponse, ok := convertResult.Value.(*dto.ClaudeResponse); ok && info.KimiK3MatchedStopSequence != "" {
+			claudeResponse.StopSequence = &info.KimiK3MatchedStopSequence
 		}
 		claudeRespStr, err := common.Marshal(convertResult.Value)
 		if err != nil {

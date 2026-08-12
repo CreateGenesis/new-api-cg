@@ -20,6 +20,23 @@ type BillingUsage struct {
 	GeminiUsageMetadata *GeminiUsageMetadata `json:"gemini_usage_metadata,omitempty"`
 }
 
+type KimiK3BillingAudit struct {
+	OriginalSource        string   `json:"original_source,omitempty"`
+	OriginalSemantic      string   `json:"original_semantic,omitempty"`
+	Equation              string   `json:"equation"`
+	OriginalInputTokens   int      `json:"original_input_tokens"`
+	OriginalOutputTokens  int      `json:"original_output_tokens"`
+	OriginalCacheRead     int      `json:"original_cache_read_tokens"`
+	OriginalCacheCreation int      `json:"original_cache_creation_tokens"`
+	SignedTotalInput      int      `json:"signed_total_input_tokens"`
+	NormalizedTotalInput  int      `json:"normalized_total_input_tokens"`
+	NormalizedOutput      int      `json:"normalized_output_tokens"`
+	NormalizedCacheRead   int      `json:"normalized_cache_read_tokens"`
+	NormalizedCacheWrite  int      `json:"normalized_cache_write_tokens"`
+	NegativeFields        []string `json:"negative_fields,omitempty"`
+	Adjustments           []string `json:"adjustments,omitempty"`
+}
+
 func NewClaudeMessagesBillingUsage(usage *ClaudeUsage) *BillingUsage {
 	if !HasClaudeUsageTokens(usage) {
 		return nil

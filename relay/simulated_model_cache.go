@@ -528,7 +528,7 @@ func simulatedModelCacheOpenAIUsageEvent(usage *dto.Usage, doneEvent []byte) ([]
 
 func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayInfo, requestBody []byte) *simulatedModelCacheAttempt {
 	settings, configured := simulatedModelCacheSettings(info)
-	retryZeroOutput := info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.RetryZeroOutput &&
+	retryZeroOutput := info != nil && info.ChannelMeta != nil && (info.ChannelOtherSettings.RetryZeroOutput || info.IsKimiK3OfficialCompatibility()) &&
 		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
 	responseContentRetryPolicy := operation_setting.GetResponseContentRetryPolicy()
 	responseContentRetryActive := info != nil && responseContentRetryPolicy.Enabled && len(responseContentRetryPolicy.Rules) > 0 &&

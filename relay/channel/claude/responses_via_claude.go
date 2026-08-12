@@ -1,0 +1,139 @@
+package claude
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
+	openaiadapter "github.com/QuantumNous/new-api/relay/channel/openai"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/relayconvert"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
+)
+
+func ClaudeToResponsesHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	var claudeResponse dto.ClaudeResponse
+	if err := common.Unmarshal(body, &claudeResponse); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
+		return nil, types.WithClaudeError(*claudeError, resp.StatusCode)
+	}
+	relayconvert.ApplyKimiK3StopToClaudeResponse(&claudeResponse, relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	converted, err := relayconvert.ConvertResponse(c, info, types.RelayFormatOpenAIResponses, &claudeResponse)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	response, ok := converted.Value.(*dto.OpenAIResponsesResponse)
+	if !ok {
+		return nil, types.NewOpenAIError(fmt.Errorf("expected OpenAI responses response, got %T", converted.Value), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	response.Model = info.DownstreamModelName(response.Model)
+	data, err := openaiadapter.MarshalKimiK3ResponsesResponse(info, response)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+	}
+	service.IOCopyBytesGracefully(c, resp, data)
+	return converted.Usage, nil
+}
+
+func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
+	model := info.DownstreamModelName(info.UpstreamModelName)
+	state, err := relayconvert.NewResponseStreamState(types.RelayFormatClaude, types.RelayFormatOpenAIResponses, relayconvert.ResponseStreamOptions{
+		ID:    helper.GetResponseID(c),
+		Model: model,
+	})
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+	var streamErr *types.NewAPIError
+	stopFilter := relayconvert.NewKimiK3ClaudeStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	info.RequireStreamProtocolEnd()
+	retryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		var claudeResponse dto.ClaudeResponse
+		if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
+			sr.Error(err)
+			return
+		}
+		if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
+			streamErr = types.WithClaudeError(*claudeError, resp.StatusCode)
+			sr.Stop(streamErr)
+			return
+		}
+		for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
+			if filteredResponse.Type == "message_stop" && info.StreamStatus != nil {
+				info.StreamStatus.MarkProtocolEnd("message_stop")
+			}
+			results, err := relayconvert.ConvertStreamResponseChunk(c, info, state, filteredResponse)
+			if err != nil {
+				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+				sr.Stop(streamErr)
+				return
+			}
+			for _, result := range results {
+				payload, ok := result.Value.(relayconvert.ChatToResponsesStreamEvent)
+				if !ok {
+					streamErr = types.NewOpenAIError(fmt.Errorf("expected Responses stream event, got %T", result.Value), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+					sr.Stop(streamErr)
+					return
+				}
+				if payload.Payload.Response != nil {
+					payload.Payload.Response.Model = model
+				}
+				encoded, err := openaiadapter.MarshalKimiK3ResponsesStreamPayload(info, payload.Payload)
+				if err != nil {
+					streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+					sr.Stop(streamErr)
+					return
+				}
+				helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded))
+			}
+		}
+	})
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	finalResults, err := relayconvert.FinalizeStreamResponse(c, info, state)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+	for _, result := range finalResults {
+		payload, ok := result.Value.(relayconvert.ChatToResponsesStreamEvent)
+		if !ok {
+			return nil, types.NewOpenAIError(fmt.Errorf("expected Responses stream event, got %T", result.Value), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+		if payload.Payload.Response != nil {
+			payload.Payload.Response.Model = model
+		}
+		encoded, err := openaiadapter.MarshalKimiK3ResponsesStreamPayload(info, payload.Payload)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+		}
+		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: payload.Type}, string(encoded))
+	}
+	if info.StreamStatus != nil && !info.StreamStatus.Snapshot().ProtocolEndReceived && strings.TrimSpace(state.UsageText()) != "" {
+		info.StreamStatus.MarkProtocolEnd("converted_response_completed")
+	}
+	return state.Usage(), nil
+}

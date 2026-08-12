@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,6 +14,54 @@ func clearPreferredOwnerTables(t *testing.T) {
 	t.Helper()
 	require.NoError(t, DB.Exec("DELETE FROM abilities").Error)
 	require.NoError(t, DB.Exec("DELETE FROM channels").Error)
+}
+
+func TestGetPreferredModelOwnerChannelTypesReportsMoonshotForKimiK3OfficialCompatibility(t *testing.T) {
+	const modelName = "client-k3"
+
+	tests := []struct {
+		name          string
+		settings      dto.ChannelOtherSettings
+		modelMapping  map[string]string
+		expectedOwner int
+	}{
+		{
+			name:          "enabled exact mapping",
+			settings:      dto.ChannelOtherSettings{KimiK3OfficialCompatibility: true},
+			modelMapping:  map[string]string{"client-k3": "intermediate", "intermediate": "kimi-k3"},
+			expectedOwner: constant.ChannelTypeMoonshot,
+		},
+		{
+			name:          "compatibility disabled",
+			modelMapping:  map[string]string{"client-k3": "kimi-k3"},
+			expectedOwner: constant.ChannelTypeAnthropic,
+		},
+		{
+			name:          "coding model is not exact k3",
+			settings:      dto.ChannelOtherSettings{KimiK3OfficialCompatibility: true},
+			modelMapping:  map[string]string{"client-k3": "kimi-for-coding"},
+			expectedOwner: constant.ChannelTypeAnthropic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearPreferredOwnerTables(t)
+			insertPreferredOwnerCandidate(t, 1, modelName, "default", constant.ChannelTypeAnthropic, 0, 0, common.ChannelStatusEnabled, true)
+			settings, err := common.Marshal(tt.settings)
+			require.NoError(t, err)
+			mapping, err := common.Marshal(tt.modelMapping)
+			require.NoError(t, err)
+			require.NoError(t, DB.Model(&Channel{}).Where("id = ?", 1).Updates(map[string]any{
+				"settings":      string(settings),
+				"model_mapping": string(mapping),
+			}).Error)
+
+			owners, err := GetPreferredModelOwnerChannelTypes([]string{modelName}, []string{"default"})
+			require.NoError(t, err)
+			require.Equal(t, tt.expectedOwner, owners[modelName])
+		})
+	}
 }
 
 func insertPreferredOwnerCandidate(

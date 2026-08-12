@@ -155,6 +155,9 @@ type RelayInfo struct {
 	RuntimeHeadersOverride                map[string]interface{}
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
+	KimiK3OfficialCompatibilityActive     bool
+	KimiK3BillingAudit                    *dto.KimiK3BillingAudit
+	KimiK3MatchedStopSequence             string
 
 	// UpstreamRequestBodySize is the byte size of the marshaled upstream request
 	// body. It is set when the body is wrapped in a BodyStorage (see
@@ -202,6 +205,20 @@ func (info *RelayInfo) IsTNTTencentOpenAIConversion() bool {
 	return info != nil && info.ChannelOtherSettings.TNTTencentOpenAIConversion
 }
 
+func (info *RelayInfo) ActivateKimiK3OfficialCompatibility() {
+	if info == nil || info.ChannelMeta == nil || !info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.UpstreamModelName != "kimi-k3" {
+		return
+	}
+	switch info.ChannelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot:
+		info.KimiK3OfficialCompatibilityActive = true
+	}
+}
+
+func (info *RelayInfo) IsKimiK3OfficialCompatibility() bool {
+	return info != nil && info.KimiK3OfficialCompatibilityActive
+}
+
 type SimulatedModelCacheInfo struct {
 	Mode                        string  `json:"mode"`
 	MatchRatio                  float64 `json:"match_ratio"`
@@ -217,7 +234,7 @@ type SimulatedModelCacheInfo struct {
 }
 
 func (info *RelayInfo) CacheUsageValidationSplitEnabled() bool {
-	return info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.CacheUsageValidationSplit
+	return info != nil && info.ChannelMeta != nil && (info.ChannelOtherSettings.CacheUsageValidationSplit || info.IsKimiK3OfficialCompatibility())
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {

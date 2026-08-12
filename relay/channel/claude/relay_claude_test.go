@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	openaiadapter "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/types"
@@ -93,6 +95,108 @@ func TestTNTTencentRequestURLAndFinalHeaders(t *testing.T) {
 	info.RelayFormat = types.RelayFormatOpenAIResponses
 	require.NoError(t, adaptor.FinalizeRequestHeader(c, req, info))
 	assert.Equal(t, "App/1.0", req.Header.Get("User-Agent"))
+}
+
+func TestKimiK3TNTConversionPreservesOfficialReasoningAndResponseFormat(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType:       constant.ChannelTypeAnthropic,
+		UpstreamModelName: "kimi-k3",
+		ChannelOtherSettings: dto.ChannelOtherSettings{
+			TNTTencentOpenAIConversion:  true,
+			KimiK3OfficialCompatibility: true,
+		},
+	}}
+	info.ActivateKimiK3OfficialCompatibility()
+	adaptor := &Adaptor{}
+
+	maxTokens := uint(64)
+	claudeRequest := &dto.ClaudeRequest{
+		Model:          "kimi-k3",
+		MaxTokens:      &maxTokens,
+		OutputConfig:   []byte(`{"effort":"high"}`),
+		ResponseFormat: []byte(`{"type":"json_object"}`),
+	}
+	convertedClaude, err := adaptor.ConvertClaudeRequest(nil, info, claudeRequest)
+	require.NoError(t, err)
+	chatFromClaude := convertedClaude.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "high", chatFromClaude.ReasoningEffort)
+	assert.Equal(t, maxTokens, chatFromClaude.GetMaxTokens())
+	require.NotNil(t, chatFromClaude.ResponseFormat)
+	assert.Equal(t, "json_object", chatFromClaude.ResponseFormat.Type)
+
+	responsesRequest := dto.OpenAIResponsesRequest{
+		Model:           "kimi-k3",
+		Input:           []byte(`"hello"`),
+		MaxOutputTokens: &maxTokens,
+		Reasoning:       &dto.Reasoning{Effort: "low"},
+		Text:            []byte(`{"format":{"type":"json_object"}}`),
+	}
+	convertedResponses, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
+	require.NoError(t, err)
+	chatFromResponses := convertedResponses.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "low", chatFromResponses.ReasoningEffort)
+	require.NotNil(t, chatFromResponses.ResponseFormat)
+	assert.Equal(t, "json_object", chatFromResponses.ResponseFormat.Type)
+
+	info.ChannelOtherSettings.TNTTencentOpenAIConversion = false
+	chatRequest := &dto.GeneralOpenAIRequest{
+		Model:           "kimi-k3",
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: "high",
+		ResponseFormat:  &dto.ResponseFormat{Type: "json_object"},
+	}
+	convertedChat, err := adaptor.ConvertOpenAIRequest(nil, info, chatRequest)
+	require.NoError(t, err)
+	claudeFromChat := convertedChat.(*dto.ClaudeRequest)
+	assert.Equal(t, "high", claudeFromChat.GetEfforts())
+	assert.Empty(t, claudeFromChat.OutputFormat)
+	var responseFormat dto.ResponseFormat
+	require.NoError(t, common.Unmarshal(claudeFromChat.ResponseFormat, &responseFormat))
+	assert.Equal(t, "json_object", responseFormat.Type)
+
+	convertedFromResponses, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
+	require.NoError(t, err)
+	claudeFromResponses := convertedFromResponses.(*dto.ClaudeRequest)
+	assert.Equal(t, "low", claudeFromResponses.GetEfforts())
+	require.NoError(t, common.Unmarshal(claudeFromResponses.ResponseFormat, &responseFormat))
+	assert.Equal(t, "json_object", responseFormat.Type)
+}
+
+func TestKimiK3OpenAIChannelPreservesAnthropicResponseFormat(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType:       constant.ChannelTypeOpenAI,
+		UpstreamModelName: "kimi-k3",
+		ChannelOtherSettings: dto.ChannelOtherSettings{
+			KimiK3OfficialCompatibility: true,
+		},
+	}}
+	info.ActivateKimiK3OfficialCompatibility()
+	maxTokens := uint(64)
+	request := &dto.ClaudeRequest{
+		Model:          "kimi-k3",
+		MaxTokens:      &maxTokens,
+		OutputConfig:   []byte(`{"effort":"high"}`),
+		ResponseFormat: []byte(`{"type":"json_object"}`),
+	}
+
+	adaptor := openaiadapter.Adaptor{}
+	converted, err := adaptor.ConvertClaudeRequest(nil, info, request)
+	require.NoError(t, err)
+	chatRequest := converted.(*dto.GeneralOpenAIRequest)
+	require.NotNil(t, chatRequest.ResponseFormat)
+	assert.Equal(t, "json_object", chatRequest.ResponseFormat.Type)
+	assert.Equal(t, "high", chatRequest.ReasoningEffort)
+}
+
+func TestClaudeChannelDropsKimiResponseFormatWhenCompatibilityIsDisabled(t *testing.T) {
+	request := &dto.ClaudeRequest{
+		Model:          "claude-test",
+		ResponseFormat: []byte(`{"type":"json_object"}`),
+	}
+
+	converted, err := (&Adaptor{}).ConvertClaudeRequest(nil, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, request)
+	require.NoError(t, err)
+	assert.Empty(t, converted.(*dto.ClaudeRequest).ResponseFormat)
 }
 
 func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {

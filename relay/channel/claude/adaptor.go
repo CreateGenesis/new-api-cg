@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	openaiadapter "github.com/QuantumNous/new-api/relay/channel/openai"
@@ -30,7 +31,26 @@ func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
 	if info.IsTNTTencentOpenAIConversion() {
-		return relayconvert.ConvertTNTTencentClaudeRequest(request)
+		converted, err := relayconvert.ConvertTNTTencentClaudeRequest(request)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsKimiK3OfficialCompatibility() {
+			if len(request.ResponseFormat) > 0 {
+				var responseFormat dto.ResponseFormat
+				if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
+					return nil, fmt.Errorf("invalid response_format: %w", err)
+				}
+				converted.ResponseFormat = &responseFormat
+			}
+			if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
+				return nil, err
+			}
+		}
+		return converted, nil
+	}
+	if !info.IsKimiK3OfficialCompatibility() {
+		request.ResponseFormat = nil
 	}
 	return request, nil
 }
@@ -145,7 +165,30 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
-	return result.Value, nil
+	converted, ok := result.Value.(*dto.ClaudeRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected Anthropic messages request, got %T", result.Value)
+	}
+	if info.IsKimiK3OfficialCompatibility() {
+		if request.ResponseFormat != nil {
+			responseFormat, err := common.Marshal(request.ResponseFormat)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal response_format: %w", err)
+			}
+			converted.ResponseFormat = responseFormat
+		}
+		if request.ReasoningEffort != "" {
+			outputConfig, err := common.Marshal(dto.OutputConfigForEffort{Effort: request.ReasoningEffort})
+			if err != nil {
+				return nil, err
+			}
+			converted.OutputConfig = outputConfig
+		}
+		if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
+			return nil, err
+		}
+	}
+	return converted, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -159,7 +202,44 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	if info.IsTNTTencentOpenAIConversion() {
-		return relayconvert.ConvertTNTTencentResponsesRequest(&request)
+		converted, err := relayconvert.ConvertTNTTencentResponsesRequest(&request)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsKimiK3OfficialCompatibility() {
+			if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
+				return nil, err
+			}
+		}
+		return converted, nil
+	}
+	if info.IsKimiK3OfficialCompatibility() {
+		converted, err := relayconvert.OpenAIResponsesRequestToClaudeMessages(c, &request)
+		if err != nil {
+			return nil, err
+		}
+		chatRequest, err := relayconvert.ResponsesRequestToChatCompletionsRequest(&request)
+		if err != nil {
+			return nil, err
+		}
+		if chatRequest.ResponseFormat != nil {
+			responseFormat, err := common.Marshal(chatRequest.ResponseFormat)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal response_format: %w", err)
+			}
+			converted.ResponseFormat = responseFormat
+		}
+		if request.Reasoning != nil && request.Reasoning.Effort != "" {
+			outputConfig, err := common.Marshal(dto.OutputConfigForEffort{Effort: request.Reasoning.Effort})
+			if err != nil {
+				return nil, err
+			}
+			converted.OutputConfig = outputConfig
+		}
+		if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
+			return nil, err
+		}
+		return converted, nil
 	}
 	return nil, errors.New("not implemented")
 }
@@ -187,6 +267,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return openaiadapter.OpenaiHandler(c, info, resp)
 	}
 	info.FinalRequestRelayFormat = types.RelayFormatClaude
+	if info.IsKimiK3OfficialCompatibility() && info.RelayMode == relayconstant.RelayModeResponses {
+		if info.IsStream {
+			return ClaudeToResponsesStreamHandler(c, resp, info)
+		}
+		return ClaudeToResponsesHandler(c, resp, info)
+	}
 	if info.IsStream {
 		return ClaudeStreamHandler(c, resp, info)
 	} else {

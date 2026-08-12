@@ -31,8 +31,8 @@ type tntResponsesStreamPayload struct {
 	LogProbs       *[]any                `json:"logprobs,omitempty"`
 }
 
-func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) *tntResponsesResponse {
-	if info == nil || response == nil || !info.IsTNTTencentOpenAIConversion() {
+func responsesResponseForKimiK3Request(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) *tntResponsesResponse {
+	if info == nil || response == nil || (!info.IsTNTTencentOpenAIConversion() && !info.IsKimiK3OfficialCompatibility()) {
 		return nil
 	}
 	request, ok := info.Request.(*dto.OpenAIResponsesRequest)
@@ -45,6 +45,9 @@ func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.O
 		response.Temperature = *request.Temperature
 	}
 	response.TopP = 1
+	if info.IsKimiK3OfficialCompatibility() {
+		response.TopP = 0.95
+	}
 	if request.TopP != nil {
 		response.TopP = *request.TopP
 	}
@@ -66,16 +69,46 @@ func tntResponsesResponseForRequest(info *relaycommon.RelayInfo, response *dto.O
 		_ = common.Unmarshal(request.ParallelToolCalls, &response.ParallelToolCalls)
 	}
 	response.Reasoning = request.Reasoning
+	if response.Reasoning == nil && info.IsKimiK3OfficialCompatibility() {
+		response.Reasoning = &dto.Reasoning{Effort: "max"}
+	}
 	response.User = request.User
 	response.Metadata = request.Metadata
 	if len(response.Metadata) == 0 {
 		response.Metadata = []byte(`{}`)
 	}
 
+	maxOutputTokens := request.MaxOutputTokens
+	if maxOutputTokens == nil && info.IsKimiK3OfficialCompatibility() {
+		maxOutputTokens = common.GetPointer(uint(131072))
+	}
 	return &tntResponsesResponse{
 		OpenAIResponsesResponse: response,
-		MaxOutputTokens:         request.MaxOutputTokens,
+		MaxOutputTokens:         maxOutputTokens,
 	}
+}
+
+func MarshalKimiK3ResponsesResponse(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) ([]byte, error) {
+	restored := responsesResponseForKimiK3Request(info, response)
+	if restored != nil {
+		return common.Marshal(restored)
+	}
+	return common.Marshal(response)
+}
+
+func MarshalKimiK3ResponsesStreamPayload(info *relaycommon.RelayInfo, payload dto.ResponsesStreamResponse) ([]byte, error) {
+	restored := responsesResponseForKimiK3Request(info, payload.Response)
+	if restored == nil {
+		return common.Marshal(payload)
+	}
+	payload.Response = nil
+	return common.Marshal(struct {
+		dto.ResponsesStreamResponse
+		Response *tntResponsesResponse `json:"response,omitempty"`
+	}{
+		ResponsesStreamResponse: payload,
+		Response:                restored,
+	})
 }
 
 func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -96,6 +129,11 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if info.IsTNTTencentOpenAIConversion() {
 		if err := relayconvert.SanitizeTNTTencentChatResponse(&chatResp); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+	}
+	if info.IsKimiK3OfficialCompatibility() {
+		if matched := relayconvert.ApplyKimiK3StopToChatResponse(&chatResp, relayconvert.KimiK3StopSequencesFromRequest(info.Request)); matched != "" {
+			info.KimiK3MatchedStopSequence = matched
 		}
 	}
 	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
@@ -119,12 +157,9 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
+	responsesResp.Model = info.DownstreamModelName(responsesResp.Model)
 
-	responseValue := any(responsesResp)
-	if tntResponse := tntResponsesResponseForRequest(info, responsesResp); tntResponse != nil {
-		responseValue = tntResponse
-	}
-	responseBody, err := common.Marshal(responseValue)
+	responseBody, err := MarshalKimiK3ResponsesResponse(info, responsesResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
@@ -142,13 +177,17 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	responseID := helper.GetResponseID(c)
 	state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, relayconvert.ResponseStreamOptions{
 		ID:    responseID,
-		Model: info.UpstreamModelName,
+		Model: info.DownstreamModelName(info.UpstreamModelName),
 	})
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
 	sequenceNumber := 0
+	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
+	if info.IsKimiK3OfficialCompatibility() {
+		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	}
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		payload := any(event.Payload)
@@ -159,7 +198,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 			tntPayload := tntResponsesStreamPayload{
 				ResponsesStreamResponse: streamResponse,
-				Response:                tntResponsesResponseForRequest(info, event.Payload.Response),
+				Response:                responsesResponseForKimiK3Request(info, event.Payload.Response),
 				SequenceNumber:          sequenceNumber,
 			}
 			switch event.Type {
@@ -175,6 +214,16 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				tntPayload.Name = &event.FunctionName
 			}
 			payload = tntPayload
+		} else if restored := responsesResponseForKimiK3Request(info, event.Payload.Response); restored != nil {
+			streamResponse := event.Payload
+			streamResponse.Response = nil
+			payload = struct {
+				dto.ResponsesStreamResponse
+				Response *tntResponsesResponse `json:"response,omitempty"`
+			}{
+				ResponsesStreamResponse: streamResponse,
+				Response:                restored,
+			}
 		}
 		data, err := common.Marshal(payload)
 		if err != nil {
@@ -210,6 +259,10 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 		if info.IsTNTTencentOpenAIConversion() {
 			relayconvert.SanitizeTNTTencentChatStreamChunk(&chunk)
+		}
+		stopFilter.Filter(&chunk)
+		if matched := stopFilter.MatchedSequence(); matched != "" {
+			info.KimiK3MatchedStopSequence = matched
 		}
 		if chunk.IsFinished() && info.StreamStatus != nil {
 			info.StreamStatus.MarkProtocolEnd("finish_reason")

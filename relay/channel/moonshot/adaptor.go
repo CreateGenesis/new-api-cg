@@ -99,8 +99,11 @@ func isTemperatureOneOnlyModel(model string) bool {
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	if !info.IsKimiK3OfficialCompatibility() {
+		return nil, errors.New("not implemented")
+	}
+	adaptor := openai.Adaptor{}
+	return adaptor.ConvertOpenAIResponsesRequest(c, info, request)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

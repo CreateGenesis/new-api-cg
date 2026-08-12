@@ -862,3 +862,73 @@ describe('TNT Tencent-style OpenAI conversion settings', () => {
     }
   })
 })
+
+describe('Kimi K3 official compatibility settings', () => {
+  test('loads and saves the setting for supported channel types', () => {
+    for (const type of [1, 14, 25]) {
+      const channel = testChannel('{"kimi_k3_official_compatibility":true}')
+      channel.type = type
+
+      const form = transformChannelToFormDefaults(channel)
+      assert.equal(form.kimi_k3_official_compatibility, true)
+
+      const payload = transformFormDataToCreatePayload({
+        ...form,
+        name: 'kimi-k3',
+        key: 'sk-test',
+        models: 'kimi-k3',
+        group: ['default'],
+        status: 1,
+        type,
+      })
+      const settings = JSON.parse(String(payload.channel.settings))
+      assert.equal(settings.kimi_k3_official_compatibility, true)
+    }
+  })
+
+  test('removes the setting after changing to an unsupported channel type', () => {
+    const channel = testChannel('{"kimi_k3_official_compatibility":true}')
+    channel.type = 14
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'other',
+      key: 'sk-test',
+      models: 'kimi-k3',
+      group: ['default'],
+      status: 1,
+      type: 15,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.kimi_k3_official_compatibility, undefined)
+  })
+
+  test('rejects request body passthrough but allows TNT conversion', () => {
+    const conflict = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'kimi-k3',
+      key: 'sk-test',
+      models: 'kimi-k3',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      pass_through_body_enabled: true,
+      kimi_k3_official_compatibility: true,
+    })
+    assert.equal(conflict.success, false)
+
+    const coexistence = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'kimi-k3',
+      key: 'sk-test',
+      models: 'kimi-k3',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      tnt_tencent_openai_conversion: true,
+      kimi_k3_official_compatibility: true,
+    })
+    assert.equal(coexistence.success, true)
+  })
+})

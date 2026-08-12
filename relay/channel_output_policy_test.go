@@ -244,6 +244,80 @@ func TestObserveChannelOutputPayloadRecognizesSupportedProtocols(t *testing.T) {
 	assert.False(t, observeChannelOutputPayload(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, empty, &output))
 }
 
+func TestKimiK3OfficialOutputPolicyRetriesReasoningOnlyResponses(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    types.RelayFormat
+		relayMode int
+		payload   string
+	}{
+		{
+			name:      "OpenAI Chat reasoning only",
+			format:    types.RelayFormatOpenAI,
+			relayMode: relayconstant.RelayModeChatCompletions,
+			payload:   `{"choices":[{"message":{"content":"","reasoning_content":"thinking"}}]}`,
+		},
+		{
+			name:      "Responses reasoning only",
+			format:    types.RelayFormatOpenAIResponses,
+			relayMode: relayconstant.RelayModeResponses,
+			payload:   `{"output":[{"type":"reasoning","content":[{"type":"summary_text","text":"thinking"}]}]}`,
+		},
+		{
+			name:    "Anthropic thinking only",
+			format:  types.RelayFormatClaude,
+			payload: `{"content":[{"type":"thinking","thinking":"thinking"}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(test.payload, &payload))
+			var output strings.Builder
+			assert.False(t, observeKimiK3VisibleOutputPayload(test.format, test.relayMode, payload, &output))
+			assert.Empty(t, output.String())
+		})
+	}
+}
+
+func TestKimiK3OfficialOutputPolicyAcceptsVisibleTextAndTools(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    types.RelayFormat
+		relayMode int
+		payload   string
+	}{
+		{
+			name:      "OpenAI Chat text",
+			format:    types.RelayFormatOpenAI,
+			relayMode: relayconstant.RelayModeChatCompletions,
+			payload:   `{"choices":[{"message":{"content":"answer"}}]}`,
+		},
+		{
+			name:      "Responses tool",
+			format:    types.RelayFormatOpenAIResponses,
+			relayMode: relayconstant.RelayModeResponses,
+			payload:   `{"output":[{"type":"function_call","name":"lookup","arguments":"{}"}]}`,
+		},
+		{
+			name:    "Anthropic tool",
+			format:  types.RelayFormatClaude,
+			payload: `{"content":[{"type":"tool_use","name":"lookup","input":{}}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(test.payload, &payload))
+			var output strings.Builder
+			assert.True(t, observeKimiK3VisibleOutputPayload(test.format, test.relayMode, payload, &output))
+			assert.NotEmpty(t, output.String())
+		})
+	}
+}
+
 func TestScaleMissingTokenEstimateRoundsUpAndAuditsSaturation(t *testing.T) {
 	assert.Equal(t, 4, scaleMissingTokenEstimate(nil, 3, 1.01))
 
