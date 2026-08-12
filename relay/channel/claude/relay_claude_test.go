@@ -162,6 +162,138 @@ func TestKimiK3TNTConversionPreservesOfficialReasoningAndResponseFormat(t *testi
 	assert.Equal(t, "json_object", responseFormat.Type)
 }
 
+func TestKimiK3TNTConversionPreservesExtendedReasoningEfforts(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType:       constant.ChannelTypeAnthropic,
+		UpstreamModelName: "kimi-k3",
+		ChannelOtherSettings: dto.ChannelOtherSettings{
+			TNTTencentOpenAIConversion:  true,
+			KimiK3OfficialCompatibility: true,
+		},
+	}}
+	info.ActivateKimiK3OfficialCompatibility()
+	adaptor := &Adaptor{}
+	maxTokens := uint(64)
+
+	for _, effort := range []string{"medium", "ultra", "xhigh", "custom", "none"} {
+		t.Run(effort, func(t *testing.T) {
+			claudeRequest := &dto.ClaudeRequest{
+				Model:        "kimi-k3",
+				MaxTokens:    &maxTokens,
+				OutputConfig: []byte(`{"effort":"` + effort + `"}`),
+			}
+			convertedClaude, err := adaptor.ConvertClaudeRequest(nil, info, claudeRequest)
+			require.NoError(t, err)
+			chatFromClaude := convertedClaude.(*dto.GeneralOpenAIRequest)
+			assert.Equal(t, effort, chatFromClaude.ReasoningEffort)
+
+			responsesRequest := dto.OpenAIResponsesRequest{
+				Model:           "kimi-k3",
+				Input:           []byte(`"hello"`),
+				MaxOutputTokens: &maxTokens,
+				Reasoning:       &dto.Reasoning{Effort: effort},
+			}
+			convertedResponses, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
+			require.NoError(t, err)
+			chatFromResponses := convertedResponses.(*dto.GeneralOpenAIRequest)
+			assert.Equal(t, effort, chatFromResponses.ReasoningEffort)
+
+			wantTemperature := 1.0
+			if effort == "none" {
+				wantTemperature = 0.6
+			}
+			require.NotNil(t, chatFromClaude.Temperature)
+			assert.Equal(t, wantTemperature, *chatFromClaude.Temperature)
+			require.NotNil(t, chatFromResponses.Temperature)
+			assert.Equal(t, wantTemperature, *chatFromResponses.Temperature)
+		})
+	}
+}
+
+func TestKimiK3OfficialReasoningEffortSurvivesProtocolConversion(t *testing.T) {
+	maxTokens := uint(64)
+	tests := []struct {
+		effort          string
+		wantTemperature float64
+	}{
+		{effort: "medium", wantTemperature: 1.0},
+		{effort: "ultra", wantTemperature: 1.0},
+		{effort: "xhigh", wantTemperature: 1.0},
+		{effort: "custom", wantTemperature: 1.0},
+		{effort: "none", wantTemperature: 0.6},
+	}
+
+	for _, test := range tests {
+		t.Run(test.effort, func(t *testing.T) {
+			openAIInfo := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelType:       constant.ChannelTypeOpenAI,
+				UpstreamModelName: "kimi-k3",
+				ChannelOtherSettings: dto.ChannelOtherSettings{
+					KimiK3OfficialCompatibility: true,
+				},
+			}}
+			openAIInfo.ActivateKimiK3OfficialCompatibility()
+
+			anthropicRequest := &dto.ClaudeRequest{
+				Model:        "kimi-k3",
+				MaxTokens:    &maxTokens,
+				OutputConfig: []byte(`{"effort":"` + test.effort + `"}`),
+			}
+			require.NoError(t, relayconvert.NormalizeKimiK3ClaudeRequest(anthropicRequest))
+			convertedAnthropic, err := (&openaiadapter.Adaptor{}).ConvertClaudeRequest(nil, openAIInfo, anthropicRequest)
+			require.NoError(t, err)
+			chatFromAnthropic := convertedAnthropic.(*dto.GeneralOpenAIRequest)
+			assert.Equal(t, test.effort, chatFromAnthropic.ReasoningEffort)
+			require.NotNil(t, chatFromAnthropic.Temperature)
+			assert.Equal(t, test.wantTemperature, *chatFromAnthropic.Temperature)
+
+			claudeInfo := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelType:       constant.ChannelTypeAnthropic,
+				UpstreamModelName: "kimi-k3",
+				ChannelOtherSettings: dto.ChannelOtherSettings{
+					KimiK3OfficialCompatibility: true,
+				},
+			}}
+			claudeInfo.ActivateKimiK3OfficialCompatibility()
+
+			chatRequest := &dto.GeneralOpenAIRequest{
+				Model:           "kimi-k3",
+				MaxTokens:       &maxTokens,
+				ReasoningEffort: test.effort,
+			}
+			require.NoError(t, relayconvert.NormalizeKimiK3ChatRequest(chatRequest))
+			convertedChat, err := (&Adaptor{}).ConvertOpenAIRequest(nil, claudeInfo, chatRequest)
+			require.NoError(t, err)
+			claudeFromChat := convertedChat.(*dto.ClaudeRequest)
+			assert.Equal(t, test.effort, claudeFromChat.GetEfforts())
+			require.NotNil(t, claudeFromChat.Temperature)
+			assert.Equal(t, test.wantTemperature, *claudeFromChat.Temperature)
+			if test.effort == "none" {
+				require.NotNil(t, claudeFromChat.Thinking)
+				assert.Equal(t, "disabled", claudeFromChat.Thinking.Type)
+			}
+
+			responsesRequest := dto.OpenAIResponsesRequest{
+				Model:           "kimi-k3",
+				Input:           []byte(`"hello"`),
+				MaxOutputTokens: &maxTokens,
+				Reasoning:       &dto.Reasoning{Effort: test.effort},
+			}
+			require.NoError(t, relayconvert.NormalizeKimiK3ResponsesRequest(&responsesRequest))
+			convertedResponses, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, claudeInfo, responsesRequest)
+			require.NoError(t, err)
+			claudeFromResponses := convertedResponses.(*dto.ClaudeRequest)
+			assert.Equal(t, test.effort, claudeFromResponses.GetEfforts())
+			require.NotNil(t, claudeFromResponses.Temperature)
+			assert.Equal(t, test.wantTemperature, *claudeFromResponses.Temperature)
+			if test.effort == "none" {
+				require.NotNil(t, claudeFromResponses.Thinking)
+				assert.Equal(t, "disabled", claudeFromResponses.Thinking.Type)
+			}
+		})
+	}
+}
+
 func TestKimiK3OpenAIChannelPreservesAnthropicResponseFormat(t *testing.T) {
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
 		ChannelType:       constant.ChannelTypeOpenAI,

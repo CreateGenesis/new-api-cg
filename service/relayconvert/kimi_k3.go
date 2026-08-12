@@ -32,17 +32,23 @@ func NormalizeKimiK3ChatRequest(request *dto.GeneralOpenAIRequest) error {
 	if request.GetMaxTokens() == 0 || request.GetMaxTokens() > kimiK3MaxTokens {
 		return fmt.Errorf("max_tokens must be between 1 and %d for kimi-k3", kimiK3MaxTokens)
 	}
-	if err := normalizeKimiK3Sampling(&request.Temperature, &request.TopP, &request.N, &request.PresencePenalty, &request.FrequencyPenalty); err != nil {
+	applyKimiK3ReasoningEffortDefault(&request.ReasoningEffort)
+	if err := validateKimiK3ThinkingSwitches(request.EnableThinking, request.ChatTemplateKwargs, request.THINKING); err != nil {
+		return err
+	}
+	reasoningDisabled := request.ReasoningEffort == "none"
+	if len(request.THINKING) > 0 && common.GetJsonType(request.THINKING) == "object" {
+		var thinking dto.Thinking
+		if err := common.Unmarshal(request.THINKING, &thinking); err != nil {
+			return fmt.Errorf("invalid thinking configuration: %w", err)
+		}
+		reasoningDisabled = reasoningDisabled || thinking.Type == "disabled"
+	}
+	if err := normalizeKimiK3ChatSampling(&request.Temperature, &request.TopP, &request.N, &request.PresencePenalty, &request.FrequencyPenalty, reasoningDisabled); err != nil {
 		return err
 	}
 	if request.TopK != nil {
 		return fmt.Errorf("top_k is not supported by kimi-k3")
-	}
-	if err := normalizeKimiK3ReasoningEffort(&request.ReasoningEffort); err != nil {
-		return err
-	}
-	if err := validateKimiK3ThinkingSwitches(request.EnableThinking, request.ChatTemplateKwargs, request.THINKING); err != nil {
-		return err
 	}
 	if err := validateKimiK3Stop(request.Stop); err != nil {
 		return err
@@ -69,15 +75,15 @@ func NormalizeKimiK3ResponsesRequest(request *dto.OpenAIResponsesRequest) error 
 	if *request.MaxOutputTokens == 0 || *request.MaxOutputTokens > kimiK3MaxTokens {
 		return fmt.Errorf("max_output_tokens must be between 1 and %d for kimi-k3", kimiK3MaxTokens)
 	}
-	if err := normalizeKimiK3Sampling(&request.Temperature, &request.TopP, nil, nil, nil); err != nil {
-		return err
-	}
 	if request.Reasoning == nil {
 		request.Reasoning = &dto.Reasoning{Effort: "max"}
-	} else if err := normalizeKimiK3ReasoningEffort(&request.Reasoning.Effort); err != nil {
-		return err
+	} else {
+		applyKimiK3ReasoningEffortDefault(&request.Reasoning.Effort)
 	}
 	if err := validateKimiK3ThinkingSwitches(request.EnableThinking, nil, nil); err != nil {
+		return err
+	}
+	if err := normalizeKimiK3ChatSampling(&request.Temperature, &request.TopP, nil, nil, nil, request.Reasoning.Effort == "none"); err != nil {
 		return err
 	}
 	chatRequest, err := ResponsesRequestToChatCompletionsRequest(request)
@@ -103,22 +109,14 @@ func NormalizeKimiK3ClaudeRequest(request *dto.ClaudeRequest) error {
 	if request.MaxTokensToSample != nil {
 		return fmt.Errorf("max_tokens_to_sample is not supported by kimi-k3")
 	}
-	if err := normalizeKimiK3Sampling(&request.Temperature, &request.TopP, nil, nil, nil); err != nil {
-		return err
-	}
-	if request.TopK != nil {
-		return fmt.Errorf("top_k is not supported by kimi-k3")
-	}
-	if request.Thinking != nil && request.Thinking.Type == "disabled" {
-		return fmt.Errorf("kimi-k3 reasoning cannot be disabled")
-	}
 	var outputConfig dto.OutputConfigForEffort
 	if len(request.OutputConfig) > 0 {
 		if err := common.Unmarshal(request.OutputConfig, &outputConfig); err != nil {
 			return fmt.Errorf("invalid output_config: %w", err)
 		}
 	}
-	if err := normalizeKimiK3ReasoningEffort(&outputConfig.Effort); err != nil {
+	applyKimiK3ReasoningEffortDefault(&outputConfig.Effort)
+	if err := normalizeKimiK3ClaudeSampling(&request.Temperature, &request.TopP); err != nil {
 		return err
 	}
 	encoded, err := common.Marshal(outputConfig)
@@ -172,11 +170,15 @@ func validateKimiK3ResponseFormat(responseFormat *dto.ResponseFormat) error {
 	}
 }
 
-func normalizeKimiK3Sampling(temperature, topP *(*float64), n *(*int), presencePenalty, frequencyPenalty *(*float64)) error {
+func normalizeKimiK3ChatSampling(temperature, topP *(*float64), n *(*int), presencePenalty, frequencyPenalty *(*float64), reasoningDisabled bool) error {
+	expectedTemperature := 1.0
+	if reasoningDisabled {
+		expectedTemperature = 0.6
+	}
 	if *temperature == nil {
-		*temperature = common.GetPointer(1.0)
-	} else if **temperature != 1.0 {
-		return fmt.Errorf("temperature must be 1.0 for kimi-k3")
+		*temperature = common.GetPointer(expectedTemperature)
+	} else if **temperature != expectedTemperature {
+		return fmt.Errorf("temperature must be %.1f for kimi-k3", expectedTemperature)
 	}
 	if *topP == nil {
 		*topP = common.GetPointer(0.95)
@@ -203,19 +205,19 @@ func normalizeKimiK3Sampling(temperature, topP *(*float64), n *(*int), presenceP
 	return nil
 }
 
-func normalizeKimiK3ReasoningEffort(effort *string) error {
-	if effort == nil {
-		return nil
+func normalizeKimiK3ClaudeSampling(temperature, topP *(*float64)) error {
+	if *temperature != nil && (**temperature < 0 || **temperature > 1) {
+		return fmt.Errorf("temperature must be between 0 and 1 for kimi-k3")
 	}
-	if *effort == "" {
+	if *topP != nil && (**topP < 0 || **topP > 1) {
+		return fmt.Errorf("top_p must be between 0 and 1 for kimi-k3")
+	}
+	return nil
+}
+
+func applyKimiK3ReasoningEffortDefault(effort *string) {
+	if effort != nil && *effort == "" {
 		*effort = "max"
-		return nil
-	}
-	switch *effort {
-	case "low", "high", "max":
-		return nil
-	default:
-		return fmt.Errorf("reasoning_effort must be low, high, or max for kimi-k3")
 	}
 }
 
@@ -225,33 +227,15 @@ func validateKimiK3ThinkingSwitches(values ...json.RawMessage) error {
 			continue
 		}
 		if common.GetJsonType(raw) == "boolean" {
-			var enabled bool
-			if err := common.Unmarshal(raw, &enabled); err != nil {
+			var value bool
+			if err := common.Unmarshal(raw, &value); err != nil {
 				return err
-			}
-			if !enabled {
-				return fmt.Errorf("kimi-k3 reasoning cannot be disabled")
 			}
 			continue
 		}
 		var config map[string]any
 		if err := common.Unmarshal(raw, &config); err != nil {
 			return fmt.Errorf("invalid thinking configuration: %w", err)
-		}
-		for _, key := range []string{"enable_thinking", "thinking"} {
-			value, exists := config[key]
-			if !exists {
-				continue
-			}
-			if enabled, ok := value.(bool); ok && !enabled {
-				return fmt.Errorf("kimi-k3 reasoning cannot be disabled")
-			}
-			if mode, ok := value.(string); ok && mode == "disabled" {
-				return fmt.Errorf("kimi-k3 reasoning cannot be disabled")
-			}
-		}
-		if mode := strings.TrimSpace(common.Interface2String(config["type"])); mode == "disabled" {
-			return fmt.Errorf("kimi-k3 reasoning cannot be disabled")
 		}
 	}
 	return nil
