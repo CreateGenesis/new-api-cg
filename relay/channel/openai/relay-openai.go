@@ -132,7 +132,66 @@ func filterKimiK3ChatStreamData(info *relaycommon.RelayInfo, data string) (strin
 	if err != nil {
 		return "", err
 	}
-	return string(filtered), nil
+	return stripKimiK3ReasoningUsageDetails(
+		string(filtered),
+		"usage.completion_tokens_details",
+		"usage.billing_usage.openai_usage.completion_tokens_details",
+	)
+}
+
+func stripKimiK3ReasoningUsageDetails(data string, paths ...string) (string, error) {
+	patched := data
+	var err error
+	for _, path := range paths {
+		if path == "" || !gjson.Get(patched, path+".reasoning_tokens").Exists() {
+			continue
+		}
+		patched, err = sjson.Delete(patched, path+".reasoning_tokens")
+		if err != nil {
+			return data, err
+		}
+		details := gjson.Get(patched, path)
+		allZero := details.IsObject()
+		for _, value := range details.Map() {
+			if value.Type != gjson.Null && (value.Type != gjson.Number || value.Num != 0) {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			patched, err = sjson.Delete(patched, path)
+			if err != nil {
+				return data, err
+			}
+		}
+	}
+	return patched, nil
+}
+
+func applyKimiK3UsageToBody(bodyMap map[string]interface{}, usage *dto.Usage) {
+	if usage == nil {
+		return
+	}
+	usageMap, ok := bodyMap["usage"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	usageMap["completion_tokens"] = usage.CompletionTokens
+	usageMap["total_tokens"] = usage.TotalTokens
+	if _, exists := usageMap["output_tokens"]; exists {
+		usageMap["output_tokens"] = usage.OutputTokens
+	}
+	details, ok := usageMap["completion_tokens_details"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	delete(details, "reasoning_tokens")
+	for _, value := range details {
+		if number, ok := value.(float64); !ok || number != 0 {
+			return
+		}
+	}
+	delete(usageMap, "completion_tokens_details")
 }
 
 func shouldRewriteResponseModel(info *relaycommon.RelayInfo) bool {
@@ -335,6 +394,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+	if info.KimiK3HideThinking {
+		relayconvert.HideKimiK3ReasoningUsage(usage)
+	}
 
 	if !info.StreamStatus.IsClientGone() && (info.RelayFormat == types.RelayFormatOpenAI || !lastStreamDataSent) {
 		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
@@ -446,6 +508,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			}
 			if usageModified {
 				bodyMap["usage"] = simpleResponse.Usage
+			} else if thinkingResponseFiltered {
+				applyKimiK3UsageToBody(bodyMap, &simpleResponse.Usage)
 			}
 			if responseModelModified {
 				bodyMap["model"] = simpleResponse.Model
@@ -454,11 +518,33 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 				bodyMap["choices"] = simpleResponse.Choices
 			}
 			responseBody, _ = common.Marshal(bodyMap)
+			if thinkingResponseFiltered {
+				filteredBody, filterErr := stripKimiK3ReasoningUsageDetails(
+					string(responseBody),
+					"usage.completion_tokens_details",
+					"usage.billing_usage.openai_usage.completion_tokens_details",
+				)
+				if filterErr != nil {
+					return nil, types.NewError(filterErr, types.ErrorCodeBadResponseBody)
+				}
+				responseBody = []byte(filteredBody)
+			}
 		}
 		if forceFormat {
 			responseBody, err = common.Marshal(simpleResponse)
 			if err != nil {
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+			if thinkingResponseFiltered {
+				filteredBody, filterErr := stripKimiK3ReasoningUsageDetails(
+					string(responseBody),
+					"usage.completion_tokens_details",
+					"usage.billing_usage.openai_usage.completion_tokens_details",
+				)
+				if filterErr != nil {
+					return nil, types.NewError(filterErr, types.ErrorCodeBadResponseBody)
+				}
+				responseBody = []byte(filteredBody)
 			}
 		} else {
 			break

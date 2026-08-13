@@ -55,3 +55,30 @@ func TestPrepareKimiK3OfficialBillingPreservesSignedAnthropicEquation(t *testing
 	assert.Equal(t, 91, info.KimiK3BillingAudit.SignedTotalInput)
 	assert.Contains(t, info.KimiK3BillingAudit.NegativeFields, "input_tokens")
 }
+
+func TestPrepareKimiK3OfficialBillingExcludesPseudoDisabledReasoningTokens(t *testing.T) {
+	info := kimiK3BillingRelayInfo(constant.ChannelTypeOpenAI)
+	info.KimiK3HideThinking = true
+	usage := &dto.Usage{
+		PromptTokens:     2,
+		CompletionTokens: 63,
+		TotalTokens:      65,
+	}
+	usage.CompletionTokenDetails.ReasoningTokens = 51
+	usage.BillingUsage = dto.NewOpenAIChatBillingUsage(usage)
+
+	prepared := prepareKimiK3OfficialBilling(info, usage)
+
+	assert.Equal(t, 12, prepared.CompletionTokens)
+	assert.Equal(t, 14, prepared.TotalTokens)
+	assert.Zero(t, prepared.CompletionTokenDetails.ReasoningTokens)
+	require.NotNil(t, prepared.BillingUsage)
+	require.NotNil(t, prepared.BillingUsage.OpenAIUsage)
+	assert.Equal(t, 12, prepared.BillingUsage.OpenAIUsage.CompletionTokens)
+	assert.Equal(t, 14, prepared.BillingUsage.OpenAIUsage.TotalTokens)
+	assert.Zero(t, prepared.BillingUsage.OpenAIUsage.CompletionTokenDetails.ReasoningTokens)
+	assert.Equal(t, 12, NormalizeUsageForBilling(prepared).OutputTokens)
+
+	assert.Equal(t, 63, usage.CompletionTokens)
+	assert.Equal(t, 51, usage.CompletionTokenDetails.ReasoningTokens)
+}

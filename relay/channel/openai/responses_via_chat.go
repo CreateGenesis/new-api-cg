@@ -90,25 +90,49 @@ func responsesResponseForKimiK3Request(info *relaycommon.RelayInfo, response *dt
 
 func MarshalKimiK3ResponsesResponse(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) ([]byte, error) {
 	restored := responsesResponseForKimiK3Request(info, response)
+	var data []byte
+	var err error
 	if restored != nil {
-		return common.Marshal(restored)
+		data, err = common.Marshal(restored)
+	} else {
+		data, err = common.Marshal(response)
 	}
-	return common.Marshal(response)
+	if err != nil || info == nil || !info.KimiK3HideThinking {
+		return data, err
+	}
+	filtered, err := stripKimiK3ReasoningUsageDetails(
+		string(data),
+		"usage.completion_tokens_details",
+		"usage.billing_usage.openai_usage.completion_tokens_details",
+	)
+	return []byte(filtered), err
 }
 
 func MarshalKimiK3ResponsesStreamPayload(info *relaycommon.RelayInfo, payload dto.ResponsesStreamResponse) ([]byte, error) {
 	restored := responsesResponseForKimiK3Request(info, payload.Response)
+	var data []byte
+	var err error
 	if restored == nil {
-		return common.Marshal(payload)
+		data, err = common.Marshal(payload)
+	} else {
+		payload.Response = nil
+		data, err = common.Marshal(struct {
+			dto.ResponsesStreamResponse
+			Response *tntResponsesResponse `json:"response,omitempty"`
+		}{
+			ResponsesStreamResponse: payload,
+			Response:                restored,
+		})
 	}
-	payload.Response = nil
-	return common.Marshal(struct {
-		dto.ResponsesStreamResponse
-		Response *tntResponsesResponse `json:"response,omitempty"`
-	}{
-		ResponsesStreamResponse: payload,
-		Response:                restored,
-	})
+	if err != nil || info == nil || !info.KimiK3HideThinking {
+		return data, err
+	}
+	filtered, err := stripKimiK3ReasoningUsageDetails(
+		string(data),
+		"response.usage.completion_tokens_details",
+		"response.usage.billing_usage.openai_usage.completion_tokens_details",
+	)
+	return []byte(filtered), err
 }
 
 func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -239,6 +263,18 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
+		if info.KimiK3HideThinking {
+			filtered, err := stripKimiK3ReasoningUsageDetails(
+				string(data),
+				"response.usage.completion_tokens_details",
+				"response.usage.billing_usage.openai_usage.completion_tokens_details",
+			)
+			if err != nil {
+				streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+				return false
+			}
+			data = []byte(filtered)
+		}
 		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data)); err != nil {
 			if helper.HandleStreamClientDisconnect(c, info, nil, err) {
 				return false
@@ -321,6 +357,10 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	usage := state.Usage()
 	if usage == nil || usage.TotalTokens == 0 {
 		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		state.SetUsage(usage)
+	}
+	if info.KimiK3HideThinking {
+		relayconvert.HideKimiK3ReasoningUsage(usage)
 		state.SetUsage(usage)
 	}
 	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {

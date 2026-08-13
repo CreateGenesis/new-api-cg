@@ -230,6 +230,30 @@ func TestNormalizeKimiK3ResponsesRequestValidatesJSONSchema(t *testing.T) {
 	require.ErrorContains(t, NormalizeKimiK3ResponsesRequest(request), "requires name and schema")
 }
 
+func TestHideKimiK3ReasoningUsageUpdatesAllOpenAIUsageFields(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:     27,
+		InputTokens:      27,
+		CompletionTokens: 40,
+		OutputTokens:     40,
+		TotalTokens:      67,
+	}
+	usage.CompletionTokenDetails.ReasoningTokens = 25
+	usage.BillingUsage = dto.NewOpenAIChatBillingUsage(usage)
+
+	HideKimiK3ReasoningUsage(usage)
+
+	assert.Equal(t, 15, usage.CompletionTokens)
+	assert.Equal(t, 15, usage.OutputTokens)
+	assert.Equal(t, 42, usage.TotalTokens)
+	assert.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Equal(t, 15, usage.BillingUsage.OpenAIUsage.CompletionTokens)
+	assert.Equal(t, 15, usage.BillingUsage.OpenAIUsage.OutputTokens)
+	assert.Equal(t, 42, usage.BillingUsage.OpenAIUsage.TotalTokens)
+	assert.Zero(t, usage.BillingUsage.OpenAIUsage.CompletionTokenDetails.ReasoningTokens)
+}
+
 func TestNormalizeKimiK3ClaudeRequestAppliesOfficialReasoningAndValidatesOutputFormat(t *testing.T) {
 	request := &dto.ClaudeRequest{
 		Model: "kimi-k3",

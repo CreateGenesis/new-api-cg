@@ -10,6 +10,7 @@ func HideKimiK3ChatThinking(response *dto.OpenAITextResponse) {
 		response.Choices[index].Message.ReasoningContent = nil
 		response.Choices[index].Message.Reasoning = nil
 	}
+	HideKimiK3ReasoningUsage(&response.Usage)
 }
 
 func HideKimiK3ChatStreamThinking(response *dto.ChatCompletionsStreamResponse) {
@@ -21,6 +22,7 @@ func HideKimiK3ChatStreamThinking(response *dto.ChatCompletionsStreamResponse) {
 		choice.Delta.ReasoningContent = nil
 		choice.Delta.Reasoning = nil
 	}
+	HideKimiK3ReasoningUsage(response.Usage)
 }
 
 func HideKimiK3ClaudeThinking(response *dto.ClaudeResponse) {
@@ -82,6 +84,48 @@ func HideKimiK3ResponsesThinking(response *dto.OpenAIResponsesResponse) {
 		}
 	}
 	response.Output = output
+	HideKimiK3ReasoningUsage(response.Usage)
+}
+
+// HideKimiK3ReasoningUsage makes pseudo-disabled thinking follow the official
+// non-thinking usage contract. Reported reasoning tokens are removed from both
+// the response totals and any protocol-specific usage retained for billing.
+func HideKimiK3ReasoningUsage(usage *dto.Usage) {
+	if usage == nil {
+		return
+	}
+	removeKimiK3ReasoningTokens(usage)
+	if usage.BillingUsage == nil {
+		return
+	}
+	removeKimiK3ReasoningTokens(usage.BillingUsage.OpenAIUsage)
+	if metadata := usage.BillingUsage.GeminiUsageMetadata; metadata != nil {
+		reasoningTokens := max(metadata.ThoughtsTokenCount, 0)
+		metadata.ThoughtsTokenCount = 0
+		metadata.TotalTokenCount = subtractKimiK3Tokens(metadata.TotalTokenCount, reasoningTokens, metadata.PromptTokenCount)
+	}
+}
+
+func removeKimiK3ReasoningTokens(usage *dto.Usage) {
+	if usage == nil {
+		return
+	}
+	reasoningTokens := max(usage.CompletionTokenDetails.ReasoningTokens, 0)
+	usage.CompletionTokenDetails.ReasoningTokens = 0
+	if reasoningTokens == 0 {
+		return
+	}
+	usage.CompletionTokens = subtractKimiK3Tokens(usage.CompletionTokens, reasoningTokens, 0)
+	usage.OutputTokens = subtractKimiK3Tokens(usage.OutputTokens, reasoningTokens, 0)
+	minimumTotal := max(usage.PromptTokens, usage.InputTokens)
+	usage.TotalTokens = subtractKimiK3Tokens(usage.TotalTokens, reasoningTokens, minimumTotal)
+}
+
+func subtractKimiK3Tokens(total, deduction, minimum int) int {
+	if total <= minimum || deduction <= 0 {
+		return max(total, 0)
+	}
+	return max(total-min(deduction, total-minimum), minimum)
 }
 
 func HideKimiK3ResponsesStreamThinking(event *ChatToResponsesStreamEvent) bool {

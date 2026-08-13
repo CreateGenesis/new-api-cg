@@ -380,6 +380,87 @@ func TestOaiChatToResponsesHandlerRestoresKimiK3MetadataAndModel(t *testing.T) {
 	assert.Equal(t, "high", got.Reasoning.Effort)
 }
 
+func TestOaiChatToResponsesHandlerHidesKimiK3ReasoningUsage(t *testing.T) {
+	c, recorder, resp, info := newResponsesChatTestContext(t, `{
+		"id":"chatcmpl_1",
+		"object":"chat.completion",
+		"created":1710000000,
+		"model":"kimi-k3",
+		"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"hidden","content":"THINKING_OFF_OK"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":27,"completion_tokens":40,"total_tokens":67,"completion_tokens_details":{"reasoning_tokens":25}}
+	}`, false)
+	info.ChannelMeta.ChannelOtherSettings.KimiK3OfficialCompatibility = true
+	info.ChannelMeta.ChannelType = constant.ChannelTypeOpenAI
+	info.ChannelMeta.UpstreamModelName = "kimi-k3"
+	info.UpstreamModelName = "kimi-k3"
+	info.ActivateKimiK3OfficialCompatibility()
+	info.KimiK3HideThinking = true
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.Request = &dto.OpenAIResponsesRequest{
+		Model:     "kimi-k3",
+		Reasoning: &dto.Reasoning{Effort: "none"},
+	}
+
+	usage, apiErr := OaiChatToResponsesHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 15, usage.OutputTokens)
+	assert.Equal(t, 42, usage.TotalTokens)
+	assert.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
+
+	got := recorder.Body.String()
+	assert.Contains(t, got, `"output_tokens":15`)
+	assert.Contains(t, got, `"total_tokens":42`)
+	assert.NotContains(t, got, "hidden")
+	assert.NotContains(t, got, `"reasoning_tokens"`)
+	assert.NotContains(t, got, `"completion_tokens_details"`)
+}
+
+func TestOaiChatToResponsesStreamHandlerHidesKimiK3ReasoningUsage(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"reasoning_content":"hidden"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"THINKING_OFF_OK"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":27,"completion_tokens":40,"total_tokens":67,"completion_tokens_details":{"reasoning_tokens":25}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	info.ChannelMeta.ChannelOtherSettings.KimiK3OfficialCompatibility = true
+	info.ChannelMeta.ChannelType = constant.ChannelTypeOpenAI
+	info.ChannelMeta.UpstreamModelName = "kimi-k3"
+	info.UpstreamModelName = "kimi-k3"
+	info.ActivateKimiK3OfficialCompatibility()
+	info.KimiK3HideThinking = true
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.Request = &dto.OpenAIResponsesRequest{
+		Model:     "kimi-k3",
+		Reasoning: &dto.Reasoning{Effort: "none"},
+	}
+
+	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 15, usage.OutputTokens)
+	assert.Equal(t, 42, usage.TotalTokens)
+	assert.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
+
+	got := recorder.Body.String()
+	assert.Contains(t, got, `"type":"response.completed"`)
+	assert.Contains(t, got, `"output_tokens":15`)
+	assert.Contains(t, got, `"total_tokens":42`)
+	assert.NotContains(t, got, "hidden")
+	assert.NotContains(t, got, `"reasoning_tokens"`)
+	assert.NotContains(t, got, `"completion_tokens_details"`)
+}
+
 func TestOaiChatToResponsesStreamHandlerRestoresKimiK3MetadataWithoutTNTEnvelope(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)

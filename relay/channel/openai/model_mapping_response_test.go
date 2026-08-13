@@ -66,7 +66,7 @@ func TestOpenAIHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
 	require.NotContains(t, got, `"model":"xopglm52"`)
 }
 
-func TestOpenAIHandlerHidesKimiK3ThinkingWithoutChangingUsage(t *testing.T) {
+func TestOpenAIHandlerHidesKimiK3ThinkingAndReasoningUsage(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -90,13 +90,17 @@ func TestOpenAIHandlerHidesKimiK3ThinkingWithoutChangingUsage(t *testing.T) {
 	usage, apiErr := OpenaiHandler(c, info, resp)
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	require.Equal(t, 63, usage.CompletionTokens)
-	require.Equal(t, 51, usage.CompletionTokenDetails.ReasoningTokens)
+	require.Equal(t, 12, usage.CompletionTokens)
+	require.Equal(t, 14, usage.TotalTokens)
+	require.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
 
 	got := recorder.Body.String()
 	require.Contains(t, got, `"content":"THINKING_OFF_OK"`)
 	require.Contains(t, got, `"finish_reason":"length"`)
-	require.Contains(t, got, `"reasoning_tokens":51`)
+	require.Contains(t, got, `"completion_tokens":12`)
+	require.Contains(t, got, `"total_tokens":14`)
+	require.NotContains(t, got, `"reasoning_tokens"`)
+	require.NotContains(t, got, `"completion_tokens_details"`)
 	require.NotContains(t, got, "hidden reasoning")
 	require.NotContains(t, got, "hidden alias")
 	require.NotContains(t, got, `"reasoning_content"`)
@@ -205,8 +209,9 @@ func TestOpenAIStreamHandlerHidesKimiK3ThinkingForClaudeClient(t *testing.T) {
 	usage, apiErr := OaiStreamHandler(c, info, resp)
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	require.Equal(t, 12, usage.CompletionTokens)
-	require.Equal(t, 8, usage.CompletionTokenDetails.ReasoningTokens)
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 6, usage.TotalTokens)
+	require.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
 
 	got := recorder.Body.String()
 	require.Equal(t, 1, strings.Count(got, `"type":"message_start"`))
@@ -215,6 +220,48 @@ func TestOpenAIStreamHandlerHidesKimiK3ThinkingForClaudeClient(t *testing.T) {
 	require.NotContains(t, got, "hidden reasoning")
 	require.NotContains(t, got, `"type":"thinking"`)
 	require.NotContains(t, got, `"thinking_delta"`)
+}
+
+func TestOpenAIStreamHandlerHidesKimiK3ReasoningUsageForOpenAIClient(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	c, recorder, info := newMappedOpenAIResponseTestContext(t)
+	info.IsStream = true
+	info.KimiK3OfficialCompatibilityActive = true
+	info.KimiK3HideThinking = true
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"reasoning_content":"hidden reasoning"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"THINKING_OFF_OK"},"finish_reason":"stop"}]}`,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":12,"total_tokens":14,"completion_tokens_details":{"reasoning_tokens":8}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 6, usage.TotalTokens)
+	require.Zero(t, usage.CompletionTokenDetails.ReasoningTokens)
+
+	got := recorder.Body.String()
+	require.Contains(t, got, `"content":"THINKING_OFF_OK"`)
+	require.Contains(t, got, `"completion_tokens":4`)
+	require.Contains(t, got, `"total_tokens":6`)
+	require.NotContains(t, got, "hidden reasoning")
+	require.NotContains(t, got, `"reasoning_tokens"`)
+	require.NotContains(t, got, `"completion_tokens_details"`)
 }
 
 func TestOpenAIHandlerPreservesReasoningForClaudeClient(t *testing.T) {

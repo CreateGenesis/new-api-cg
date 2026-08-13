@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service/relayconvert"
 )
 
 func prepareKimiK3OfficialBilling(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) *dto.Usage {
@@ -13,7 +14,11 @@ func prepareKimiK3OfficialBilling(relayInfo *relaycommon.RelayInfo, usage *dto.U
 		return usage
 	}
 	prepared := *usage
-	canonical, audit := canonicalKimiK3OpenAIUsage(usage)
+	prepared.BillingUsage = dto.CloneBillingUsage(usage.BillingUsage)
+	if relayInfo.KimiK3HideThinking {
+		relayconvert.HideKimiK3ReasoningUsage(&prepared)
+	}
+	canonical, audit := canonicalKimiK3OpenAIUsage(&prepared)
 	prepared.BillingUsage = &dto.BillingUsage{
 		Source:      dto.BillingUsageSourceOAIChat,
 		Semantic:    dto.BillingUsageSemanticOpenAI,
