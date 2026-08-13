@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useWatch, type Control } from 'react-hook-form'
+import { useFormContext, useWatch, type Control } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -31,6 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../../../lib'
+import { isZeroBilledOutputRetryDisabled } from '../../../lib/channel-output-retry-policy'
 import { isRequestModeSwitchDisabled } from '../../../lib/channel-request-mode-policy'
 
 type ChannelFallbackPolicyFieldsProps = {
@@ -42,6 +43,7 @@ export function ChannelFallbackPolicyFields(
   props: ChannelFallbackPolicyFieldsProps
 ) {
   const { t } = useTranslation()
+  const form = useFormContext<ChannelFormValues>()
   const retryZeroOutput = useWatch({
     control: props.control,
     name: 'retry_zero_output',
@@ -68,17 +70,50 @@ export function ChannelFallbackPolicyFields(
             <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
               <div className='space-y-0.5'>
                 <FormLabel className='text-sm'>
-                  {t('Retry zero-token output on another channel')}
+                  {t('Retry empty output on another channel')}
                 </FormLabel>
                 <FormDescription>
                   {t(
-                    'If upstream reports zero output tokens and no effective output, retry on another channel.'
+                    'If the response has no effective visible output, retry on another channel.'
                   )}
                 </FormDescription>
               </div>
               <FormControl>
                 <Switch
                   checked={field.value}
+                  onCheckedChange={(checked) => {
+                    field.onChange(checked)
+                    if (!checked) {
+                      form.setValue('retry_zero_billed_output', false, {
+                        shouldDirty: true,
+                      })
+                    }
+                  }}
+                />
+              </FormControl>
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={props.control}
+          name='retry_zero_billed_output'
+          render={({ field }) => (
+            <FormItem className='bg-muted/30 flex items-center justify-between gap-3 px-4 py-3 pl-8'>
+              <div className='space-y-0.5'>
+                <FormLabel className='text-sm'>
+                  {t('Retry zero billable-token output before estimation')}
+                </FormLabel>
+                <FormDescription>
+                  {t(
+                    'If billable output tokens are zero, return 503 for retry without estimating output tokens.'
+                  )}
+                </FormDescription>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value}
+                  disabled={isZeroBilledOutputRetryDisabled(retryZeroOutput)}
                   onCheckedChange={field.onChange}
                 />
               </FormControl>

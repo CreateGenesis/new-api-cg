@@ -101,12 +101,14 @@ func TestChannelOtherSettingsMissingTokenMultipliersJSONCompatibility(t *testing
 	var settings ChannelOtherSettings
 	require.NoError(t, common.UnmarshalJsonStr(`{
 		"retry_zero_output":true,
+		"retry_zero_billed_output":true,
 		"disable_stream":true,
 		"missing_output_token_multiplier":1.5,
 		"simulated_model_cache":{"missing_input_token_multiplier":2.25}
 	}`, &settings))
 
 	assert.True(t, settings.RetryZeroOutput)
+	assert.True(t, settings.RetryZeroBilledOutput)
 	assert.True(t, settings.DisableStream)
 	assert.False(t, settings.DisableNonStream)
 	require.NotNil(t, settings.MissingOutputTokenMultiplier)

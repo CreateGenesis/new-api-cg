@@ -24,29 +24,30 @@ var errResponseContentMatched = errors.New("upstream response matched a configur
 
 type channelOutputRecorder struct {
 	gin.ResponseWriter
-	header               http.Header
-	format               types.RelayFormat
-	info                 *relaycommon.RelayInfo
-	relayMode            int
-	model                string
-	stream               bool
-	retryZeroOutput      bool
-	multiplier           float64
-	bufferLimit          int
-	status               int
-	statusWritten        bool
-	committed            bool
-	nonStreamPassThrough bool
-	effectiveOutput      bool
-	holdingStreamTail    bool
-	body                 bytes.Buffer
-	streamPending        bytes.Buffer
-	streamPrefix         bytes.Buffer
-	streamTail           bytes.Buffer
-	outputText           strings.Builder
-	contentMatcher       *responseContentMatcher
-	policyErr            error
-	deliveryErr          error
+	header                http.Header
+	format                types.RelayFormat
+	info                  *relaycommon.RelayInfo
+	relayMode             int
+	model                 string
+	stream                bool
+	retryZeroOutput       bool
+	retryZeroBilledOutput bool
+	multiplier            float64
+	bufferLimit           int
+	status                int
+	statusWritten         bool
+	committed             bool
+	nonStreamPassThrough  bool
+	effectiveOutput       bool
+	holdingStreamTail     bool
+	body                  bytes.Buffer
+	streamPending         bytes.Buffer
+	streamPrefix          bytes.Buffer
+	streamTail            bytes.Buffer
+	outputText            strings.Builder
+	contentMatcher        *responseContentMatcher
+	policyErr             error
+	deliveryErr           error
 }
 
 func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, contentPolicy operation_setting.ResponseContentRetryPolicy, multiplier float64, bufferLimit int) *channelOutputRecorder {
@@ -63,6 +64,10 @@ func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.Relay
 	if info != nil {
 		recorder.format = info.RelayFormat
 		recorder.relayMode = info.RelayMode
+		if info.ChannelMeta != nil {
+			recorder.retryZeroBilledOutput = retryZeroOutput && info.ChannelOtherSettings.RetryZeroOutput &&
+				info.ChannelOtherSettings.RetryZeroBilledOutput
+		}
 		recorder.model = simulatedModelCacheModelName(info)
 		recorder.stream = info.IsStream
 	}
@@ -129,7 +134,7 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 
 	if w.streamPending.Len()+w.streamPrefix.Len()+w.streamTail.Len()+len(data) > w.bufferLimit && !w.committed {
-		if w.retryZeroOutput && !w.effectiveOutput {
+		if w.retryZeroBilledOutput || (w.retryZeroOutput && !w.effectiveOutput) {
 			w.policyErr = errChannelOutputPrefixTooLarge
 			return 0, w.policyErr
 		}
@@ -271,8 +276,11 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	estimatedOutput := false
 	if w.retryZeroOutput {
 		normalized := service.NormalizeUsageForBilling(usage)
-		if normalized.OutputTokens == 0 && !w.effectiveOutput {
-			return channelZeroOutputError(errors.New("upstream returned zero output tokens without effective output"))
+		if !w.effectiveOutput {
+			return channelZeroOutputError(errors.New("upstream returned no effective output"))
+		}
+		if w.retryZeroBilledOutput && normalized.OutputTokens == 0 {
+			return channelZeroOutputError(errors.New("upstream returned zero billable output tokens"))
 		}
 		if normalized.OutputTokens == 0 {
 			baseEstimate := service.EstimateTokenByModel(w.model, w.outputText.String())
@@ -361,7 +369,7 @@ func (w *channelOutputRecorder) readyToCommitStream() bool {
 	if w.contentMatcher != nil && !w.contentMatcher.resolvedWithoutMatch() {
 		return false
 	}
-	return !w.retryZeroOutput || w.effectiveOutput
+	return !w.retryZeroOutput || (w.effectiveOutput && !w.retryZeroBilledOutput)
 }
 
 func (w *channelOutputRecorder) commitBufferedStream() error {

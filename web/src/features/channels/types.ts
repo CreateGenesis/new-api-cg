@@ -185,6 +185,7 @@ export interface ChannelOtherSettings {
   kimi_k3_official_compatibility?: boolean
   cache_usage_validation_split?: boolean
   retry_zero_output?: boolean
+  retry_zero_billed_output?: boolean
   disable_stream?: boolean
   disable_non_stream?: boolean
   missing_output_token_multiplier?: number

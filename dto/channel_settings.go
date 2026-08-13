@@ -70,6 +70,7 @@ type ChannelOtherSettings struct {
 	KimiK3OfficialCompatibility           bool                               `json:"kimi_k3_official_compatibility,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
+	RetryZeroBilledOutput                 bool                               `json:"retry_zero_billed_output,omitempty"`
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
 	MissingOutputTokenMultiplier          *float64                           `json:"missing_output_token_multiplier,omitempty"`

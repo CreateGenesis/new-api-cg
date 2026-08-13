@@ -322,6 +322,7 @@ const SENSITIVE_FORM_FIELDS = [
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'retry_zero_output',
+  'retry_zero_billed_output',
   'disable_stream',
   'disable_non_stream',
   'missing_output_token_multiplier',
@@ -401,6 +402,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
     values.retry_zero_output ||
+    values.retry_zero_billed_output ||
     values.disable_stream ||
     values.disable_non_stream ||
     (values.missing_output_token_multiplier ?? 1) !== 1 ||
@@ -892,6 +894,7 @@ export function ChannelMutateDrawer({
     'cache_usage_validation_split'
   )
   const currentRetryZeroOutput = form.watch('retry_zero_output')
+  const currentRetryZeroBilledOutput = form.watch('retry_zero_billed_output')
   const currentDisableStream = form.watch('disable_stream')
   const currentDisableNonStream = form.watch('disable_non_stream')
   const currentMissingOutputTokenMultiplier = form.watch(
@@ -1256,6 +1259,7 @@ export function ChannelMutateDrawer({
   )
   const fallbackPolicyConfigured = Boolean(
     currentRetryZeroOutput ||
+    currentRetryZeroBilledOutput ||
     currentDisableStream ||
     currentDisableNonStream ||
     (currentMissingOutputTokenMultiplier ?? 1) !== 1

@@ -206,11 +206,12 @@ describe('channel fallback policy settings', () => {
   test('loads and saves fallback switches and output multiplier', () => {
     const form = transformChannelToFormDefaults(
       testChannel(
-        '{"retry_zero_output":true,"disable_stream":true,"missing_output_token_multiplier":1.75}'
+        '{"retry_zero_output":true,"retry_zero_billed_output":true,"disable_stream":true,"missing_output_token_multiplier":1.75}'
       )
     )
 
     assert.equal(form.retry_zero_output, true)
+    assert.equal(form.retry_zero_billed_output, true)
     assert.equal(form.disable_stream, true)
     assert.equal(form.missing_output_token_multiplier, 1.75)
 
@@ -226,8 +227,27 @@ describe('channel fallback policy settings', () => {
     const settings = JSON.parse(String(payload.channel.settings))
 
     assert.equal(settings.retry_zero_output, true)
+    assert.equal(settings.retry_zero_billed_output, true)
     assert.equal(settings.disable_stream, true)
     assert.equal(settings.missing_output_token_multiplier, 1.75)
+  })
+
+  test('drops zero-billable-output retry when its parent policy is disabled', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      retry_zero_output: false,
+      retry_zero_billed_output: true,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+
+    assert.equal(settings.retry_zero_output, undefined)
+    assert.equal(settings.retry_zero_billed_output, undefined)
   })
 
   test('preserves a non-default output multiplier while retry is disabled', () => {

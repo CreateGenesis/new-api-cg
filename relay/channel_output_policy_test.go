@@ -110,6 +110,63 @@ func TestChannelOutputRecorderKeepsEmptyNonStreamUncommitted(t *testing.T) {
 	assert.Empty(t, response.Body.String())
 }
 
+func TestChannelOutputRecorderRetriesEmptyContentEvenWhenUsageReportsOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		OriginModelName: "gpt-test",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":5,"completion_tokens":12,"total_tokens":17}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 5, CompletionTokens: 12, TotalTokens: 17}
+
+	policyErr := recorder.finish(ctx, info, usage)
+
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Equal(t, 12, usage.CompletionTokens)
+	assert.Empty(t, response.Body.String())
+}
+
+func TestKimiK3HiddenReasoningOnlyResponseRetriesAsEmptyOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		OriginModelName:    "kimi-k3",
+		KimiK3HideThinking: true,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "kimi-k3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				KimiK3OfficialCompatibility: true,
+			},
+		},
+	}
+	info.ActivateKimiK3OfficialCompatibility()
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":null}}],"usage":{"prompt_tokens":5,"completion_tokens":12,"total_tokens":17}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 5, CompletionTokens: 12, TotalTokens: 17}
+
+	policyErr := recorder.finish(ctx, info, usage)
+
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Empty(t, response.Body.String())
+}
+
 func TestChannelOutputRecorderEstimatesAndPatchesValidNonStreamOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
@@ -139,6 +196,110 @@ func TestChannelOutputRecorderEstimatesAndPatchesValidNonStreamOutput(t *testing
 	assert.Equal(t, usage.CompletionTokens, payload.Usage.CompletionTokens)
 	assert.Equal(t, usage.TotalTokens, payload.Usage.TotalTokens)
 	assert.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
+}
+
+func TestChannelOutputRecorderRetriesZeroBillableOutputBeforeEstimation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		OriginModelName: "gpt-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RetryZeroOutput:       true,
+				RetryZeroBilledOutput: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 5, TotalTokens: 5}
+
+	policyErr := recorder.finish(ctx, info, usage)
+
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.False(t, usage.Estimated)
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Equal(t, 5, usage.TotalTokens)
+	assert.Empty(t, response.Body.String())
+}
+
+func TestChannelOutputRecorderUsesBillingUsageForZeroOutputRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		OriginModelName: "gpt-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RetryZeroOutput:       true,
+				RetryZeroBilledOutput: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":9,"total_tokens":14}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{
+		PromptTokens:     5,
+		CompletionTokens: 9,
+		TotalTokens:      14,
+		BillingUsage: &dto.BillingUsage{
+			Source:   dto.BillingUsageSourceOAIChat,
+			Semantic: dto.BillingUsageSemanticOpenAI,
+			OpenAIUsage: &dto.Usage{
+				PromptTokens: 5,
+				TotalTokens:  5,
+			},
+		},
+	}
+
+	policyErr := recorder.finish(ctx, info, usage)
+
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.False(t, usage.Estimated)
+	assert.Equal(t, 9, usage.CompletionTokens)
+	assert.Empty(t, response.Body.String())
+}
+
+func TestChannelOutputRecorderIgnoresZeroBillableOutputWithoutParentPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		OriginModelName: "gpt-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RetryZeroBilledOutput: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{PromptTokens: 5, TotalTokens: 5}
+
+	require.Nil(t, recorder.finish(ctx, info, usage))
+	assert.True(t, usage.Estimated)
+	assert.Positive(t, usage.CompletionTokens)
 }
 
 func TestChannelOutputRecorderPreservesFirstStatusCodeBeforeCommit(t *testing.T) {
@@ -189,6 +350,72 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 
 	assert.Greater(t, usage.CompletionTokens, 0)
 	assert.NotContains(t, response.Body.String(), "\"usage\"")
+	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
+}
+
+func TestChannelOutputRecorderHoldsStreamForZeroBillableOutputPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		IsStream:           true,
+		ShouldIncludeUsage: true,
+		OriginModelName:    "gpt-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RetryZeroOutput:       true,
+				RetryZeroBilledOutput: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.Empty(t, response.Body.String())
+	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":0,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+	require.NoError(t, err)
+
+	policyErr := recorder.finish(ctx, info, &dto.Usage{PromptTokens: 10, TotalTokens: 10})
+
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Empty(t, response.Body.String())
+}
+
+func TestChannelOutputRecorderReleasesHeldStreamWithBillableOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		IsStream:           true,
+		ShouldIncludeUsage: true,
+		OriginModelName:    "gpt-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RetryZeroOutput:       true,
+				RetryZeroBilledOutput: true,
+			},
+		},
+	}
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	ctx.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+	require.NoError(t, err)
+	assert.Empty(t, response.Body.String())
+	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\ndata: [DONE]\n\n")
+	require.NoError(t, err)
+
+	require.Nil(t, recorder.finish(ctx, info, &dto.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}))
+	assert.Contains(t, response.Body.String(), "hello")
 	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
 }
 

@@ -369,6 +369,7 @@ export const channelFormSchema = z
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
     retry_zero_output: z.boolean().optional(),
+    retry_zero_billed_output: z.boolean().optional(),
     disable_stream: z.boolean().optional(),
     disable_non_stream: z.boolean().optional(),
     missing_output_token_multiplier: z.number().optional(),
@@ -863,6 +864,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
   retry_zero_output: false,
+  retry_zero_billed_output: false,
   disable_stream: false,
   disable_non_stream: false,
   missing_output_token_multiplier: 1,
@@ -1005,6 +1007,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let deepSeekV4RequestSanitizationEnabled = false
+  let retryZeroBilledOutput = false
   let advancedCustom = ''
 
   if (channel.settings) {
@@ -1029,6 +1032,8 @@ export function transformChannelToFormDefaults(
         parsed.kimi_k3_official_compatibility === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
+      retryZeroBilledOutput =
+        retryZeroOutput && parsed.retry_zero_billed_output === true
       disableStream = parsed.disable_stream === true
       disableNonStream = parsed.disable_non_stream === true
       const outputMultiplier = Number(parsed.missing_output_token_multiplier)
@@ -1327,6 +1332,7 @@ export function transformChannelToFormDefaults(
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
     retry_zero_output: retryZeroOutput,
+    retry_zero_billed_output: retryZeroBilledOutput,
     disable_stream: disableStream,
     disable_non_stream: disableNonStream,
     missing_output_token_multiplier: missingOutputTokenMultiplier,
@@ -1532,6 +1538,14 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.retry_zero_output = true
   } else if ('retry_zero_output' in settingsObj) {
     delete settingsObj.retry_zero_output
+  }
+  if (
+    formData.retry_zero_output === true &&
+    formData.retry_zero_billed_output === true
+  ) {
+    settingsObj.retry_zero_billed_output = true
+  } else if ('retry_zero_billed_output' in settingsObj) {
+    delete settingsObj.retry_zero_billed_output
   }
   if (formData.disable_stream === true) {
     settingsObj.disable_stream = true
