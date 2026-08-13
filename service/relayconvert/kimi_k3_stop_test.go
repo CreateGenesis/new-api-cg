@@ -40,6 +40,23 @@ func TestKimiK3ChatStreamStopFilterFlushesUnmatchedPrefix(t *testing.T) {
 	assert.Equal(t, "length", *second.Choices[0].FinishReason)
 }
 
+func TestKimiK3ChatStreamStopFilterUsesDecodedRequestArray(t *testing.T) {
+	var request dto.GeneralOpenAIRequest
+	require.NoError(t, common.Unmarshal([]byte(`{"model":"kimi-k3","stop":["FIRST","SECOND"]}`), &request))
+	filter := NewKimiK3ChatStreamStopFilter(KimiK3StopSequencesFromRequest(&request))
+	first := chatTextChunk("answerSEC", "", "", "")
+	second := chatTextChunk("ONDignored", "", "", "length")
+
+	filter.Filter(first)
+	filter.Filter(second)
+
+	assert.Equal(t, "answer", first.Choices[0].Delta.GetContentString())
+	assert.Empty(t, second.Choices[0].Delta.GetContentString())
+	require.NotNil(t, second.Choices[0].FinishReason)
+	assert.Equal(t, "stop", *second.Choices[0].FinishReason)
+	assert.Equal(t, "SECOND", filter.MatchedSequence())
+}
+
 func TestApplyKimiK3StopToClaudeResponseOnlyTruncatesText(t *testing.T) {
 	response := &dto.ClaudeResponse{
 		StopReason: "end_turn",

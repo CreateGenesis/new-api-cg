@@ -90,6 +90,16 @@ func kimiK3StopSequences(stop any) []string {
 		return []string{value}
 	case []string:
 		return append([]string(nil), value...)
+	case []any:
+		sequences := make([]string, 0, len(value))
+		for _, item := range value {
+			sequence, ok := item.(string)
+			if !ok {
+				return nil
+			}
+			sequences = append(sequences, sequence)
+		}
+		return sequences
 	default:
 		return nil
 	}

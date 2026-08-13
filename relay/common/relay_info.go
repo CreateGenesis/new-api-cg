@@ -156,6 +156,7 @@ type RelayInfo struct {
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
 	KimiK3OfficialCompatibilityActive     bool
+	KimiK3HideThinking                    bool
 	KimiK3BillingAudit                    *dto.KimiK3BillingAudit
 	KimiK3MatchedStopSequence             string
 

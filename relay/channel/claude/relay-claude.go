@@ -84,10 +84,10 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 }
 
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
-	return handleStreamResponseData(c, info, claudeInfo, nil, data)
+	return handleStreamResponseData(c, info, claudeInfo, nil, nil, data)
 }
 
-func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter, data string) *types.NewAPIError {
+func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter, thinkingFilter *relayconvert.KimiK3ClaudeStreamThinkingFilter, data string) *types.NewAPIError {
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
@@ -98,8 +98,14 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
 	for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
+		unfilteredResponse := filteredResponse
+		filteredResponse = thinkingFilter.Filter(unfilteredResponse)
+		if filteredResponse == nil {
+			FormatClaudeResponseInfo(unfilteredResponse, nil, claudeInfo)
+			continue
+		}
 		eventData := data
-		if stopFilter != nil {
+		if stopFilter != nil || thinkingFilter != nil {
 			encoded, marshalErr := common.Marshal(filteredResponse)
 			if marshalErr != nil {
 				return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
@@ -212,12 +218,16 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 	var err *types.NewAPIError
 	var stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter
+	var thinkingFilter *relayconvert.KimiK3ClaudeStreamThinkingFilter
 	if info.IsKimiK3OfficialCompatibility() {
 		stopFilter = relayconvert.NewKimiK3ClaudeStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+		if info.KimiK3HideThinking {
+			thinkingFilter = relayconvert.NewKimiK3ClaudeStreamThinkingFilter()
+		}
 	}
 	info.RequireStreamProtocolEnd()
 	streamRetryErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		err = handleStreamResponseData(c, info, claudeInfo, stopFilter, data)
+		err = handleStreamResponseData(c, info, claudeInfo, stopFilter, thinkingFilter, data)
 		if err != nil {
 			sr.Stop(err)
 		}
@@ -247,6 +257,9 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	}
 	if info.IsKimiK3OfficialCompatibility() {
 		relayconvert.ApplyKimiK3StopToClaudeResponse(&claudeResponse, relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+		if info.KimiK3HideThinking {
+			relayconvert.HideKimiK3ClaudeThinking(&claudeResponse)
+		}
 	}
 	claudeResponse.Model = info.DownstreamModelName(claudeResponse.Model)
 	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)

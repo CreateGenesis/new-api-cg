@@ -77,26 +77,26 @@ func TestNormalizeKimiK3ChatRequestRejectsUnsupportedOfficialValues(t *testing.T
 
 func TestNormalizeKimiK3ReasoningEffortsMatchOfficialAPI(t *testing.T) {
 	tests := []struct {
-		effort          string
-		wantTemperature float64
+		effort     string
+		wantEffort string
 	}{
-		{effort: "low", wantTemperature: 1.0},
-		{effort: "medium", wantTemperature: 1.0},
-		{effort: "high", wantTemperature: 1.0},
-		{effort: "max", wantTemperature: 1.0},
-		{effort: "ultra", wantTemperature: 1.0},
-		{effort: "xhigh", wantTemperature: 1.0},
-		{effort: "invalid_probe", wantTemperature: 1.0},
-		{effort: "none", wantTemperature: 0.6},
+		{effort: "low", wantEffort: "low"},
+		{effort: "medium", wantEffort: "medium"},
+		{effort: "high", wantEffort: "high"},
+		{effort: "max", wantEffort: "max"},
+		{effort: "ultra", wantEffort: "ultra"},
+		{effort: "xhigh", wantEffort: "xhigh"},
+		{effort: "invalid_probe", wantEffort: "invalid_probe"},
+		{effort: "none", wantEffort: "low"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.effort, func(t *testing.T) {
 			chatRequest := &dto.GeneralOpenAIRequest{Model: "kimi-k3", ReasoningEffort: test.effort}
 			require.NoError(t, NormalizeKimiK3ChatRequest(chatRequest))
-			assert.Equal(t, test.effort, chatRequest.ReasoningEffort)
+			assert.Equal(t, test.wantEffort, chatRequest.ReasoningEffort)
 			require.NotNil(t, chatRequest.Temperature)
-			assert.Equal(t, test.wantTemperature, *chatRequest.Temperature)
+			assert.Equal(t, 1.0, *chatRequest.Temperature)
 
 			responsesRequest := &dto.OpenAIResponsesRequest{
 				Model:     "kimi-k3",
@@ -104,30 +104,33 @@ func TestNormalizeKimiK3ReasoningEffortsMatchOfficialAPI(t *testing.T) {
 				Reasoning: &dto.Reasoning{Effort: test.effort},
 			}
 			require.NoError(t, NormalizeKimiK3ResponsesRequest(responsesRequest))
-			assert.Equal(t, test.effort, responsesRequest.Reasoning.Effort)
+			assert.Equal(t, test.wantEffort, responsesRequest.Reasoning.Effort)
 			require.NotNil(t, responsesRequest.Temperature)
-			assert.Equal(t, test.wantTemperature, *responsesRequest.Temperature)
+			assert.Equal(t, 1.0, *responsesRequest.Temperature)
 
 			claudeRequest := &dto.ClaudeRequest{
 				Model:        "kimi-k3",
 				OutputConfig: []byte(`{"effort":"` + test.effort + `"}`),
 			}
 			require.NoError(t, NormalizeKimiK3ClaudeRequest(claudeRequest))
-			assert.Equal(t, test.effort, claudeRequest.GetEfforts())
+			assert.Equal(t, test.wantEffort, claudeRequest.GetEfforts())
 			assert.Nil(t, claudeRequest.Temperature)
 		})
 	}
 }
 
-func TestNormalizeKimiK3ThinkingDisabledUsesOfficialNonThinkingSampling(t *testing.T) {
+func TestNormalizeKimiK3ThinkingDisabledUsesLowUpstreamThinking(t *testing.T) {
 	chatRequest := &dto.GeneralOpenAIRequest{
 		Model:           "kimi-k3",
 		ReasoningEffort: "low",
 		THINKING:        []byte(`{"type":"disabled"}`),
+		Temperature:     common.GetPointer(0.6),
 	}
 	require.NoError(t, NormalizeKimiK3ChatRequest(chatRequest))
+	assert.Equal(t, "low", chatRequest.ReasoningEffort)
+	assert.Empty(t, chatRequest.THINKING)
 	require.NotNil(t, chatRequest.Temperature)
-	assert.Equal(t, 0.6, *chatRequest.Temperature)
+	assert.Equal(t, 1.0, *chatRequest.Temperature)
 
 	claudeRequest := &dto.ClaudeRequest{
 		Model:        "kimi-k3",
@@ -135,6 +138,8 @@ func TestNormalizeKimiK3ThinkingDisabledUsesOfficialNonThinkingSampling(t *testi
 		Thinking:     &dto.Thinking{Type: "disabled"},
 	}
 	require.NoError(t, NormalizeKimiK3ClaudeRequest(claudeRequest))
+	assert.Equal(t, "low", claudeRequest.GetEfforts())
+	assert.Nil(t, claudeRequest.Thinking)
 	assert.Nil(t, claudeRequest.Temperature)
 }
 
@@ -160,12 +165,43 @@ func TestNormalizeKimiK3ClaudeSamplingMatchesOfficialRanges(t *testing.T) {
 func TestNormalizeKimiK3StopLimitsUTF8Bytes(t *testing.T) {
 	valid := &dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: []string{"a", "二"}}
 	require.NoError(t, NormalizeKimiK3ChatRequest(valid))
+	assert.Equal(t, "a", valid.Stop)
 
 	tooMany := &dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: []string{"1", "2", "3", "4", "5", "6"}}
 	require.ErrorContains(t, NormalizeKimiK3ChatRequest(tooMany), "at most 5")
 
 	tooLong := &dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: "中文中文中文中文中文中文中文中文中文中文中"}
 	require.ErrorContains(t, NormalizeKimiK3ChatRequest(tooLong), "32 UTF-8 bytes")
+}
+
+func TestNormalizeKimiK3ChatRequestConvertsDecodedStopArrayToString(t *testing.T) {
+	var original dto.GeneralOpenAIRequest
+	require.NoError(t, common.Unmarshal([]byte(`{
+		"model":"kimi-k3",
+		"messages":[{"role":"user","content":"reply with ALPHA-ZXQSTOP731-OMEGA"}],
+		"stop":["ZXQSTOP731"]
+	}`), &original))
+
+	request, err := common.DeepCopy(&original)
+	require.NoError(t, err)
+	require.NoError(t, NormalizeKimiK3ChatRequest(request))
+	assert.Equal(t, "ZXQSTOP731", request.Stop)
+	upstreamJSON, err := common.Marshal(request)
+	require.NoError(t, err)
+	var upstream map[string]any
+	require.NoError(t, common.Unmarshal(upstreamJSON, &upstream))
+	assert.Equal(t, "ZXQSTOP731", upstream["stop"])
+	assert.Equal(t, []string{"ZXQSTOP731"}, KimiK3StopSequencesFromRequest(&original))
+
+	response := &dto.OpenAITextResponse{
+		Choices: []dto.OpenAITextResponseChoice{{
+			Message: dto.Message{Content: "ALPHA-ZXQSTOP731-OMEGA"},
+		}},
+	}
+	matched := ApplyKimiK3StopToChatResponse(response, KimiK3StopSequencesFromRequest(&original))
+	assert.Equal(t, "ZXQSTOP731", matched)
+	assert.Equal(t, "ALPHA-", response.Choices[0].Message.StringContent())
+	assert.Equal(t, "stop", response.Choices[0].FinishReason)
 }
 
 func TestNormalizeKimiK3ResponsesRequestPreservesExplicitMetadata(t *testing.T) {

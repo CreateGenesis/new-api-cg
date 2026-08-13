@@ -78,6 +78,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 	info.ActivateKimiK3OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
+		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ResponsesRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}

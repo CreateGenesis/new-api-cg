@@ -45,6 +45,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	}
 	info.ActivateKimiK3OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
+		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ClaudeRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}

@@ -48,6 +48,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 	info.ActivateKimiK3OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
+		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ChatRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}

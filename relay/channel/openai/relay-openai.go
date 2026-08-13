@@ -26,6 +26,10 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	if data == "" {
 		return nil
 	}
+	data, err := filterKimiK3ChatStreamData(info, data)
+	if err != nil {
+		return err
+	}
 
 	if !forceFormat && !thinkToContent {
 		if shouldRewriteResponseModel(info) {
@@ -113,6 +117,22 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	return helper.ObjectData(c, lastStreamResponse)
+}
+
+func filterKimiK3ChatStreamData(info *relaycommon.RelayInfo, data string) (string, error) {
+	if info == nil || !info.KimiK3HideThinking {
+		return data, nil
+	}
+	var response dto.ChatCompletionsStreamResponse
+	if err := common.UnmarshalJsonStr(data, &response); err != nil {
+		return "", err
+	}
+	relayconvert.HideKimiK3ChatStreamThinking(&response)
+	filtered, err := common.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(filtered), nil
 }
 
 func shouldRewriteResponseModel(info *relaycommon.RelayInfo) bool {
@@ -411,10 +431,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+	thinkingResponseFiltered := info.KimiK3HideThinking
+	if thinkingResponseFiltered {
+		relayconvert.HideKimiK3ChatThinking(&simpleResponse)
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified || responseModelModified || tntResponseSanitized || stopResponseFiltered {
+		if usageModified || responseModelModified || tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
@@ -426,7 +450,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			if responseModelModified {
 				bodyMap["model"] = simpleResponse.Model
 			}
-			if tntResponseSanitized || stopResponseFiltered {
+			if tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
 				bodyMap["choices"] = simpleResponse.Choices
 			}
 			responseBody, _ = common.Marshal(bodyMap)

@@ -41,6 +41,43 @@ func TestHandleStreamResponseDataMarksClaudeMessageStop(t *testing.T) {
 	assert.Equal(t, "message_stop", snapshot.ProtocolEndEvent)
 }
 
+func TestKimiK3ClaudeStreamThinkingFilterHidesThinkingAndRenumbersText(t *testing.T) {
+	filter := relayconvert.NewKimiK3ClaudeStreamThinkingFilter()
+	thinkingStart := &dto.ClaudeResponse{
+		Type:  "content_block_start",
+		Index: common.GetPointer(0),
+		ContentBlock: &dto.ClaudeMediaMessage{
+			Type:     "thinking",
+			Thinking: common.GetPointer(""),
+		},
+	}
+	thinkingDelta := &dto.ClaudeResponse{
+		Type:  "content_block_delta",
+		Index: common.GetPointer(0),
+		Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: common.GetPointer("hidden reasoning")},
+	}
+	thinkingStop := &dto.ClaudeResponse{Type: "content_block_stop", Index: common.GetPointer(0)}
+	textStart := &dto.ClaudeResponse{
+		Type:         "content_block_start",
+		Index:        common.GetPointer(1),
+		ContentBlock: &dto.ClaudeMediaMessage{Type: "text", Text: common.GetPointer("")},
+	}
+	textDelta := &dto.ClaudeResponse{
+		Type:  "content_block_delta",
+		Index: common.GetPointer(1),
+		Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: common.GetPointer("THINKING_OFF_OK")},
+	}
+
+	assert.Nil(t, filter.Filter(thinkingStart))
+	assert.Nil(t, filter.Filter(thinkingDelta))
+	assert.Nil(t, filter.Filter(thinkingStop))
+	require.NotNil(t, filter.Filter(textStart))
+	assert.Equal(t, 0, textStart.GetIndex())
+	require.NotNil(t, filter.Filter(textDelta))
+	assert.Equal(t, 0, textDelta.GetIndex())
+	assert.Equal(t, "THINKING_OFF_OK", textDelta.Delta.GetText())
+}
+
 func commonPointer[T any](value T) *T {
 	return &value
 }
@@ -185,7 +222,11 @@ func TestKimiK3TNTConversionPreservesExtendedReasoningEfforts(t *testing.T) {
 			convertedClaude, err := adaptor.ConvertClaudeRequest(nil, info, claudeRequest)
 			require.NoError(t, err)
 			chatFromClaude := convertedClaude.(*dto.GeneralOpenAIRequest)
-			assert.Equal(t, effort, chatFromClaude.ReasoningEffort)
+			wantEffort := effort
+			if effort == "none" {
+				wantEffort = "low"
+			}
+			assert.Equal(t, wantEffort, chatFromClaude.ReasoningEffort)
 
 			responsesRequest := dto.OpenAIResponsesRequest{
 				Model:           "kimi-k3",
@@ -196,16 +237,12 @@ func TestKimiK3TNTConversionPreservesExtendedReasoningEfforts(t *testing.T) {
 			convertedResponses, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
 			require.NoError(t, err)
 			chatFromResponses := convertedResponses.(*dto.GeneralOpenAIRequest)
-			assert.Equal(t, effort, chatFromResponses.ReasoningEffort)
+			assert.Equal(t, wantEffort, chatFromResponses.ReasoningEffort)
 
-			wantTemperature := 1.0
-			if effort == "none" {
-				wantTemperature = 0.6
-			}
 			require.NotNil(t, chatFromClaude.Temperature)
-			assert.Equal(t, wantTemperature, *chatFromClaude.Temperature)
+			assert.Equal(t, 1.0, *chatFromClaude.Temperature)
 			require.NotNil(t, chatFromResponses.Temperature)
-			assert.Equal(t, wantTemperature, *chatFromResponses.Temperature)
+			assert.Equal(t, 1.0, *chatFromResponses.Temperature)
 		})
 	}
 }
@@ -213,14 +250,14 @@ func TestKimiK3TNTConversionPreservesExtendedReasoningEfforts(t *testing.T) {
 func TestKimiK3OfficialReasoningEffortSurvivesProtocolConversion(t *testing.T) {
 	maxTokens := uint(64)
 	tests := []struct {
-		effort          string
-		wantTemperature float64
+		effort     string
+		wantEffort string
 	}{
-		{effort: "medium", wantTemperature: 1.0},
-		{effort: "ultra", wantTemperature: 1.0},
-		{effort: "xhigh", wantTemperature: 1.0},
-		{effort: "custom", wantTemperature: 1.0},
-		{effort: "none", wantTemperature: 0.6},
+		{effort: "medium", wantEffort: "medium"},
+		{effort: "ultra", wantEffort: "ultra"},
+		{effort: "xhigh", wantEffort: "xhigh"},
+		{effort: "custom", wantEffort: "custom"},
+		{effort: "none", wantEffort: "low"},
 	}
 
 	for _, test := range tests {
@@ -243,9 +280,9 @@ func TestKimiK3OfficialReasoningEffortSurvivesProtocolConversion(t *testing.T) {
 			convertedAnthropic, err := (&openaiadapter.Adaptor{}).ConvertClaudeRequest(nil, openAIInfo, anthropicRequest)
 			require.NoError(t, err)
 			chatFromAnthropic := convertedAnthropic.(*dto.GeneralOpenAIRequest)
-			assert.Equal(t, test.effort, chatFromAnthropic.ReasoningEffort)
+			assert.Equal(t, test.wantEffort, chatFromAnthropic.ReasoningEffort)
 			require.NotNil(t, chatFromAnthropic.Temperature)
-			assert.Equal(t, test.wantTemperature, *chatFromAnthropic.Temperature)
+			assert.Equal(t, 1.0, *chatFromAnthropic.Temperature)
 
 			claudeInfo := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
 				ChannelType:       constant.ChannelTypeAnthropic,
@@ -265,12 +302,12 @@ func TestKimiK3OfficialReasoningEffortSurvivesProtocolConversion(t *testing.T) {
 			convertedChat, err := (&Adaptor{}).ConvertOpenAIRequest(nil, claudeInfo, chatRequest)
 			require.NoError(t, err)
 			claudeFromChat := convertedChat.(*dto.ClaudeRequest)
-			assert.Equal(t, test.effort, claudeFromChat.GetEfforts())
+			assert.Equal(t, test.wantEffort, claudeFromChat.GetEfforts())
 			require.NotNil(t, claudeFromChat.Temperature)
-			assert.Equal(t, test.wantTemperature, *claudeFromChat.Temperature)
+			assert.Equal(t, 1.0, *claudeFromChat.Temperature)
 			if test.effort == "none" {
 				require.NotNil(t, claudeFromChat.Thinking)
-				assert.Equal(t, "disabled", claudeFromChat.Thinking.Type)
+				assert.Equal(t, "enabled", claudeFromChat.Thinking.Type)
 			}
 
 			responsesRequest := dto.OpenAIResponsesRequest{
@@ -283,12 +320,12 @@ func TestKimiK3OfficialReasoningEffortSurvivesProtocolConversion(t *testing.T) {
 			convertedResponses, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, claudeInfo, responsesRequest)
 			require.NoError(t, err)
 			claudeFromResponses := convertedResponses.(*dto.ClaudeRequest)
-			assert.Equal(t, test.effort, claudeFromResponses.GetEfforts())
+			assert.Equal(t, test.wantEffort, claudeFromResponses.GetEfforts())
 			require.NotNil(t, claudeFromResponses.Temperature)
-			assert.Equal(t, test.wantTemperature, *claudeFromResponses.Temperature)
+			assert.Equal(t, 1.0, *claudeFromResponses.Temperature)
 			if test.effort == "none" {
 				require.NotNil(t, claudeFromResponses.Thinking)
-				assert.Equal(t, "disabled", claudeFromResponses.Thinking.Type)
+				assert.Equal(t, "enabled", claudeFromResponses.Thinking.Type)
 			}
 		})
 	}

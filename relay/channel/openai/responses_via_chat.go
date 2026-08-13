@@ -160,6 +160,9 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 	responsesResp.Model = info.DownstreamModelName(responsesResp.Model)
+	if info.KimiK3HideThinking {
+		relayconvert.HideKimiK3ResponsesThinking(responsesResp)
+	}
 
 	responseBody, err := MarshalKimiK3ResponsesResponse(info, responsesResp)
 	if err != nil {
@@ -193,6 +196,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
+		if info.KimiK3HideThinking && !relayconvert.HideKimiK3ResponsesStreamThinking(&event) {
+			return true
+		}
 		payload := any(event.Payload)
 		if info.IsTNTTencentOpenAIConversion() {
 			streamResponse := event.Payload
@@ -271,6 +277,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 		jsonFenceFilter.Filter(&chunk)
 		stopFilter.Filter(&chunk)
+		if info.KimiK3HideThinking {
+			relayconvert.HideKimiK3ChatStreamThinking(&chunk)
+		}
 		if matched := stopFilter.MatchedSequence(); matched != "" {
 			info.KimiK3MatchedStopSequence = matched
 		}
