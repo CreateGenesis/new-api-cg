@@ -32,6 +32,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		succeedOnKey            string
 		routeOnBoundedHTTP400   bool
 		streamFallback          bool
+		zeroInputFallback       bool
 		zeroOutputFallback      bool
 		zeroOutputStream        bool
 		responseContentFallback bool
@@ -51,6 +52,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		}
 		boundedHTTP400 := routeOnBoundedHTTP400 && channelKey == "channel-1"
 		useStreamFallback := streamFallback
+		useZeroInputFallback := zeroInputFallback
 		useZeroOutputFallback := zeroOutputFallback
 		useZeroOutputStream := zeroOutputStream
 		useResponseContentFallback := responseContentFallback
@@ -64,7 +66,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已过滤]\"}}]}\n\n"))
 					return
 				}
-				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"response content stream fallback ok\"}}]}\n\ndata: [DONE]\n\n"))
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"response content stream fallback ok\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n"))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -73,6 +75,15 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 				return
 			}
 			_, _ = w.Write([]byte(`{"id":"response-content-fallback","choices":[{"message":{"role":"assistant","content":"response content fallback ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
+		if useZeroInputFallback {
+			w.Header().Set("Content-Type", "application/json")
+			if channelKey == "channel-1" {
+				_, _ = w.Write([]byte(`{"id":"zero-input-channel-1","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"zero input channel 1"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-zero-input-fallback","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"zero input fallback ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 			return
 		}
 		if useZeroOutputFallback {
@@ -102,6 +113,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 			}
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream-retry\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream fallback ok\"},\"finish_reason\":null}]}\n\n"))
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream-retry\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			return
 		}
@@ -583,6 +595,37 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	assert.Equal(t, http.StatusOK, zeroOutputStreamRecorder.Code)
 	assert.Contains(t, zeroOutputStreamRecorder.Body.String(), "zero output stream fallback ok")
 	assert.NotContains(t, zeroOutputStreamRecorder.Body.String(), "zero-output-channel-1")
+
+	attemptsMu.Lock()
+	attempts = nil
+	zeroInputFallback = true
+	attemptsMu.Unlock()
+	zeroInputRecorder := httptest.NewRecorder()
+	zeroInputCtx, _ := gin.CreateTestContext(zeroInputRecorder)
+	zeroInputCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	zeroInputCtx.Request.Header.Set("Content-Type", "application/json")
+	zeroInputCtx.Set(common.RequestIdKey, "relay-zero-input-recovered")
+	common.SetContextKey(zeroInputCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(zeroInputCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(zeroInputCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(zeroInputCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(zeroInputCtx, &channels[0], modelName))
+
+	Relay(zeroInputCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	zeroInputAttempts := append([]string(nil), attempts...)
+	zeroInputFallback = false
+	attempts = nil
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, zeroInputAttempts)
+	assert.Equal(t, http.StatusOK, zeroInputRecorder.Code)
+	assert.Contains(t, zeroInputRecorder.Body.String(), "zero input fallback ok")
+	assert.NotContains(t, zeroInputRecorder.Body.String(), "zero input channel 1")
 
 	channels[0].OtherSettings = `{"disable_non_stream":true}`
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)

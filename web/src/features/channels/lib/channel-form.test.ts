@@ -203,17 +203,17 @@ describe('channel form response header timeout settings', () => {
 })
 
 describe('channel fallback policy settings', () => {
-  test('loads and saves fallback switches and output multiplier', () => {
+  test('loads and saves fallback switches and usage token limits', () => {
     const form = transformChannelToFormDefaults(
       testChannel(
-        '{"retry_zero_output":true,"retry_zero_billed_output":true,"disable_stream":true,"missing_output_token_multiplier":1.75}'
+        '{"retry_zero_output":true,"disable_stream":true,"usage_token_limit":{"input_tokens":1000000,"output_tokens":200000}}'
       )
     )
 
     assert.equal(form.retry_zero_output, true)
-    assert.equal(form.retry_zero_billed_output, true)
     assert.equal(form.disable_stream, true)
-    assert.equal(form.missing_output_token_multiplier, 1.75)
+    assert.equal(form.usage_token_limit_input_tokens, 1000000)
+    assert.equal(form.usage_token_limit_output_tokens, 200000)
 
     const payload = transformFormDataToCreatePayload({
       ...form,
@@ -227,30 +227,35 @@ describe('channel fallback policy settings', () => {
     const settings = JSON.parse(String(payload.channel.settings))
 
     assert.equal(settings.retry_zero_output, true)
-    assert.equal(settings.retry_zero_billed_output, true)
     assert.equal(settings.disable_stream, true)
-    assert.equal(settings.missing_output_token_multiplier, 1.75)
+    assert.deepEqual(settings.usage_token_limit, {
+      input_tokens: 1000000,
+      output_tokens: 200000,
+    })
   })
 
-  test('drops zero-billable-output retry when its parent policy is disabled', () => {
+  test('drops legacy estimation settings when saving', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        '{"retry_zero_billed_output":true,"missing_output_token_multiplier":2}'
+      )
+    )
     const payload = transformFormDataToCreatePayload({
-      ...CHANNEL_FORM_DEFAULT_VALUES,
+      ...form,
       name: 'test',
       key: 'sk-test',
       models: 'test-model',
       group: ['default'],
       status: 1,
       type: 1,
-      retry_zero_output: false,
-      retry_zero_billed_output: true,
     })
     const settings = JSON.parse(String(payload.channel.settings))
 
-    assert.equal(settings.retry_zero_output, undefined)
     assert.equal(settings.retry_zero_billed_output, undefined)
+    assert.equal(settings.missing_output_token_multiplier, undefined)
   })
 
-  test('preserves a non-default output multiplier while retry is disabled', () => {
+  test('saves one usage token limit independently', () => {
     const payload = transformFormDataToCreatePayload({
       ...CHANNEL_FORM_DEFAULT_VALUES,
       name: 'test',
@@ -259,13 +264,15 @@ describe('channel fallback policy settings', () => {
       group: ['default'],
       status: 1,
       type: 1,
-      retry_zero_output: false,
-      missing_output_token_multiplier: 2,
+      usage_token_limit_input_tokens: 0,
+      usage_token_limit_output_tokens: 500,
     })
     const settings = JSON.parse(String(payload.channel.settings))
 
-    assert.equal(settings.retry_zero_output, undefined)
-    assert.equal(settings.missing_output_token_multiplier, 2)
+    assert.deepEqual(settings.usage_token_limit, {
+      input_tokens: 0,
+      output_tokens: 500,
+    })
   })
 
   test('loads and saves the non-stream request policy independently', () => {
@@ -291,7 +298,7 @@ describe('channel fallback policy settings', () => {
     assert.equal(settings.disable_non_stream, true)
   })
 
-  test('omits disabled fallback defaults and rejects invalid multipliers', () => {
+  test('omits disabled fallback defaults and rejects invalid token limits', () => {
     const payload = transformFormDataToCreatePayload({
       ...CHANNEL_FORM_DEFAULT_VALUES,
       name: 'test',
@@ -306,12 +313,12 @@ describe('channel fallback policy settings', () => {
     assert.equal(settings.retry_zero_output, undefined)
     assert.equal(settings.disable_stream, undefined)
     assert.equal(settings.disable_non_stream, undefined)
-    assert.equal(settings.missing_output_token_multiplier, undefined)
+    assert.equal(settings.usage_token_limit, undefined)
 
-    for (const multiplier of [0, 100.01, Number.POSITIVE_INFINITY]) {
+    for (const tokenLimit of [-1, 1.5, 2147483648, Number.POSITIVE_INFINITY]) {
       const parsed = channelFormSchema.safeParse({
         ...CHANNEL_FORM_DEFAULT_VALUES,
-        missing_output_token_multiplier: multiplier,
+        usage_token_limit_input_tokens: tokenLimit,
       })
       assert.equal(parsed.success, false)
     }

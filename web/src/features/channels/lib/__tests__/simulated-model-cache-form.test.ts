@@ -118,7 +118,6 @@ describe('simulated model cache multimedia form settings', () => {
   test('loads and saves all nested multimedia settings', () => {
     const nestedSettings = {
       enabled: true,
-      estimate_missing_input_tokens: true,
       ttl_seconds: 120,
       min_match_ratio: 0.25,
       multimodal: {
@@ -140,7 +139,6 @@ describe('simulated model cache multimedia form settings', () => {
     )
 
     assert.equal(form.simulated_model_cache_multimodal_enabled, true)
-    assert.equal(form.simulated_model_cache_estimate_missing_input_tokens, true)
     for (const [field, value] of Object.entries(multimodalValues)) {
       assert.equal(form[field as keyof ChannelFormValues], value)
     }
@@ -212,71 +210,28 @@ describe('simulated model cache multimedia form settings', () => {
       undefined
     )
     assert.equal(
-      legacy.simulated_model_cache_estimate_missing_input_tokens,
-      false
-    )
-    assert.equal(
       channelFormSchema.safeParse(validChannelForm(legacy)).success,
       true
     )
   })
 
-  test('saves missing input estimation without enabling cache field simulation', () => {
-    const payload = transformFormDataToCreatePayload(
-      validChannelForm({
-        simulated_model_cache_enabled: false,
-        simulated_model_cache_estimate_missing_input_tokens: true,
-      })
-    )
-    const saved = JSON.parse(String(payload.channel.settings))
-
-    assert.equal(saved.simulated_model_cache.enabled, false)
-    assert.equal(
-      saved.simulated_model_cache.estimate_missing_input_tokens,
-      true
-    )
-  })
-
-  test('loads, saves, and validates the missing input multiplier', () => {
+  test('drops legacy missing input estimation settings', () => {
     const form = transformChannelToFormDefaults(
       channelWithSettings(
-        '{"simulated_model_cache":{"estimate_missing_input_tokens":true,"missing_input_token_multiplier":1.25}}'
+        '{"simulated_model_cache":{"enabled":true,"estimate_missing_input_tokens":true,"missing_input_token_multiplier":1.25,"ttl_seconds":60}}'
       )
-    )
-    assert.equal(
-      form.simulated_model_cache_missing_input_token_multiplier,
-      1.25
     )
 
     const payload = transformFormDataToCreatePayload(validChannelForm(form))
     const saved = JSON.parse(String(payload.channel.settings))
-    assert.equal(
-      saved.simulated_model_cache.missing_input_token_multiplier,
-      1.25
-    )
-
-    for (const multiplier of [0, 101, Number.NaN]) {
-      const result = channelFormSchema.safeParse(
-        validChannelForm({
-          simulated_model_cache_missing_input_token_multiplier: multiplier,
-        })
-      )
-      assert.equal(result.success, false)
-    }
-  })
-
-  test('preserves a non-default missing input multiplier while estimation is disabled', () => {
-    const payload = transformFormDataToCreatePayload(
-      validChannelForm({
-        simulated_model_cache_estimate_missing_input_tokens: false,
-        simulated_model_cache_missing_input_token_multiplier: 3,
-      })
-    )
-    const saved = JSON.parse(String(payload.channel.settings))
-
-    assert.equal(saved.simulated_model_cache.missing_input_token_multiplier, 3)
+    assert.equal(saved.simulated_model_cache.enabled, true)
+    assert.equal(saved.simulated_model_cache.ttl_seconds, 60)
     assert.equal(
       saved.simulated_model_cache.estimate_missing_input_tokens,
+      undefined
+    )
+    assert.equal(
+      saved.simulated_model_cache.missing_input_token_multiplier,
       undefined
     )
   })

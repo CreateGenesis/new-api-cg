@@ -39,7 +39,7 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 	}
 
-	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
+	// Only upstream UsageMetadata is accepted for text usage.
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

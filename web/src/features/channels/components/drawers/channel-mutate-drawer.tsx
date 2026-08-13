@@ -322,13 +322,11 @@ const SENSITIVE_FORM_FIELDS = [
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'retry_zero_output',
-  'retry_zero_billed_output',
   'disable_stream',
   'disable_non_stream',
-  'missing_output_token_multiplier',
+  'usage_token_limit_input_tokens',
+  'usage_token_limit_output_tokens',
   'simulated_model_cache_enabled',
-  'simulated_model_cache_estimate_missing_input_tokens',
-  'simulated_model_cache_missing_input_token_multiplier',
   'simulated_model_cache_ttl_seconds',
   'simulated_model_cache_min_match_ratio',
   'simulated_model_cache_multimodal_enabled',
@@ -402,13 +400,11 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
     values.retry_zero_output ||
-    values.retry_zero_billed_output ||
     values.disable_stream ||
     values.disable_non_stream ||
-    (values.missing_output_token_multiplier ?? 1) !== 1 ||
+    (values.usage_token_limit_input_tokens ?? 0) > 0 ||
+    (values.usage_token_limit_output_tokens ?? 0) > 0 ||
     values.simulated_model_cache_enabled ||
-    values.simulated_model_cache_estimate_missing_input_tokens ||
-    (values.simulated_model_cache_missing_input_token_multiplier ?? 1) !== 1 ||
     values.simulated_model_cache_multimodal_enabled ||
     values.multi_key_type === 'cache_affinity_least_requests' ||
     values.status_code_retry_enabled ||
@@ -894,27 +890,22 @@ export function ChannelMutateDrawer({
     'cache_usage_validation_split'
   )
   const currentRetryZeroOutput = form.watch('retry_zero_output')
-  const currentRetryZeroBilledOutput = form.watch('retry_zero_billed_output')
   const currentDisableStream = form.watch('disable_stream')
   const currentDisableNonStream = form.watch('disable_non_stream')
-  const currentMissingOutputTokenMultiplier = form.watch(
-    'missing_output_token_multiplier'
+  const currentUsageTokenLimitInputTokens = form.watch(
+    'usage_token_limit_input_tokens'
+  )
+  const currentUsageTokenLimitOutputTokens = form.watch(
+    'usage_token_limit_output_tokens'
   )
   const currentSimulatedModelCacheEnabled = form.watch(
     'simulated_model_cache_enabled'
   )
-  const currentSimulatedModelCacheEstimateMissingInputTokens = form.watch(
-    'simulated_model_cache_estimate_missing_input_tokens'
-  )
   const currentSimulatedModelCacheMultimodalEnabled = form.watch(
     'simulated_model_cache_multimodal_enabled'
   )
-  const currentSimulatedModelCacheMissingInputTokenMultiplier = form.watch(
-    'simulated_model_cache_missing_input_token_multiplier'
-  )
   const simulatedModelCacheRuntimeActive =
     currentSimulatedModelCacheEnabled ||
-    currentSimulatedModelCacheEstimateMissingInputTokens ||
     multiKeyType === 'cache_affinity_least_requests'
   const currentStatusCodeRetryEnabled = form.watch('status_code_retry_enabled')
   const currentResponseHeaderTimeoutEnabled = form.watch(
@@ -1252,17 +1243,15 @@ export function ChannelMutateDrawer({
   )
   const simulatedModelCacheConfigured = Boolean(
     currentSimulatedModelCacheEnabled ||
-    currentSimulatedModelCacheEstimateMissingInputTokens ||
     currentSimulatedModelCacheMultimodalEnabled ||
-    (currentSimulatedModelCacheMissingInputTokenMultiplier ?? 1) !== 1 ||
     multiKeyType === 'cache_affinity_least_requests'
   )
   const fallbackPolicyConfigured = Boolean(
     currentRetryZeroOutput ||
-    currentRetryZeroBilledOutput ||
     currentDisableStream ||
     currentDisableNonStream ||
-    (currentMissingOutputTokenMultiplier ?? 1) !== 1
+    (currentUsageTokenLimitInputTokens ?? 0) > 0 ||
+    (currentUsageTokenLimitOutputTokens ?? 0) > 0
   )
   const cacheUsageValidationSplitConfigured = Boolean(
     currentCacheUsageValidationSplit

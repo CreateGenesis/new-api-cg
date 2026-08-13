@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"math"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -136,42 +134,6 @@ func TestSimulatedModelCacheModelNameFallsBackToUpstreamModel(t *testing.T) {
 
 	assert.Equal(t, "upstream-model", simulatedModelCacheModelName(info))
 	assert.Empty(t, simulatedModelCacheModelName(nil))
-}
-
-func TestPrepareSimulatedModelCacheAttemptUsesConservativeTextEstimateWhenEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	multiplier := 1.5
-	info := &relaycommon.RelayInfo{
-		RelayFormat:        types.RelayFormatClaude,
-		OriginModelName:    "kimi-k3",
-		RequestedModelName: "kimi-k3",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelId: 7,
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				SimulatedModelCache: &dto.SimulatedModelCacheSettings{
-					EstimateMissingInputTokens:  true,
-					MissingInputTokenMultiplier: &multiplier,
-				},
-			},
-		},
-	}
-	requestBody := []byte(`{
-		"model":"kimi-k3",
-		"system":"system text",
-		"messages":[{"role":"user","content":"hello world"}],
-		"tools":[{"name":"large_tool_schema_is_deliberately_not_counted"}]
-	}`)
-
-	attempt := prepareSimulatedModelCacheAttempt(c, info, requestBody)
-
-	require.NotNil(t, attempt)
-	assert.False(t, attempt.settings.Enabled)
-	assert.True(t, attempt.settings.EstimateMissingInputTokens)
-	assert.Nil(t, attempt.partialMatch)
-	baseEstimate := service.EstimateTokenByModel("kimi-k3", "system text\nhello world")
-	assert.Equal(t, int(math.Ceil(float64(baseEstimate)*multiplier)), attempt.missingInputEstimatedTokens)
 }
 
 func TestHiddenSimulatedModelCacheMatchDoesNotRewriteResponseOrLogInfo(t *testing.T) {
@@ -680,75 +642,6 @@ func TestSimulatedModelCacheStreamNoMatchPreservesRealUpstreamUsage(t *testing.T
 	assert.Equal(t, original, w.Body.String())
 	assert.Nil(t, info.SimulatedModelCacheInfo)
 	assert.Equal(t, 9, usage.PromptTokensDetails.CachedTokens)
-}
-
-func TestSimulatedModelCacheEstimatesAndInjectsMissingClaudeInput(t *testing.T) {
-	c, w, info, attempt, recorder := newSimulatedModelCacheStreamTest(
-		t,
-		types.RelayFormatClaude,
-		types.RelayFormatClaude,
-		true,
-		service.SimulatedModelCachePartialMatch{},
-	)
-	requestBody := []byte(`{
-		"model":"kimi-k3",
-		"system":"system text",
-		"messages":[{"role":"user","content":"hello world"}],
-		"tools":[{"name":"large_tool_schema_is_deliberately_not_counted"}]
-	}`)
-	attempt.settings.EstimateMissingInputTokens = true
-	attempt.prompt = service.ExtractSimulatedModelCachePrompt(
-		types.RelayFormatClaude,
-		"kimi-k3",
-		requestBody,
-		attempt.settings,
-	)
-	expectedInputTokens := service.EstimateTokenByModel("kimi-k3", "system text\nhello world")
-	require.Positive(t, expectedInputTokens)
-	assert.Equal(t, expectedInputTokens, attempt.prompt.EstimatedTokens())
-	attempt.missingInputEstimatedTokens = expectedInputTokens
-
-	stream := strings.Join([]string{
-		`data: {"type":"message_delta","usage":{"input_tokens":0,"output_tokens":62}}`,
-		``,
-		`data: {"type":"message_stop"}`,
-		``,
-		``,
-	}, "\n")
-	_, err := c.Writer.Write([]byte(stream))
-	require.NoError(t, err)
-	usage := &dto.Usage{
-		CompletionTokens: 62,
-		OutputTokens:     62,
-		UsageSemantic:    service.UsageSemanticAnthropic,
-		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
-			OutputTokens: 62,
-		}),
-	}
-
-	finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage)
-
-	assert.Equal(t, expectedInputTokens, usage.PromptTokens)
-	require.NotNil(t, usage.BillingUsage)
-	require.NotNil(t, usage.BillingUsage.ClaudeUsage)
-	assert.True(t, usage.BillingUsage.Estimated)
-	assert.Equal(t, expectedInputTokens, usage.BillingUsage.ClaudeUsage.InputTokens)
-	require.NotNil(t, info.SimulatedModelCacheInfo)
-	assert.Equal(t, expectedInputTokens, info.SimulatedModelCacheInfo.MissingInputEstimatedTokens)
-	require.NotNil(t, info.SimulatedModelCacheInfo.StreamUsageInjected)
-	assert.True(t, *info.SimulatedModelCacheInfo.StreamUsageInjected)
-
-	deltaData := findSimulatedModelCacheStreamEvent(
-		t,
-		w.Body.Bytes(),
-		types.RelayFormatClaude,
-		simulatedModelCacheStreamEventClaudeDelta,
-	)
-	var delta dto.ClaudeResponse
-	require.NoError(t, common.Unmarshal(deltaData, &delta))
-	require.NotNil(t, delta.Usage)
-	assert.Equal(t, expectedInputTokens, delta.Usage.InputTokens)
-	assert.Equal(t, 62, delta.Usage.OutputTokens)
 }
 
 func TestSimulatedModelCacheMatchNotReadyPreservesRealUsage(t *testing.T) {

@@ -61,67 +61,46 @@ func TestChannelOtherSettingsSimulatedModelCacheKeepsExplicitValues(t *testing.T
 	assert.Equal(t, 0.42, normalized.MinMatchRatio)
 }
 
-func TestChannelOtherSettingsSimulatedModelCacheMissingInputEstimateIsOptIn(t *testing.T) {
-	var disabled ChannelOtherSettings
-	require.NoError(t, common.UnmarshalJsonStr(`{"simulated_model_cache":{}}`, &disabled))
-	require.NotNil(t, disabled.SimulatedModelCache)
-	assert.False(t, disabled.SimulatedModelCache.EstimateMissingInputTokens)
-	assert.False(t, disabled.SimulatedModelCache.IsActive())
-
-	var enabled ChannelOtherSettings
-	require.NoError(t, common.UnmarshalJsonStr(`{
-		"simulated_model_cache":{"estimate_missing_input_tokens":true}
-	}`, &enabled))
-	require.NotNil(t, enabled.SimulatedModelCache)
-	assert.True(t, enabled.SimulatedModelCache.EstimateMissingInputTokens)
-	assert.True(t, enabled.SimulatedModelCache.IsActive())
-
-	encoded, err := common.Marshal(enabled)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{
-		"simulated_model_cache":{"estimate_missing_input_tokens":true}
-	}`, string(encoded))
-}
-
-func TestMissingTokenMultiplierDefaultsAndValidation(t *testing.T) {
-	assert.Equal(t, DefaultMissingTokenMultiplier, MissingTokenMultiplier(nil))
-
-	valid := 1.25
-	assert.Equal(t, valid, MissingTokenMultiplier(&valid))
-	require.NoError(t, ValidateMissingTokenMultiplier("multiplier", &valid))
-
-	for _, invalid := range []float64{0, 100.01, math.NaN(), math.Inf(1)} {
-		invalid := invalid
-		assert.Equal(t, DefaultMissingTokenMultiplier, MissingTokenMultiplier(&invalid))
-		require.Error(t, ValidateMissingTokenMultiplier("multiplier", &invalid))
-	}
-}
-
-func TestChannelOtherSettingsMissingTokenMultipliersJSONCompatibility(t *testing.T) {
+func TestChannelOtherSettingsUsageTokenLimitJSONCompatibility(t *testing.T) {
 	var settings ChannelOtherSettings
 	require.NoError(t, common.UnmarshalJsonStr(`{
 		"retry_zero_output":true,
 		"retry_zero_billed_output":true,
 		"disable_stream":true,
 		"missing_output_token_multiplier":1.5,
-		"simulated_model_cache":{"missing_input_token_multiplier":2.25}
+		"usage_token_limit":{"input_tokens":1000000,"output_tokens":200000},
+		"simulated_model_cache":{"estimate_missing_input_tokens":true,"missing_input_token_multiplier":2.25}
 	}`, &settings))
 
 	assert.True(t, settings.RetryZeroOutput)
-	assert.True(t, settings.RetryZeroBilledOutput)
 	assert.True(t, settings.DisableStream)
 	assert.False(t, settings.DisableNonStream)
-	require.NotNil(t, settings.MissingOutputTokenMultiplier)
-	assert.Equal(t, 1.5, *settings.MissingOutputTokenMultiplier)
+	require.NotNil(t, settings.UsageTokenLimit)
+	assert.Equal(t, 1000000, settings.UsageTokenLimit.InputTokens)
+	assert.Equal(t, 200000, settings.UsageTokenLimit.OutputTokens)
+	require.NoError(t, settings.UsageTokenLimit.Validate())
 	require.NotNil(t, settings.SimulatedModelCache)
-	require.NotNil(t, settings.SimulatedModelCache.MissingInputTokenMultiplier)
-	assert.Equal(t, 2.25, *settings.SimulatedModelCache.MissingInputTokenMultiplier)
+	assert.False(t, settings.SimulatedModelCache.IsActive())
 	require.NoError(t, settings.SimulatedModelCache.Validate())
+
+	encoded, err := common.Marshal(settings)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "retry_zero_billed_output")
+	assert.NotContains(t, string(encoded), "missing_output_token_multiplier")
+	assert.NotContains(t, string(encoded), "estimate_missing_input_tokens")
+	assert.NotContains(t, string(encoded), "missing_input_token_multiplier")
 
 	var nonStreamSettings ChannelOtherSettings
 	require.NoError(t, common.UnmarshalJsonStr(`{"disable_non_stream":true}`, &nonStreamSettings))
 	assert.False(t, nonStreamSettings.DisableStream)
 	assert.True(t, nonStreamSettings.DisableNonStream)
+}
+
+func TestUsageTokenLimitSettingsValidateBounds(t *testing.T) {
+	require.NoError(t, (UsageTokenLimitSettings{}).Validate())
+	require.NoError(t, (UsageTokenLimitSettings{InputTokens: math.MaxInt32, OutputTokens: math.MaxInt32}).Validate())
+	require.ErrorContains(t, (UsageTokenLimitSettings{InputTokens: -1}).Validate(), "input_tokens")
+	require.ErrorContains(t, (UsageTokenLimitSettings{OutputTokens: -1}).Validate(), "output_tokens")
 }
 
 func TestSimulatedModelCacheMultimodalSettingsRequireExplicitWeights(t *testing.T) {

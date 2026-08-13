@@ -59,11 +59,10 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 		FirstResponseTime: now,
 		ChannelMeta:       &relaycommon.ChannelMeta{},
 		SimulatedModelCacheInfo: &relaycommon.SimulatedModelCacheInfo{
-			FingerprintVersion:          SimulatedModelCacheFingerprintVersion,
-			CandidateCount:              100,
-			MatchDurationMS:             3,
-			BypassReason:                "memory_budget",
-			MissingInputEstimatedTokens: 321,
+			FingerprintVersion: SimulatedModelCacheFingerprintVersion,
+			CandidateCount:     100,
+			MatchDurationMS:    3,
+			BypassReason:       "memory_budget",
 		},
 	}
 
@@ -74,10 +73,42 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 	cacheInfo, ok := adminInfo["simulated_model_cache"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "memory_budget", cacheInfo["bypass_reason"])
-	assert.Equal(t, 321, cacheInfo["missing_input_estimated_tokens"])
+	assert.NotContains(t, cacheInfo, "missing_input_estimated_tokens")
 	assert.NotContains(t, cacheInfo, "mode")
 	assert.NotContains(t, cacheInfo, "match_ratio")
 	assert.NotContains(t, cacheInfo, "simulated_cached_tokens")
+}
+
+func TestGenerateTextOtherInfoRecordsUsageTokenLimitAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	now := time.Now()
+	info := &relaycommon.RelayInfo{
+		StartTime:         now,
+		FirstResponseTime: now,
+		ChannelMeta:       &relaycommon.ChannelMeta{},
+		UsageTokenLimitAudit: &relaycommon.UsageTokenLimitAudit{
+			Input: &relaycommon.UsageTokenLimitDirectionAudit{
+				Original:    2766941,
+				Limit:       1000000,
+				RandomBasis: 6500,
+				Final:       650000,
+			},
+		},
+	}
+
+	other := GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1)
+
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	audit, ok := adminInfo["usage_token_limit"].(*relaycommon.UsageTokenLimitAudit)
+	require.True(t, ok)
+	require.NotNil(t, audit.Input)
+	assert.Equal(t, 2766941, audit.Input.Original)
+	assert.Equal(t, 1000000, audit.Input.Limit)
+	assert.Equal(t, 6500, audit.Input.RandomBasis)
+	assert.Equal(t, 650000, audit.Input.Final)
 }
 
 func TestGenerateClaudeOtherInfoOmitsUnusedCacheCreationPricing(t *testing.T) {

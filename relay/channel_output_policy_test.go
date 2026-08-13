@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +19,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -74,7 +73,7 @@ func TestChannelOutputRecorderKeepsEmptyStreamUncommitted(t *testing.T) {
 		IsStream:        true,
 		OriginModelName: "gpt-test",
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(": ping\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":0}}\n\ndata: [DONE]\n\n")
@@ -97,7 +96,7 @@ func TestChannelOutputRecorderKeepsEmptyNonStreamUncommitted(t *testing.T) {
 		OriginModelName: "gpt-test",
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
@@ -120,7 +119,7 @@ func TestChannelOutputRecorderRetriesEmptyContentEvenWhenUsageReportsOutput(t *t
 		OriginModelName: "gpt-test",
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":5,"completion_tokens":12,"total_tokens":17}}`)
@@ -153,7 +152,7 @@ func TestKimiK3HiddenReasoningOnlyResponseRetriesAsEmptyOutput(t *testing.T) {
 		},
 	}
 	info.ActivateKimiK3OfficialCompatibility()
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":null}}],"usage":{"prompt_tokens":5,"completion_tokens":12,"total_tokens":17}}`)
@@ -167,7 +166,7 @@ func TestKimiK3HiddenReasoningOnlyResponseRetriesAsEmptyOutput(t *testing.T) {
 	assert.Empty(t, response.Body.String())
 }
 
-func TestChannelOutputRecorderEstimatesAndPatchesValidNonStreamOutput(t *testing.T) {
+func TestChannelOutputRecorderRejectsZeroOutputWithoutEstimation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -177,47 +176,11 @@ func TestChannelOutputRecorderEstimatesAndPatchesValidNonStreamOutput(t *testing
 		OriginModelName: "gpt-test",
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.5, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello world"}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
-	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 5, TotalTokens: 5}
-	require.Nil(t, recorder.finish(ctx, info, usage))
-
-	assert.True(t, usage.Estimated)
-	assert.Positive(t, usage.CompletionTokens)
-	assert.Equal(t, 5+usage.CompletionTokens, usage.TotalTokens)
-	var payload struct {
-		Usage dto.Usage `json:"usage"`
-	}
-	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
-	assert.Equal(t, usage.CompletionTokens, payload.Usage.CompletionTokens)
-	assert.Equal(t, usage.TotalTokens, payload.Usage.TotalTokens)
-	assert.Equal(t, strconv.Itoa(response.Body.Len()), response.Header().Get("Content-Length"))
-}
-
-func TestChannelOutputRecorderRetriesZeroBillableOutputBeforeEstimation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	response := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(response)
-	info := &relaycommon.RelayInfo{
-		RelayFormat:     types.RelayFormatOpenAI,
-		RelayMode:       relayconstant.RelayModeChatCompletions,
-		OriginModelName: "gpt-test",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				RetryZeroOutput:       true,
-				RetryZeroBilledOutput: true,
-			},
-		},
-	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
-	ctx.Writer = recorder
-
-	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
 	require.NoError(t, err)
 	usage := &dto.Usage{PromptTokens: 5, TotalTokens: 5}
 
@@ -231,7 +194,7 @@ func TestChannelOutputRecorderRetriesZeroBillableOutputBeforeEstimation(t *testi
 	assert.Empty(t, response.Body.String())
 }
 
-func TestChannelOutputRecorderUsesBillingUsageForZeroOutputRetry(t *testing.T) {
+func TestChannelOutputRecorderUsesBillingUsageForStrictValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -239,15 +202,9 @@ func TestChannelOutputRecorderUsesBillingUsageForZeroOutputRetry(t *testing.T) {
 		RelayFormat:     types.RelayFormatOpenAI,
 		RelayMode:       relayconstant.RelayModeChatCompletions,
 		OriginModelName: "gpt-test",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				RetryZeroOutput:       true,
-				RetryZeroBilledOutput: true,
-			},
-		},
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":9,"total_tokens":14}}`)
@@ -275,7 +232,7 @@ func TestChannelOutputRecorderUsesBillingUsageForZeroOutputRetry(t *testing.T) {
 	assert.Empty(t, response.Body.String())
 }
 
-func TestChannelOutputRecorderIgnoresZeroBillableOutputWithoutParentPolicy(t *testing.T) {
+func TestChannelOutputRecorderAppliesInputLimitToBodyAndBilling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -285,21 +242,46 @@ func TestChannelOutputRecorderIgnoresZeroBillableOutputWithoutParentPolicy(t *te
 		OriginModelName: "gpt-test",
 		ChannelMeta: &relaycommon.ChannelMeta{
 			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				RetryZeroBilledOutput: true,
-			},
+			ChannelOtherSettings: dto.ChannelOtherSettings{UsageTokenLimit: &dto.UsageTokenLimitSettings{
+				InputTokens: 100,
+			}},
 		},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
+	ctx.Writer.Header().Set("Content-Type", "application/json")
 
-	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`)
+	_, err := recorder.WriteString(`{"choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":1000,"completion_tokens":10,"total_tokens":1010}}`)
 	require.NoError(t, err)
-	usage := &dto.Usage{PromptTokens: 5, TotalTokens: 5}
+	usage := &dto.Usage{
+		PromptTokens:     1000,
+		CompletionTokens: 10,
+		TotalTokens:      1010,
+		BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+			PromptTokens:     1000,
+			CompletionTokens: 10,
+			TotalTokens:      1010,
+		}),
+	}
 
 	require.Nil(t, recorder.finish(ctx, info, usage))
-	assert.True(t, usage.Estimated)
-	assert.Positive(t, usage.CompletionTokens)
+	assert.GreaterOrEqual(t, usage.PromptTokens, 30)
+	assert.LessOrEqual(t, usage.PromptTokens, 95)
+	assert.Equal(t, usage.PromptTokens+10, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Equal(t, usage.PromptTokens, usage.BillingUsage.OpenAIUsage.PromptTokens)
+	assert.Equal(t, usage.TotalTokens, usage.BillingUsage.OpenAIUsage.TotalTokens)
+	require.NotNil(t, info.UsageTokenLimitAudit)
+	require.NotNil(t, info.UsageTokenLimitAudit.Input)
+	assert.Equal(t, 1000, info.UsageTokenLimitAudit.Input.Original)
+
+	var payload struct {
+		Usage dto.Usage `json:"usage"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+	assert.Equal(t, usage.PromptTokens, payload.Usage.PromptTokens)
+	assert.Equal(t, usage.TotalTokens, payload.Usage.TotalTokens)
 }
 
 func TestChannelOutputRecorderPreservesFirstStatusCodeBeforeCommit(t *testing.T) {
@@ -311,7 +293,7 @@ func TestChannelOutputRecorderPreservesFirstStatusCodeBeforeCommit(t *testing.T)
 		RelayMode:       relayconstant.RelayModeChatCompletions,
 		OriginModelName: "gpt-test",
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	recorder.WriteHeader(299)
@@ -336,7 +318,7 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 		OriginModelName:    "gpt-test",
 		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.5, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
@@ -348,12 +330,12 @@ func TestChannelOutputRecorderCommitsFirstEffectiveStreamOutput(t *testing.T) {
 	usage := &dto.Usage{PromptTokens: 10, TotalTokens: 10}
 	require.Nil(t, recorder.finish(ctx, info, usage))
 
-	assert.Greater(t, usage.CompletionTokens, 0)
+	assert.Zero(t, usage.CompletionTokens)
 	assert.NotContains(t, response.Body.String(), "\"usage\"")
 	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
 }
 
-func TestChannelOutputRecorderHoldsStreamForZeroBillableOutputPolicy(t *testing.T) {
+func TestChannelOutputRecorderRejectsUncommittedStreamZeroUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -363,31 +345,23 @@ func TestChannelOutputRecorderHoldsStreamForZeroBillableOutputPolicy(t *testing.
 		IsStream:           true,
 		ShouldIncludeUsage: true,
 		OriginModelName:    "gpt-test",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				RetryZeroOutput:       true,
-				RetryZeroBilledOutput: true,
-			},
-		},
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
-	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
-	require.NoError(t, err)
-	assert.Empty(t, response.Body.String())
-	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":0,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+	_, err := recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":0,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
 	require.NoError(t, err)
 
 	policyErr := recorder.finish(ctx, info, &dto.Usage{PromptTokens: 10, TotalTokens: 10})
 
 	require.NotNil(t, policyErr)
+	assert.False(t, types.IsSkipRetryError(policyErr))
 	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
 	assert.Empty(t, response.Body.String())
 }
 
-func TestChannelOutputRecorderReleasesHeldStreamWithBillableOutput(t *testing.T) {
+func TestChannelOutputRecorderReleasesHeldTailWithCompleteUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -397,20 +371,14 @@ func TestChannelOutputRecorderReleasesHeldStreamWithBillableOutput(t *testing.T)
 		IsStream:           true,
 		ShouldIncludeUsage: true,
 		OriginModelName:    "gpt-test",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "gpt-test",
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				RetryZeroOutput:       true,
-				RetryZeroBilledOutput: true,
-			},
-		},
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
 	require.NoError(t, err)
-	assert.Empty(t, response.Body.String())
+	assert.Contains(t, response.Body.String(), "hello")
 	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\ndata: [DONE]\n\n")
 	require.NoError(t, err)
 
@@ -441,8 +409,8 @@ func TestChannelOutputRecorderCommitsKimiReasoningImmediately(t *testing.T) {
 		ctx.Writer,
 		info,
 		true,
+		false,
 		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
-		1,
 		64*1024,
 	)
 	ctx.Writer = recorder
@@ -531,8 +499,8 @@ func TestChannelOutputRecorderCommitsNonVisibleSemanticOutputImmediately(t *test
 				ctx.Writer,
 				info,
 				true,
+				false,
 				responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
-				1,
 				64*1024,
 			)
 			ctx.Writer = recorder
@@ -567,8 +535,8 @@ func TestChannelOutputRecorderKeepsKimiWhitespaceContentUnderPrefixInspection(t 
 		ctx.Writer,
 		info,
 		true,
+		false,
 		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "[内容已过滤]"),
-		1,
 		64*1024,
 	)
 	ctx.Writer = recorder
@@ -597,8 +565,8 @@ func TestChannelOutputRecorderReleasesContentAsSoonAsNoRuleCanMatch(t *testing.T
 		ctx.Writer,
 		info,
 		false,
+		false,
 		responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "内容已过滤"),
-		1,
 		64*1024,
 	)
 	ctx.Writer = recorder
@@ -639,7 +607,7 @@ func TestChannelOutputRecorderTreatsCommittedWriteFailureAsClientDisconnect(t *t
 			},
 		},
 	}
-	recorder := newChannelOutputRecorder(failingWriter, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+	recorder := newChannelOutputRecorder(failingWriter, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	c.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
@@ -680,7 +648,7 @@ func TestChannelOutputRecorderHandlesTCPResetAfterVisibleStreamOutput(t *testing
 				},
 			},
 		}
-		recorder := newChannelOutputRecorder(c.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1, 64*1024)
+		recorder := newChannelOutputRecorder(c.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 		c.Writer = recorder
 		upstreamBody := &closeAwareStreamBody{
 			first:  []byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n"),
@@ -738,7 +706,7 @@ func TestChannelOutputRecorderHandlesTCPResetAfterVisibleStreamOutput(t *testing
 	}
 }
 
-func TestChannelOutputRecorderPatchesHeldStreamUsageAfterEstimation(t *testing.T) {
+func TestChannelOutputRecorderDropsTerminalTailAfterCommittedZeroUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -748,38 +716,28 @@ func TestChannelOutputRecorderPatchesHeldStreamUsageAfterEstimation(t *testing.T
 		IsStream:           true,
 		ShouldIncludeUsage: true,
 		OriginModelName:    "gpt-test",
+		StreamStatus:       relaycommon.NewStreamStatus(),
 		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
 	}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, true, operation_setting.ResponseContentRetryPolicy{}, 1.25, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, true, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
 	require.NoError(t, err)
+	assert.Contains(t, response.Body.String(), "hello")
 	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":0,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
 	require.NoError(t, err)
 	usage := &dto.Usage{PromptTokens: 10, TotalTokens: 10}
-	require.Nil(t, recorder.finish(ctx, info, usage))
+	policyErr := recorder.finish(ctx, info, usage)
 
-	assert.True(t, usage.Estimated)
-	assert.Positive(t, usage.CompletionTokens)
-	usageEventFound := false
-	for _, event := range splitSimulatedModelCacheSSEChunks(response.Body.Bytes()) {
-		data, ok := simulatedModelCacheSSEData(event)
-		if !ok {
-			continue
-		}
-		var payload struct {
-			Usage *dto.Usage `json:"usage"`
-		}
-		if common.Unmarshal(data, &payload) != nil || payload.Usage == nil {
-			continue
-		}
-		usageEventFound = true
-		assert.Equal(t, usage.CompletionTokens, payload.Usage.CompletionTokens)
-		assert.Equal(t, usage.TotalTokens, payload.Usage.TotalTokens)
-	}
-	assert.True(t, usageEventFound)
-	assert.True(t, strings.HasSuffix(response.Body.String(), "data: [DONE]\n\n"))
+	require.NotNil(t, policyErr)
+	assert.True(t, types.IsSkipRetryError(policyErr))
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.NotContains(t, response.Body.String(), `"usage"`)
+	assert.NotContains(t, response.Body.String(), "[DONE]")
+	snapshot := info.StreamStatus.Snapshot()
+	require.Len(t, snapshot.Errors, 1)
+	assert.Equal(t, service.ErrUpstreamUsageMissingOutput.Error(), snapshot.Errors[0].Message)
 }
 
 func TestObserveChannelOutputPayloadRecognizesSupportedProtocols(t *testing.T) {
@@ -908,14 +866,6 @@ func TestKimiK3OfficialOutputPolicyAcceptsVisibleTextAndTools(t *testing.T) {
 			assert.NotEmpty(t, output.String())
 		})
 	}
-}
-
-func TestScaleMissingTokenEstimateRoundsUpAndAuditsSaturation(t *testing.T) {
-	assert.Equal(t, 4, scaleMissingTokenEstimate(nil, 3, 1.01))
-
-	info := &relaycommon.RelayInfo{}
-	assert.Equal(t, math.MaxInt32, scaleMissingTokenEstimate(info, math.MaxInt32, 100))
-	require.NotNil(t, info.QuotaClamp)
 }
 
 func TestGeminiOutputEventWithUsageIsNotHeldAsTerminalTail(t *testing.T) {

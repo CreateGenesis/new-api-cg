@@ -24,19 +24,18 @@ import (
 )
 
 type simulatedModelCacheAttempt struct {
-	settings                    dto.SimulatedModelCacheSettings
-	visible                     bool
-	promptText                  string
-	prompt                      service.SimulatedModelCachePrompt
-	missingInputEstimatedTokens int
-	cacheModelName              string
-	partialMatch                simulatedModelCachePartialMatchTask
-	precomputed                 *service.SimulatedModelCachePartialMatchResult
-	bypassReason                string
-	matchDiagnostics            service.SimulatedModelCachePartialMatch
-	retryZeroOutput             bool
-	responseContentRetryPolicy  operation_setting.ResponseContentRetryPolicy
-	missingOutputMultiplier     float64
+	settings                   dto.SimulatedModelCacheSettings
+	visible                    bool
+	promptText                 string
+	prompt                     service.SimulatedModelCachePrompt
+	cacheModelName             string
+	partialMatch               simulatedModelCachePartialMatchTask
+	precomputed                *service.SimulatedModelCachePartialMatchResult
+	bypassReason               string
+	matchDiagnostics           service.SimulatedModelCachePartialMatch
+	retryZeroOutput            bool
+	responseContentRetryPolicy operation_setting.ResponseContentRetryPolicy
+	validateUsage              bool
 }
 
 type simulatedModelCachePartialMatchTask interface {
@@ -533,7 +532,8 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 	responseContentRetryPolicy := operation_setting.GetResponseContentRetryPolicy()
 	responseContentRetryActive := info != nil && responseContentRetryPolicy.Enabled && len(responseContentRetryPolicy.Rules) > 0 &&
 		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
-	outputPolicyActive := retryZeroOutput || responseContentRetryActive
+	validateUsage := info != nil && isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
+	outputPolicyActive := retryZeroOutput || responseContentRetryActive || validateUsage
 	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
 	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)
 	routingActive := routingPreparation != nil && info != nil && info.ChannelMeta != nil && routingPreparation.ChannelID == info.ChannelMeta.ChannelId
@@ -550,8 +550,8 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		visible:                    settings.Enabled,
 		cacheModelName:             simulatedModelCacheModelName(info),
 		retryZeroOutput:            retryZeroOutput,
+		validateUsage:              validateUsage,
 		responseContentRetryPolicy: responseContentRetryPolicy,
-		missingOutputMultiplier:    dto.MissingTokenMultiplier(info.ChannelOtherSettings.MissingOutputTokenMultiplier),
 	}
 	if !isSimulatedModelCacheTextFormat(format) {
 		return attempt
@@ -576,14 +576,6 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		attempt.prompt = routingPrompt
 		attempt.promptText = routingPreparation.PromptText
 		attempt.precomputed = &routingPreparation.Result
-	}
-	if attempt.settings.EstimateMissingInputTokens {
-		promptText := attempt.promptText
-		if attempt.prompt.IsMultimodal() && strings.TrimSpace(promptText) == "" {
-			promptText = service.ExtractSimulatedModelCachePromptText(format, requestBody)
-		}
-		baseEstimate := service.EstimateTokenByModel(attempt.cacheModelName, promptText)
-		attempt.missingInputEstimatedTokens = scaleMissingTokenEstimate(info, baseEstimate, dto.MissingTokenMultiplier(attempt.settings.MissingInputTokenMultiplier))
 	}
 	if attempt.precomputed == nil || attempt.precomputed.Prepared == nil {
 		startSimulatedModelCachePartialMatch(c, info, attempt)
@@ -633,8 +625,8 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	}
 	bufferLimit := service.SimulatedModelCacheResponseBufferBytes()
 	var outputRecorder *channelOutputRecorder
-	if attempt.retryZeroOutput || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
-		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.retryZeroOutput, attempt.responseContentRetryPolicy, attempt.missingOutputMultiplier, int(bufferLimit))
+	if attempt.retryZeroOutput || attempt.validateUsage || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
+		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.retryZeroOutput, attempt.validateUsage, attempt.responseContentRetryPolicy, int(bufferLimit))
 		c.Writer = outputRecorder
 	}
 	recorder := &simulatedModelCacheRecorder{
@@ -674,13 +666,6 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
 		}
 		return
-	}
-	missingInputEstimatedTokens := 0
-	if attempt.settings.EstimateMissingInputTokens {
-		estimatedTokens := attempt.missingInputEstimatedTokens
-		if service.ApplySimulatedModelCacheMissingInputEstimate(usage, estimatedTokens) {
-			missingInputEstimatedTokens = estimatedTokens
-		}
 	}
 	inputTokensEligible := simulatedModelCacheInputEligible(attempt, usage)
 	if !inputTokensEligible {
@@ -773,18 +758,6 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			responseUsageRewritten = true
 		}
 	}
-	if missingInputEstimatedTokens > 0 && !responseUsageRewritten && attempt.visible &&
-		!recorder.streamInspectionDisabled && (recorder.stream || !recorder.passThrough) {
-		patchBytes := int64(len(body))
-		if recorder.stream {
-			patchBytes = int64(recorder.streamTail.Len() + recorder.streamPending.Len())
-		}
-		patchReservation = service.ReserveSimulatedModelCacheMemory(patchBytes)
-		if patchReservation != nil {
-			defer patchReservation.Release()
-			responseUsageRewritten = true
-		}
-	}
 	if responseUsageRewritten && attempt.visible {
 		if recorder.stream {
 			injected, targetFound, writeErr := recorder.writePatchedStreamTail(usage)
@@ -818,18 +791,6 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			MatchDurationMS:    attempt.matchDiagnostics.MatchDuration.Milliseconds(),
 			BypassReason:       attempt.bypassReason,
 		}
-	}
-	if missingInputEstimatedTokens > 0 {
-		if info.SimulatedModelCacheInfo == nil {
-			info.SimulatedModelCacheInfo = &relaycommon.SimulatedModelCacheInfo{}
-		}
-		if info.SimulatedModelCacheInfo.Mode == "" && info.SimulatedModelCacheInfo.BypassReason == "" {
-			info.SimulatedModelCacheInfo.Mode = "missing_input_estimate"
-			info.SimulatedModelCacheInfo.OriginalPromptTokens = missingInputEstimatedTokens
-			info.SimulatedModelCacheInfo.SimulatedPromptTokens = missingInputEstimatedTokens
-		}
-		info.SimulatedModelCacheInfo.FingerprintVersion = service.SimulatedModelCacheFingerprintVersion
-		info.SimulatedModelCacheInfo.MissingInputEstimatedTokens = missingInputEstimatedTokens
 	}
 	return nil
 }
@@ -917,6 +878,8 @@ func isChannelOutputPolicyFormat(format types.RelayFormat, relayMode int) bool {
 		return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions
 	case types.RelayFormatOpenAIResponses:
 		return relayMode == relayconstant.RelayModeResponses
+	case types.RelayFormatOpenAIResponsesCompaction:
+		return relayMode == relayconstant.RelayModeResponsesCompact
 	default:
 		return false
 	}

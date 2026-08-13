@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useFormContext, useWatch, type Control } from 'react-hook-form'
+import { useWatch, type Control } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -31,7 +31,6 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../../../lib'
-import { isZeroBilledOutputRetryDisabled } from '../../../lib/channel-output-retry-policy'
 import { isRequestModeSwitchDisabled } from '../../../lib/channel-request-mode-policy'
 
 type ChannelFallbackPolicyFieldsProps = {
@@ -43,11 +42,6 @@ export function ChannelFallbackPolicyFields(
   props: ChannelFallbackPolicyFieldsProps
 ) {
   const { t } = useTranslation()
-  const form = useFormContext<ChannelFormValues>()
-  const retryZeroOutput = useWatch({
-    control: props.control,
-    name: 'retry_zero_output',
-  })
   const disableStream = useWatch({
     control: props.control,
     name: 'disable_stream',
@@ -81,39 +75,6 @@ export function ChannelFallbackPolicyFields(
               <FormControl>
                 <Switch
                   checked={field.value}
-                  onCheckedChange={(checked) => {
-                    field.onChange(checked)
-                    if (!checked) {
-                      form.setValue('retry_zero_billed_output', false, {
-                        shouldDirty: true,
-                      })
-                    }
-                  }}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={props.control}
-          name='retry_zero_billed_output'
-          render={({ field }) => (
-            <FormItem className='bg-muted/30 flex items-center justify-between gap-3 px-4 py-3 pl-8'>
-              <div className='space-y-0.5'>
-                <FormLabel className='text-sm'>
-                  {t('Retry zero billable-token output before estimation')}
-                </FormLabel>
-                <FormDescription>
-                  {t(
-                    'If billable output tokens are zero, return 503 for retry without estimating output tokens.'
-                  )}
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  disabled={isZeroBilledOutputRetryDisabled(retryZeroOutput)}
                   onCheckedChange={field.onChange}
                 />
               </FormControl>
@@ -186,38 +147,71 @@ export function ChannelFallbackPolicyFields(
         />
       </div>
 
-      <FormField
-        control={props.control}
-        name='missing_output_token_multiplier'
-        render={({ field }) => (
-          <FormItem className='max-w-sm'>
-            <FormLabel>{t('Missing output token multiplier')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={0.01}
-                max={100}
-                step={0.01}
-                disabled={!retryZeroOutput}
-                value={field.value ?? ''}
-                onBlur={field.onBlur}
-                name={field.name}
-                ref={field.ref}
-                onChange={(event) => {
-                  const value = event.target.value
-                  field.onChange(value === '' ? undefined : Number(value))
-                }}
-              />
-            </FormControl>
-            <FormDescription>
-              {t(
-                'Scales locally estimated output tokens when valid output is present but upstream usage is zero. Values are rounded up and changes apply to new requests immediately.'
-              )}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      <div className='grid gap-4 sm:grid-cols-2'>
+        <FormField
+          control={props.control}
+          name='usage_token_limit_input_tokens'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Input Usage token limit')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min={0}
+                  max={2147483647}
+                  step={1}
+                  value={field.value ?? ''}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    field.onChange(value === '' ? undefined : Number(value))
+                  }}
+                />
+              </FormControl>
+              <FormDescription>
+                {t(
+                  'Set to 0 to disable. Values above the limit are replaced with a random 30%-95% of the limit.'
+                )}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={props.control}
+          name='usage_token_limit_output_tokens'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Output Usage token limit')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min={0}
+                  max={2147483647}
+                  step={1}
+                  value={field.value ?? ''}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    field.onChange(value === '' ? undefined : Number(value))
+                  }}
+                />
+              </FormControl>
+              <FormDescription>
+                {t(
+                  'Set to 0 to disable. Values above the limit are replaced with a random 30%-95% of the limit.'
+                )}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      </div>
     </fieldset>
   )
 }

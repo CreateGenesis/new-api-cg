@@ -104,7 +104,7 @@ func TestResponsesReasoningCommitsBeforeLaterVisibleContent(t *testing.T) {
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{}}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "blocked"), 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "blocked"), 64*1024)
 	ctx.Writer = recorder
 
 	_, err := recorder.Write([]byte("data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}\n\n"))
@@ -120,7 +120,7 @@ func TestChannelOutputRecorderRejectsMatchedNonStreamWithoutWritingBody(t *testi
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions, ChannelMeta: &relaycommon.ChannelMeta{}}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "blocked"), 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "blocked"), 64*1024)
 	ctx.Writer = recorder
 	_, err := recorder.Write([]byte(`{"choices":[{"message":{"content":"  blocked by policy"}}]}`))
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestChannelOutputRecorderRejectsMatchedStreamBeforeCommit(t *testing.T) {
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{}}
-	recorder := newChannelOutputRecorder(ctx.Writer, info, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "内容已过滤"), 1, 64*1024)
+	recorder := newChannelOutputRecorder(ctx.Writer, info, false, false, responseRetryPolicy(operation_setting.ResponseContentMatchPrefix, "内容已过滤"), 64*1024)
 	ctx.Writer = recorder
 	_, err := recorder.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"内容\"}}]}\n\n"))
 	require.NoError(t, err)

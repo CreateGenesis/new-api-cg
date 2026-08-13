@@ -389,8 +389,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if !containStreamUsage {
-		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		usage.CompletionTokens += toolCount * 7
+		usage = &dto.Usage{}
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
@@ -474,24 +473,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		forceFormat = true
 	}
 
-	usageModified := false
-	if simpleResponse.Usage.PromptTokens == 0 {
-		completionTokens := simpleResponse.Usage.CompletionTokens
-		if completionTokens == 0 {
-			for _, choice := range simpleResponse.Choices {
-				ctkm := service.CountTextToken(choice.Message.StringContent()+choice.Message.GetReasoningContent(), info.UpstreamModelName)
-				completionTokens += ctkm
-			}
-		}
-		simpleResponse.Usage = dto.Usage{
-			PromptTokens:     info.GetEstimatePromptTokens(),
-			CompletionTokens: completionTokens,
-			TotalTokens:      info.GetEstimatePromptTokens() + completionTokens,
-			Estimated:        true,
-		}
-		usageModified = true
-	}
-
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
 	thinkingResponseFiltered := info.KimiK3HideThinking
 	if thinkingResponseFiltered {
@@ -500,15 +481,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified || responseModelModified || tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
+		if responseModelModified || tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
-			if usageModified {
-				bodyMap["usage"] = simpleResponse.Usage
-			} else if thinkingResponseFiltered {
+			if thinkingResponseFiltered {
 				applyKimiK3UsageToBody(bodyMap, &simpleResponse.Usage)
 			}
 			if responseModelModified {

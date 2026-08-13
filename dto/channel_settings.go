@@ -70,33 +70,22 @@ type ChannelOtherSettings struct {
 	KimiK3OfficialCompatibility           bool                               `json:"kimi_k3_official_compatibility,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
-	RetryZeroBilledOutput                 bool                               `json:"retry_zero_billed_output,omitempty"`
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
-	MissingOutputTokenMultiplier          *float64                           `json:"missing_output_token_multiplier,omitempty"`
+	UsageTokenLimit                       *UsageTokenLimitSettings           `json:"usage_token_limit,omitempty"`
 }
 
-const (
-	DefaultMissingTokenMultiplier = 1.0
-	MinMissingTokenMultiplier     = 0.01
-	MaxMissingTokenMultiplier     = 100.0
-)
-
-func MissingTokenMultiplier(value *float64) float64 {
-	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) ||
-		*value < MinMissingTokenMultiplier || *value > MaxMissingTokenMultiplier {
-		return DefaultMissingTokenMultiplier
-	}
-	return *value
+type UsageTokenLimitSettings struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
 }
 
-func ValidateMissingTokenMultiplier(name string, value *float64) error {
-	if value == nil {
-		return nil
+func (s UsageTokenLimitSettings) Validate() error {
+	if s.InputTokens < 0 || s.InputTokens > math.MaxInt32 {
+		return fmt.Errorf("input_tokens must be between 0 and %d", math.MaxInt32)
 	}
-	if math.IsNaN(*value) || math.IsInf(*value, 0) ||
-		*value < MinMissingTokenMultiplier || *value > MaxMissingTokenMultiplier {
-		return fmt.Errorf("%s must be between %.2f and %.0f", name, MinMissingTokenMultiplier, MaxMissingTokenMultiplier)
+	if s.OutputTokens < 0 || s.OutputTokens > math.MaxInt32 {
+		return fmt.Errorf("output_tokens must be between 0 and %d", math.MaxInt32)
 	}
 	return nil
 }
@@ -122,12 +111,10 @@ func (s StreamInterruptionBillingSettings) Validate() error {
 }
 
 type SimulatedModelCacheSettings struct {
-	Enabled                     bool                                   `json:"enabled,omitempty"`
-	EstimateMissingInputTokens  bool                                   `json:"estimate_missing_input_tokens,omitempty"`
-	MissingInputTokenMultiplier *float64                               `json:"missing_input_token_multiplier,omitempty"`
-	TTLSeconds                  int                                    `json:"ttl_seconds,omitempty"`
-	MinMatchRatio               float64                                `json:"min_match_ratio,omitempty"`
-	Multimodal                  *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
+	Enabled       bool                                   `json:"enabled,omitempty"`
+	TTLSeconds    int                                    `json:"ttl_seconds,omitempty"`
+	MinMatchRatio float64                                `json:"min_match_ratio,omitempty"`
+	Multimodal    *SimulatedModelCacheMultimodalSettings `json:"multimodal,omitempty"`
 }
 
 type SimulatedModelCacheMultimodalSettings struct {
@@ -156,13 +143,10 @@ func (s SimulatedModelCacheSettings) Normalize() SimulatedModelCacheSettings {
 }
 
 func (s SimulatedModelCacheSettings) IsActive() bool {
-	return s.Enabled || s.EstimateMissingInputTokens
+	return s.Enabled
 }
 
 func (s SimulatedModelCacheSettings) Validate() error {
-	if err := ValidateMissingTokenMultiplier("simulated_model_cache.missing_input_token_multiplier", s.MissingInputTokenMultiplier); err != nil {
-		return err
-	}
 	if s.Multimodal == nil || !s.Multimodal.Enabled {
 		return nil
 	}

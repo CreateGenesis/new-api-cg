@@ -1193,8 +1193,10 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
-	if err := dto.ValidateMissingTokenMultiplier("missing_output_token_multiplier", channelOtherSettings.MissingOutputTokenMultiplier); err != nil {
-		return err
+	if channelOtherSettings.UsageTokenLimit != nil {
+		if err := channelOtherSettings.UsageTokenLimit.Validate(); err != nil {
+			return fmt.Errorf("usage_token_limit: %w", err)
+		}
 	}
 	if channelOtherSettings.DisableStream && channelOtherSettings.DisableNonStream {
 		return fmt.Errorf("disable_stream and disable_non_stream cannot both be enabled")

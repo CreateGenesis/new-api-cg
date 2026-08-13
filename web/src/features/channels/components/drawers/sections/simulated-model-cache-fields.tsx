@@ -36,7 +36,6 @@ type SimulatedModelCacheNumberFieldName = Extract<
   FieldPath<ChannelFormValues>,
   | 'simulated_model_cache_ttl_seconds'
   | 'simulated_model_cache_min_match_ratio'
-  | 'simulated_model_cache_missing_input_token_multiplier'
   | 'simulated_model_cache_image_tokens_per_megapixel'
   | 'simulated_model_cache_video_tokens_per_second_megapixel'
   | 'simulated_model_cache_audio_tokens_per_second'
@@ -110,10 +109,6 @@ export function SimulatedModelCacheFields(
     control: props.control,
     name: 'simulated_model_cache_multimodal_enabled',
   })
-  const estimateMissingInputTokens = useWatch({
-    control: props.control,
-    name: 'simulated_model_cache_estimate_missing_input_tokens',
-  })
   const numericFieldsDisabled = !props.runtimeActive || !multimodalEnabled
 
   return (
@@ -145,45 +140,6 @@ export function SimulatedModelCacheFields(
               </FormControl>
             </FormItem>
           )}
-        />
-
-        <FormField
-          control={props.control}
-          name='simulated_model_cache_estimate_missing_input_tokens'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel className='text-sm'>
-                  {t('Estimate missing input tokens')}
-                </FormLabel>
-                <FormDescription>
-                  {t(
-                    'When an upstream reports zero input tokens, use a conservative local text estimate for billing and simulated cache usage.'
-                  )}
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-
-        <SimulatedModelCacheNumberField
-          control={props.control}
-          name='simulated_model_cache_missing_input_token_multiplier'
-          label={t('Missing input token multiplier')}
-          description={t(
-            'Scales local estimates when upstream input usage is zero. Values are rounded up and changes apply to new requests immediately.'
-          )}
-          itemClassName='px-4 py-3'
-          disabled={!props.runtimeActive || !estimateMissingInputTokens}
-          min={0.01}
-          max={100}
-          step={0.01}
         />
 
         <FormField

@@ -94,6 +94,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 
 	adminInfo := make(map[string]interface{})
 	adminInfo["use_channel"] = ctx.GetStringSlice("use_channel")
+	if relayInfo.UsageTokenLimitAudit != nil {
+		adminInfo["usage_token_limit"] = relayInfo.UsageTokenLimitAudit
+	}
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true
@@ -112,9 +115,6 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			"fingerprint_version": info.FingerprintVersion,
 			"candidate_count":     info.CandidateCount,
 			"match_duration_ms":   info.MatchDurationMS,
-		}
-		if info.MissingInputEstimatedTokens > 0 {
-			cacheInfo["missing_input_estimated_tokens"] = info.MissingInputEstimatedTokens
 		}
 		if info.BypassReason != "" {
 			cacheInfo["bypass_reason"] = info.BypassReason

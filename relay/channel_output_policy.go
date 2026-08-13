@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,39 +23,37 @@ var errResponseContentMatched = errors.New("upstream response matched a configur
 
 type channelOutputRecorder struct {
 	gin.ResponseWriter
-	header                http.Header
-	format                types.RelayFormat
-	info                  *relaycommon.RelayInfo
-	relayMode             int
-	model                 string
-	stream                bool
-	retryZeroOutput       bool
-	retryZeroBilledOutput bool
-	multiplier            float64
-	bufferLimit           int
-	status                int
-	statusWritten         bool
-	committed             bool
-	nonStreamPassThrough  bool
-	effectiveOutput       bool
-	holdingStreamTail     bool
-	body                  bytes.Buffer
-	streamPending         bytes.Buffer
-	streamPrefix          bytes.Buffer
-	streamTail            bytes.Buffer
-	outputText            strings.Builder
-	contentMatcher        *responseContentMatcher
-	policyErr             error
-	deliveryErr           error
+	header               http.Header
+	format               types.RelayFormat
+	info                 *relaycommon.RelayInfo
+	relayMode            int
+	stream               bool
+	retryZeroOutput      bool
+	validateUsage        bool
+	bufferLimit          int
+	status               int
+	statusWritten        bool
+	committed            bool
+	nonStreamPassThrough bool
+	effectiveOutput      bool
+	holdingStreamTail    bool
+	body                 bytes.Buffer
+	streamPending        bytes.Buffer
+	streamPrefix         bytes.Buffer
+	streamTail           bytes.Buffer
+	outputText           strings.Builder
+	contentMatcher       *responseContentMatcher
+	policyErr            error
+	deliveryErr          error
 }
 
-func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, contentPolicy operation_setting.ResponseContentRetryPolicy, multiplier float64, bufferLimit int) *channelOutputRecorder {
+func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, validateUsage bool, contentPolicy operation_setting.ResponseContentRetryPolicy, bufferLimit int) *channelOutputRecorder {
 	recorder := &channelOutputRecorder{
 		ResponseWriter:  writer,
 		header:          writer.Header().Clone(),
 		info:            info,
 		retryZeroOutput: retryZeroOutput,
-		multiplier:      multiplier,
+		validateUsage:   validateUsage,
 		bufferLimit:     bufferLimit,
 		status:          http.StatusOK,
 		contentMatcher:  newResponseContentMatcher(contentPolicy),
@@ -64,11 +61,6 @@ func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.Relay
 	if info != nil {
 		recorder.format = info.RelayFormat
 		recorder.relayMode = info.RelayMode
-		if info.ChannelMeta != nil {
-			recorder.retryZeroBilledOutput = retryZeroOutput && info.ChannelOtherSettings.RetryZeroOutput &&
-				info.ChannelOtherSettings.RetryZeroBilledOutput
-		}
-		recorder.model = simulatedModelCacheModelName(info)
 		recorder.stream = info.IsStream
 	}
 	return recorder
@@ -113,7 +105,7 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 			return w.writeDownstream(data)
 		}
 		if w.body.Len()+len(data) > w.bufferLimit {
-			if !w.retryZeroOutput {
+			if !w.retryZeroOutput && !w.validateUsage {
 				w.contentMatcher.disable()
 				w.nonStreamPassThrough = true
 				w.header.Del("Content-Length")
@@ -134,7 +126,7 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 
 	if w.streamPending.Len()+w.streamPrefix.Len()+w.streamTail.Len()+len(data) > w.bufferLimit && !w.committed {
-		if w.retryZeroBilledOutput || (w.retryZeroOutput && !w.effectiveOutput) {
+		if (w.retryZeroOutput && !w.effectiveOutput) || (!w.committed && w.validateUsage) {
 			w.policyErr = errChannelOutputPrefixTooLarge
 			return 0, w.policyErr
 		}
@@ -188,7 +180,7 @@ func (w *channelOutputRecorder) processStreamEvents() error {
 			return nil
 		}
 		event := w.streamPending.Next(boundaryIndex + boundaryLength)
-		isTail := w.retryZeroOutput && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
+		isTail := (w.retryZeroOutput || w.validateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
 		observeOutput := !shouldSkipTerminalOutputObservation(w.format, event, w.effectiveOutput)
 		if err := w.observeStreamEvent(event, observeOutput); err != nil {
 			return err
@@ -243,6 +235,9 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		w.markClientGone(c, info)
 		return nil
 	}
+	if w.stream && info != nil && info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		return nil
+	}
 	if w.policyErr != nil {
 		w.abortCommittedStream()
 		return channelOutputPolicyError(w.policyErr)
@@ -273,31 +268,33 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		return channelResponseContentMatchError()
 	}
 
-	estimatedOutput := false
 	if w.retryZeroOutput {
-		normalized := service.NormalizeUsageForBilling(usage)
 		if !w.effectiveOutput {
 			return channelZeroOutputError(errors.New("upstream returned no effective output"))
 		}
-		if w.retryZeroBilledOutput && normalized.OutputTokens == 0 {
-			return channelZeroOutputError(errors.New("upstream returned zero billable output tokens"))
-		}
-		if normalized.OutputTokens == 0 {
-			baseEstimate := service.EstimateTokenByModel(w.model, w.outputText.String())
-			if baseEstimate <= 0 {
-				baseEstimate = 1
+	}
+
+	usageModified := false
+	if w.validateUsage {
+		var err error
+		usageModified, err = service.ApplyTextUsagePolicy(c, info, usage)
+		if err != nil {
+			if w.committed {
+				w.streamTail.Reset()
+				w.streamPending.Reset()
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.RecordError(err.Error())
+				}
+				w.ResponseWriter.Flush()
+				return channelCommittedUsageError(err)
 			}
-			estimatedTokens := scaleMissingTokenEstimate(info, baseEstimate, w.multiplier)
-			if estimatedTokens <= 0 {
-				estimatedTokens = 1
-			}
-			estimatedOutput = service.ApplyMissingOutputEstimate(usage, estimatedTokens)
+			return channelZeroOutputError(err)
 		}
 	}
 
 	if !w.stream {
 		body := w.body.Bytes()
-		if estimatedOutput {
+		if usageModified {
 			body = service.PatchSimulatedModelCacheResponseBody(w.format, w.header.Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
 		}
 		w.header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -322,7 +319,7 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		w.streamPrefix.Reset()
 	}
 	tail := w.streamTail.Bytes()
-	if estimatedOutput && len(tail) > 0 {
+	if usageModified && len(tail) > 0 {
 		tail = service.PatchSimulatedModelCacheResponseBody(w.format, "text/event-stream", tail, usage, simulatedModelCacheResponseModel(info))
 	}
 	if err := w.writeCommitted(tail); err != nil {
@@ -348,7 +345,7 @@ func (w *channelOutputRecorder) finishPendingStreamBytes() error {
 	if err := w.observeStreamEvent(pending, observeOutput); err != nil {
 		return err
 	}
-	if w.retryZeroOutput && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
+	if (w.retryZeroOutput || w.validateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
 		w.holdingStreamTail = true
 		_, _ = w.streamTail.Write(pending)
 		return nil
@@ -369,7 +366,7 @@ func (w *channelOutputRecorder) readyToCommitStream() bool {
 	if w.contentMatcher != nil && !w.contentMatcher.resolvedWithoutMatch() {
 		return false
 	}
-	return !w.retryZeroOutput || (w.effectiveOutput && !w.retryZeroBilledOutput)
+	return !w.retryZeroOutput || w.effectiveOutput
 }
 
 func (w *channelOutputRecorder) commitBufferedStream() error {
@@ -458,6 +455,15 @@ func channelZeroOutputError(err error) *types.NewAPIError {
 	return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelZeroOutput, http.StatusServiceUnavailable)
 }
 
+func channelCommittedUsageError(err error) *types.NewAPIError {
+	return types.NewError(
+		err,
+		types.ErrorCodeChannelZeroOutput,
+		types.ErrOptionWithStatusCode(http.StatusServiceUnavailable),
+		types.ErrOptionWithSkipRetry(),
+	)
+}
+
 func channelResponseContentMatchError() *types.NewAPIError {
 	return types.NewErrorWithStatusCode(errResponseContentMatched, types.ErrorCodeChannelResponseContentMatch, http.StatusServiceUnavailable)
 }
@@ -467,18 +473,6 @@ func channelOutputPolicyError(err error) *types.NewAPIError {
 		return channelResponseContentMatchError()
 	}
 	return channelZeroOutputError(err)
-}
-
-func scaleMissingTokenEstimate(info *relaycommon.RelayInfo, baseTokens int, multiplier float64) int {
-	if baseTokens <= 0 {
-		return 0
-	}
-	value := math.Ceil(float64(baseTokens) * multiplier)
-	estimatedTokens, clamp := common.QuotaFromFloatChecked(value)
-	if clamp != nil && info != nil && info.QuotaClamp == nil {
-		info.QuotaClamp = clamp
-	}
-	return estimatedTokens
 }
 
 func isChannelOutputStreamTailEvent(format types.RelayFormat, event []byte) bool {

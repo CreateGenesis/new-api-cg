@@ -175,6 +175,8 @@ type RelayInfo struct {
 	// int32 bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.
 	QuotaClamp *common.QuotaClamp
+	// UsageTokenLimitAudit records channel-level usage rewrites for the admin consume log.
+	UsageTokenLimitAudit *UsageTokenLimitAudit
 
 	// TieredBillingSnapshot is a frozen snapshot of tiered billing rules
 	// captured at pre-consume time. Non-nil only when billing mode is "tiered_expr".
@@ -202,6 +204,18 @@ type RelayInfo struct {
 	*TaskRelayInfo
 }
 
+type UsageTokenLimitDirectionAudit struct {
+	Original    int `json:"original"`
+	Limit       int `json:"limit"`
+	RandomBasis int `json:"random_basis_points"`
+	Final       int `json:"final"`
+}
+
+type UsageTokenLimitAudit struct {
+	Input  *UsageTokenLimitDirectionAudit `json:"input,omitempty"`
+	Output *UsageTokenLimitDirectionAudit `json:"output,omitempty"`
+}
+
 func (info *RelayInfo) IsTNTTencentOpenAIConversion() bool {
 	return info != nil && info.ChannelOtherSettings.TNTTencentOpenAIConversion
 }
@@ -221,17 +235,16 @@ func (info *RelayInfo) IsKimiK3OfficialCompatibility() bool {
 }
 
 type SimulatedModelCacheInfo struct {
-	Mode                        string  `json:"mode"`
-	MatchRatio                  float64 `json:"match_ratio"`
-	OriginalPromptTokens        int     `json:"original_prompt_tokens"`
-	SimulatedPromptTokens       int     `json:"simulated_prompt_tokens"`
-	SimulatedCachedTokens       int     `json:"simulated_cached_tokens"`
-	MissingInputEstimatedTokens int     `json:"missing_input_estimated_tokens,omitempty"`
-	StreamUsageInjected         *bool   `json:"stream_usage_injected,omitempty"`
-	FingerprintVersion          string  `json:"fingerprint_version,omitempty"`
-	CandidateCount              int     `json:"candidate_count,omitempty"`
-	MatchDurationMS             int64   `json:"match_duration_ms,omitempty"`
-	BypassReason                string  `json:"bypass_reason,omitempty"`
+	Mode                  string  `json:"mode"`
+	MatchRatio            float64 `json:"match_ratio"`
+	OriginalPromptTokens  int     `json:"original_prompt_tokens"`
+	SimulatedPromptTokens int     `json:"simulated_prompt_tokens"`
+	SimulatedCachedTokens int     `json:"simulated_cached_tokens"`
+	StreamUsageInjected   *bool   `json:"stream_usage_injected,omitempty"`
+	FingerprintVersion    string  `json:"fingerprint_version,omitempty"`
+	CandidateCount        int     `json:"candidate_count,omitempty"`
+	MatchDurationMS       int64   `json:"match_duration_ms,omitempty"`
+	BypassReason          string  `json:"bypass_reason,omitempty"`
 }
 
 func (info *RelayInfo) CacheUsageValidationSplitEnabled() bool {

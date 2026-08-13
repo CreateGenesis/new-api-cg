@@ -268,9 +268,6 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 
 	chatResponse := buffered.response()
-	if chatResponse.Usage.TotalTokens == 0 {
-		chatResponse.Usage = *service.ResponseText2Usage(c, buffered.outputText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-	}
 	body, err := common.Marshal(chatResponse)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
