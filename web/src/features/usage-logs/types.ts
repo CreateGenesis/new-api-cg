@@ -226,6 +226,12 @@ export interface UsageNormalizationAudit {
   normalized_total_input_tokens: number
 }
 
+export interface ToolSurchargeItem {
+  name: string
+  count: number
+  price: number
+}
+
 export interface LogOtherData {
   admin_info?: {
     is_multi_key?: boolean
@@ -326,11 +332,13 @@ export interface LogOtherData {
   file_search?: boolean
   file_search_call_count?: number
   file_search_price?: number
+  tool_surcharges?: ToolSurchargeItem[]
   audio_input_seperate_price?: boolean
   audio_input_token_count?: number
   audio_input_price?: number
   image_generation_call?: boolean
   image_generation_call_price?: number
+  image_generation_call_count?: number
   is_system_prompt_overwritten?: boolean
   po?: string[]
   billing_source?: string

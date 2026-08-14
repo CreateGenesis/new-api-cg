@@ -44,6 +44,8 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'kimi_k3_official_compatibility',
   'proxy',
   'proxy_fallback_direct',
+  'http_protocol',
+  'http2_connection_shards',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',

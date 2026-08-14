@@ -104,10 +104,10 @@ function channelWithSettings(settings: string): Channel {
 }
 
 describe('response header timeout channel settings', () => {
-  test('defaults to disabled with a 180 second value', () => {
+  test('defaults to enabled with a 180 second value', () => {
     assert.equal(
       CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_enabled,
-      false
+      true
     )
     assert.equal(
       CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_seconds,
@@ -133,7 +133,7 @@ describe('response header timeout channel settings', () => {
     })
   })
 
-  test('removes the nested setting when disabled', () => {
+  test('persists the nested setting as explicitly disabled', () => {
     const payload = transformFormDataToCreatePayload(
       validChannelForm({
         settings:
@@ -143,7 +143,7 @@ describe('response header timeout channel settings', () => {
     )
     const settings = JSON.parse(String(payload.channel.settings))
 
-    assert.equal('response_header_timeout' in settings, false)
+    assert.deepEqual(settings.response_header_timeout, { enabled: false })
   })
 
   test('rejects enabled timeout outside the supported integer range', () => {

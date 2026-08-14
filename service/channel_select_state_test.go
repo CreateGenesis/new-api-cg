@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,7 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
@@ -71,6 +73,7 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 	common.MemoryCacheEnabled = true
 	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["group-a","group-b"]`))
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","group-a":"A","group-b":"B"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"group-a":1,"group-b":1}`))
 	t.Cleanup(func() {
 		model.DB = originalDB
 		common.MemoryCacheEnabled = originalMemoryCacheEnabled
@@ -79,6 +82,7 @@ func TestAutoGroupSelectionKeepsCrossGroupPolicySeparateFromRetryCounters(t *tes
 		}
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
 		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
 		sqlDB, sqlErr := db.DB()
 		if sqlErr == nil {
 			require.NoError(t, sqlDB.Close())

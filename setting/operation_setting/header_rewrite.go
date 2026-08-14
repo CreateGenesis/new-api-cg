@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"golang.org/x/net/http/httpguts"
 )
 

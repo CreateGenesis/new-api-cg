@@ -7,14 +7,14 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
-	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -121,6 +121,7 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if filteredResponse.Delta != nil && filteredResponse.Delta.StopReason != nil {
 			maybeMarkClaudeRefusal(c, *filteredResponse.Delta.StopReason)
 		}
+		countClaudeStreamBillableTools(c, info, filteredResponse)
 		if info.RelayFormat == types.RelayFormatClaude {
 			FormatClaudeResponseInfo(filteredResponse, nil, claudeInfo)
 
@@ -160,11 +161,32 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 
 			err = helper.ObjectData(c, response)
 			if err != nil {
+				if helper.HandleStreamClientDisconnect(c, info, nil, err) {
+					return nil
+				}
 				logger.LogError(c, "send_stream_response_failed: "+err.Error())
+				return types.NewError(err, types.ErrorCodeBadResponse)
 			}
 		}
 	}
 	return nil
+}
+
+func countClaudeStreamBillableTools(c *gin.Context, info *relaycommon.RelayInfo, claudeResponse *dto.ClaudeResponse) {
+	if claudeResponse == nil {
+		return
+	}
+	if claudeResponse.Type == "content_block_start" &&
+		claudeResponse.ContentBlock != nil &&
+		claudeResponse.ContentBlock.Type == "tool_use" {
+		info.CountBillableToolCall(dto.BuildInCallToolUse, claudeResponse.ContentBlock.Name)
+	}
+	if claudeResponse.Type == "message_delta" &&
+		claudeResponse.Usage != nil &&
+		claudeResponse.Usage.ServerToolUse != nil &&
+		claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
+		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
+	}
 }
 
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
@@ -292,7 +314,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		if info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.UpstreamModelName {
+		if info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.GetUpstreamModelName() {
 			responseData, err = common.Marshal(claudeResponse)
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -304,6 +326,11 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
 		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
+	}
+	for _, block := range claudeResponse.Content {
+		if block.Type == "tool_use" {
+			info.CountBillableToolCall(dto.BuildInCallToolUse, block.Name)
+		}
 	}
 
 	service.IOCopyBytesGracefully(c, httpResp, responseData)

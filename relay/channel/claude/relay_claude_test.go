@@ -1,22 +1,21 @@
 package claude
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	openaiadapter "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/service/relayconvert"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
 )
 
 func TestHandleStreamResponseDataMarksClaudeMessageStop(t *testing.T) {
@@ -690,7 +689,7 @@ func TestOpenAIChatRequestToClaudeMessages_ClaudeOpus48HighUsesAdaptiveThinking(
 		},
 	}
 
-	claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, request)
+	claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, &relaycommon.RelayInfo{}, request)
 	require.NoError(t, err)
 	require.Equal(t, "claude-opus-4-8", claudeRequest.Model)
 	require.NotNil(t, claudeRequest.Thinking)
@@ -716,7 +715,7 @@ func TestOpenAIChatRequestToClaudeMessages_ClaudeOpus48ThinkingUsesAdaptiveHighE
 		},
 	}
 
-	claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, request)
+	claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, &relaycommon.RelayInfo{}, request)
 	require.NoError(t, err)
 	require.Equal(t, "claude-opus-4-8", claudeRequest.Model)
 	require.NotNil(t, claudeRequest.Thinking)
@@ -743,6 +742,7 @@ func TestOpenAIChatRequestToClaudeMessages_NoneDisablesThinking(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			request := dto.GeneralOpenAIRequest{
 				Model:           tt.model,
+				MaxTokens:       commonPointer(uint(1024)),
 				ReasoningEffort: "none",
 				Reasoning:       []byte(`{"enabled":true,"max_tokens":2048}`),
 				Temperature:     commonPointer(0.7),
@@ -756,7 +756,7 @@ func TestOpenAIChatRequestToClaudeMessages_NoneDisablesThinking(t *testing.T) {
 				},
 			}
 
-			claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, request)
+			claudeRequest, err := relayconvert.OpenAIChatRequestToClaudeMessages(nil, &relaycommon.RelayInfo{}, request)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantModel, claudeRequest.Model)
 			require.NotNil(t, claudeRequest.Thinking)

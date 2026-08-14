@@ -4,9 +4,9 @@ import (
 	"math"
 	"strings"
 
-	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/service/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 )
 
 func prepareKimiK3OfficialBilling(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) *dto.Usage {
