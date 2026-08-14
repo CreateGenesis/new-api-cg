@@ -102,7 +102,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 			if useZeroOutputStream {
 				w.Header().Set("Content-Type", "text/event-stream")
 				if channelKey == "channel-1" {
-					_, _ = w.Write([]byte(": zero-output-channel-1\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0,\"total_tokens\":1}}\n\ndata: [DONE]\n\n"))
+					_, _ = w.Write([]byte(": zero-output-channel-1\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}\n\ndata: [DONE]\n\n"))
 					return
 				}
 				_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-zero-output-stream-fallback\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"zero output stream fallback ok\"},\"finish_reason\":null}]}\n\n"))
@@ -111,7 +111,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if channelKey == "channel-1" {
-				_, _ = w.Write([]byte(`{"id":"zero-output-channel-1","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}`))
+				_, _ = w.Write([]byte(`{"id":"zero-output-channel-1","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-zero-output-fallback","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"zero output fallback ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
@@ -634,10 +634,10 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	zeroInputFallback = false
 	attempts = nil
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1", "channel-2"}, zeroInputAttempts)
+	assert.Equal(t, []string{"channel-1"}, zeroInputAttempts)
 	assert.Equal(t, http.StatusOK, zeroInputRecorder.Code)
-	assert.Contains(t, zeroInputRecorder.Body.String(), "zero input fallback ok")
-	assert.NotContains(t, zeroInputRecorder.Body.String(), "zero input channel 1")
+	assert.Contains(t, zeroInputRecorder.Body.String(), "zero input channel 1")
+	assert.NotContains(t, zeroInputRecorder.Body.String(), "zero input fallback ok")
 
 	attemptsMu.Lock()
 	attempts = nil
@@ -665,10 +665,10 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	sseToJSONFallback = false
 	attempts = nil
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1", "channel-2"}, sseToJSONAttempts)
+	assert.Equal(t, []string{"channel-1"}, sseToJSONAttempts)
 	assert.Equal(t, http.StatusOK, sseToJSONRecorder.Code)
-	assert.Contains(t, sseToJSONRecorder.Body.String(), "sse to json fallback ok")
-	assert.NotContains(t, sseToJSONRecorder.Body.String(), "sse-first-attempt")
+	assert.Contains(t, sseToJSONRecorder.Body.String(), "sse-first-attempt")
+	assert.NotContains(t, sseToJSONRecorder.Body.String(), "sse to json fallback ok")
 
 	channels[0].OtherSettings = `{"disable_non_stream":true}`
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)

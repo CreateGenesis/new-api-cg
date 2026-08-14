@@ -36,6 +36,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	helper.SetEventStreamHeaders(c)
 	id := helper.GetResponseID(c)
 	responseModel := info.DownstreamModelName(info.UpstreamModelName)
+	var responseText string
 	isFirst := true
 
 	for scanner.Scan() {
@@ -58,6 +59,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 		}
 		for _, choice := range response.Choices {
 			choice.Delta.Role = "assistant"
+			responseText += choice.Delta.GetContentString()
 		}
 		response.Id = id
 		response.Model = responseModel
@@ -74,7 +76,14 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	if err := scanner.Err(); err != nil {
 		logger.LogError(c, "error_scanning_stream_response: "+err.Error())
 	}
-	usage := &dto.Usage{}
+	usage := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if info.ShouldIncludeUsage {
+		response := helper.GenerateFinalUsageResponse(id, info.StartTime.Unix(), responseModel, *usage)
+		err := helper.ObjectData(c, response)
+		if err != nil {
+			logger.LogError(c, "error_rendering_final_usage_response: "+err.Error())
+		}
+	}
 	helper.Done(c)
 
 	service.CloseResponseBodyGracefully(resp)
@@ -94,7 +103,11 @@ func cfHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response)
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
 	}
 	response.Model = info.DownstreamModelName(info.UpstreamModelName)
-	usage := &dto.Usage{}
+	var responseText string
+	for _, choice := range response.Choices {
+		responseText += choice.Message.StringContent()
+	}
+	usage := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	response.Usage = *usage
 	response.Id = helper.GetResponseID(c)
 	jsonResponse, err := json.Marshal(response)

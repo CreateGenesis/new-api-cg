@@ -33,26 +33,58 @@ func usagePolicyRelayInfo(inputLimit, outputLimit int) *relaycommon.RelayInfo {
 	}
 }
 
-func TestApplyTextUsagePolicyRejectsIncompleteUpstreamUsage(t *testing.T) {
+func TestApplyTextUsagePolicyDoesNotValidateWithoutUsageTokenLimit(t *testing.T) {
+	for _, info := range []*relaycommon.RelayInfo{
+		nil,
+		{ChannelMeta: &relaycommon.ChannelMeta{}},
+		usagePolicyRelayInfo(0, 0),
+	} {
+		modified, err := applyTextUsagePolicy(nil, info, nil, func() (int, error) {
+			t.Fatal("random source must not be called")
+			return 0, nil
+		})
+
+		require.NoError(t, err)
+		assert.False(t, modified)
+	}
+}
+
+func TestApplyTextUsagePolicyValidatesOnlyConfiguredDirections(t *testing.T) {
 	tests := []struct {
 		name  string
+		info  *relaycommon.RelayInfo
 		usage *dto.Usage
-		want  error
 	}{
-		{name: "nil usage", want: ErrUpstreamUsageMissingInput},
-		{name: "zero input", usage: &dto.Usage{CompletionTokens: 1}, want: ErrUpstreamUsageMissingInput},
-		{name: "zero output", usage: &dto.Usage{PromptTokens: 1}, want: ErrUpstreamUsageMissingOutput},
+		{
+			name:  "input limit does not require output usage",
+			info:  usagePolicyRelayInfo(100, 0),
+			usage: &dto.Usage{PromptTokens: 10, TotalTokens: 10},
+		},
+		{
+			name:  "output limit does not require input usage",
+			info:  usagePolicyRelayInfo(0, 100),
+			usage: &dto.Usage{CompletionTokens: 10, TotalTokens: 10},
+		},
+		{
+			name: "missing usage is not treated as explicit zero usage",
+			info: usagePolicyRelayInfo(100, 100),
+		},
+		{
+			name:  "estimated fallback is not treated as explicit zero usage",
+			info:  usagePolicyRelayInfo(100, 100),
+			usage: &dto.Usage{Estimated: true},
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			modified, err := applyTextUsagePolicy(nil, usagePolicyRelayInfo(0, 0), test.usage, func() (int, error) {
+			modified, err := applyTextUsagePolicy(nil, test.info, test.usage, func() (int, error) {
 				t.Fatal("random source must not be called")
 				return 0, nil
 			})
 
+			require.NoError(t, err)
 			assert.False(t, modified)
-			require.ErrorIs(t, err, test.want)
 		})
 	}
 }

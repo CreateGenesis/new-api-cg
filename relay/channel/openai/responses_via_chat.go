@@ -178,8 +178,10 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.NewOpenAIError(fmt.Errorf("expected OpenAI responses response, got %T", convertResult.Value), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	usage := convertResult.Usage
-	if usage == nil {
-		usage = &dto.Usage{}
+	if usage == nil || usage.TotalTokens == 0 {
+		text := service.ExtractOutputTextFromResponses(responsesResp)
+		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 	responsesResp.Model = info.DownstreamModelName(responsesResp.Model)
 	if info.KimiK3HideThinking {
@@ -353,8 +355,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	usage := state.Usage()
-	if usage == nil {
-		usage = &dto.Usage{}
+	if usage == nil || usage.TotalTokens == 0 {
+		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		state.SetUsage(usage)
 	}
 	if info.KimiK3HideThinking {
 		relayconvert.HideKimiK3ReasoningUsage(usage)

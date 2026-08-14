@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -80,6 +81,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	defer service.CloseResponseBodyGracefully(resp)
 
 	var usage = &dto.Usage{}
+	var responseTextBuilder strings.Builder
 	var streamErr *types.NewAPIError
 
 	info.RequireStreamProtocolEnd()
@@ -135,6 +137,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					c.Set("image_generation_call_size", streamResponse.Response.GetSize())
 				}
 			}
+		case "response.output_text.delta":
+			// 处理输出文本
+			responseTextBuilder.WriteString(streamResponse.Delta)
 		case dto.ResponsesOutputTypeItemDone:
 			// 函数调用处理
 			if streamResponse.Item != nil {
@@ -154,6 +159,22 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 	if streamRetryErr != nil {
 		return nil, streamRetryErr
+	}
+
+	if usage.CompletionTokens == 0 {
+		// 计算输出文本的 token 数量
+		tempStr := responseTextBuilder.String()
+		if len(tempStr) > 0 {
+			// 非正常结束，使用输出文本的 token 数量
+			completionTokens := service.CountTextToken(tempStr, info.UpstreamModelName)
+			usage.CompletionTokens = completionTokens
+			usage.Estimated = true
+		}
+	}
+
+	if usage.PromptTokens == 0 && usage.CompletionTokens != 0 {
+		usage.PromptTokens = info.GetEstimatePromptTokens()
+		usage.Estimated = true
 	}
 
 	normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)

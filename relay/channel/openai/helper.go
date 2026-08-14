@@ -17,6 +17,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // 辅助函数
@@ -160,6 +161,26 @@ func processCompletionsStreamResponse(streamResponse dto.CompletionsStreamRespon
 	}
 }
 
+func markReportedTextUsage(usage *dto.Usage, usageJSON gjson.Result) {
+	if usage == nil || !usageJSON.IsObject() {
+		return
+	}
+	usage.UpstreamInputReported = usageJSON.Get("prompt_tokens").Exists() || usageJSON.Get("input_tokens").Exists()
+	usage.UpstreamOutputReported = usageJSON.Get("completion_tokens").Exists() || usageJSON.Get("output_tokens").Exists()
+}
+
+func shouldPreserveReportedTextUsage(info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	if info == nil || info.ChannelMeta == nil || usage == nil {
+		return false
+	}
+	if (info.ChannelOtherSettings.RetryZeroOutput || info.IsKimiK3OfficialCompatibility()) && usage.UpstreamInputReported {
+		return true
+	}
+	limits := info.ChannelOtherSettings.UsageTokenLimit
+	return limits != nil && ((limits.InputTokens > 0 && usage.UpstreamInputReported) ||
+		(limits.OutputTokens > 0 && usage.UpstreamOutputReported))
+}
+
 func handleLastResponse(lastStreamData string, responseId *string, createAt *int64,
 	systemFingerprint *string, model *string, usage **dto.Usage,
 	containStreamUsage *bool, info *relaycommon.RelayInfo,
@@ -174,8 +195,10 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	*createAt = lastStreamResponse.Created
 	*systemFingerprint = lastStreamResponse.GetSystemFingerprint()
 	*model = lastStreamResponse.Model
+	usageJSON := gjson.Get(lastStreamData, "usage")
+	markReportedTextUsage(lastStreamResponse.Usage, usageJSON)
 
-	if service.ValidUsage(lastStreamResponse.Usage) {
+	if service.ValidUsage(lastStreamResponse.Usage) || shouldPreserveReportedTextUsage(info, lastStreamResponse.Usage) {
 		*containStreamUsage = true
 		*usage = lastStreamResponse.Usage
 		if !info.ShouldIncludeUsage {

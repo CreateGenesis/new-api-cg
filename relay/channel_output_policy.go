@@ -36,6 +36,8 @@ type channelOutputRecorder struct {
 	committed            bool
 	nonStreamPassThrough bool
 	effectiveOutput      bool
+	inputUsageObserved   bool
+	outputUsageObserved  bool
 	holdingStreamTail    bool
 	body                 bytes.Buffer
 	streamPending        bytes.Buffer
@@ -214,6 +216,7 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 	if common.Unmarshal(data, &payload) != nil {
 		return nil
 	}
+	w.observeUsagePresence(payload)
 	effectiveOutput := observeOutput && w.observeEffectiveOutput(payload)
 	if effectiveOutput {
 		w.effectiveOutput = true
@@ -232,6 +235,10 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
 	c.Writer = w.ResponseWriter
 	if w.deliveryErr != nil {
+		w.markClientGone(c, info)
+		return nil
+	}
+	if w.stream && c.Request != nil && c.Request.Context().Err() != nil {
 		w.markClientGone(c, info)
 		return nil
 	}
@@ -258,26 +265,48 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	} else {
 		var payload map[string]any
 		if common.Unmarshal(w.body.Bytes(), &payload) == nil {
+			w.observeUsagePresence(payload)
 			if w.observeEffectiveOutput(payload) {
 				w.effectiveOutput = true
 			}
 			observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, false)
 		}
 	}
-	if w.contentMatcher != nil && w.contentMatcher.finish() {
+	streamInterrupted := false
+	if w.stream && info != nil && info.StreamStatus != nil {
+		streamStatus := info.StreamStatus.Snapshot()
+		streamInterrupted = streamStatus.EndReason != relaycommon.StreamEndReasonNone && info.StreamStatus.IsInterrupted()
+	}
+	if !streamInterrupted && w.contentMatcher != nil && w.contentMatcher.finish() {
 		return channelResponseContentMatchError()
 	}
 
-	if w.retryZeroOutput {
-		if !w.effectiveOutput {
+	inputUsageReported := usage != nil && (w.inputUsageObserved || usage.UpstreamInputReported)
+	if w.retryZeroOutput && !streamInterrupted && !w.effectiveOutput && inputUsageReported && usage != nil && !usage.Estimated {
+		normalized := service.NormalizeUsageForBilling(usage)
+		if normalized.InputTokens.TotalInputTokens <= 0 {
 			return channelZeroOutputError(errors.New("upstream returned no effective output"))
 		}
 	}
 
 	usageModified := false
-	if w.validateUsage {
+	validateUsage := w.validateUsage && !streamInterrupted
+	if validateUsage {
 		var err error
-		usageModified, err = service.ApplyTextUsagePolicy(c, info, usage)
+		if usage != nil && !usage.Estimated && info != nil && info.ChannelOtherSettings.UsageTokenLimit != nil {
+			limits := info.ChannelOtherSettings.UsageTokenLimit
+			normalized := service.NormalizeUsageForBilling(usage)
+			inputReported := w.inputUsageObserved || usage.UpstreamInputReported
+			outputReported := w.outputUsageObserved || usage.UpstreamOutputReported
+			if limits.InputTokens > 0 && inputReported && normalized.InputTokens.TotalInputTokens <= 0 {
+				err = service.ErrUpstreamUsageMissingInput
+			} else if limits.OutputTokens > 0 && outputReported && normalized.OutputTokens <= 0 {
+				err = service.ErrUpstreamUsageMissingOutput
+			}
+		}
+		if err == nil {
+			usageModified, err = service.ApplyTextUsagePolicy(c, info, usage)
+		}
 		if err != nil {
 			if w.committed {
 				w.streamTail.Reset()
@@ -333,6 +362,39 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 
 func (w *channelOutputRecorder) observeEffectiveOutput(payload map[string]any) bool {
 	return observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText)
+}
+
+func (w *channelOutputRecorder) observeUsagePresence(payload map[string]any) {
+	usageMaps := make([]map[string]any, 0, 4)
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		usageMaps = append(usageMaps, usage)
+	}
+	if usage, ok := payload["usageMetadata"].(map[string]any); ok {
+		usageMaps = append(usageMaps, usage)
+	}
+	for _, parentKey := range []string{"message", "response"} {
+		parent, ok := payload[parentKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		if usage, ok := parent["usage"].(map[string]any); ok {
+			usageMaps = append(usageMaps, usage)
+		}
+	}
+	for _, usage := range usageMaps {
+		for _, field := range []string{"prompt_tokens", "input_tokens", "promptTokenCount", "toolUsePromptTokenCount"} {
+			if value, exists := usage[field]; exists && value != nil {
+				w.inputUsageObserved = true
+				break
+			}
+		}
+		for _, field := range []string{"completion_tokens", "output_tokens", "candidatesTokenCount", "thoughtsTokenCount"} {
+			if value, exists := usage[field]; exists && value != nil {
+				w.outputUsageObserved = true
+				break
+			}
+		}
+	}
 }
 
 func (w *channelOutputRecorder) finishPendingStreamBytes() error {

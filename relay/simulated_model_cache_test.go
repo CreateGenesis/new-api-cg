@@ -12,7 +12,9 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/alicebob/miniredis/v2"
@@ -134,6 +136,33 @@ func TestSimulatedModelCacheModelNameFallsBackToUpstreamModel(t *testing.T) {
 
 	assert.Equal(t, "upstream-model", simulatedModelCacheModelName(info))
 	assert.Empty(t, simulatedModelCacheModelName(nil))
+}
+
+func TestPrepareSimulatedModelCacheAttemptScopesUsageValidationToConfiguredLimit(t *testing.T) {
+	originalPolicy := operation_setting.ResponseContentRetryPolicy2JSONString()
+	require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(`{"enabled":false,"rules":[]}`))
+	t.Cleanup(func() {
+		require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(originalPolicy))
+	})
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+
+	assert.Nil(t, prepareSimulatedModelCacheAttempt(c, info, nil))
+
+	info.ChannelMeta.ChannelOtherSettings.UsageTokenLimit = &dto.UsageTokenLimitSettings{}
+	assert.Nil(t, prepareSimulatedModelCacheAttempt(c, info, nil))
+
+	info.ChannelMeta.ChannelOtherSettings.UsageTokenLimit.InputTokens = 1_000_000
+	attempt := prepareSimulatedModelCacheAttempt(c, info, nil)
+	require.NotNil(t, attempt)
+	assert.True(t, attempt.validateUsage)
 }
 
 func TestHiddenSimulatedModelCacheMatchDoesNotRewriteResponseOrLogInfo(t *testing.T) {

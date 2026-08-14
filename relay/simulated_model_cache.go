@@ -532,7 +532,11 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 	responseContentRetryPolicy := operation_setting.GetResponseContentRetryPolicy()
 	responseContentRetryActive := info != nil && responseContentRetryPolicy.Enabled && len(responseContentRetryPolicy.Rules) > 0 &&
 		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
-	validateUsage := info != nil && isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
+	validateUsage := false
+	if info != nil && info.ChannelMeta != nil && isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode) {
+		limits := info.ChannelOtherSettings.UsageTokenLimit
+		validateUsage = limits != nil && (limits.InputTokens > 0 || limits.OutputTokens > 0)
+	}
 	outputPolicyActive := retryZeroOutput || responseContentRetryActive || validateUsage
 	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
 	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)

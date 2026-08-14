@@ -168,11 +168,33 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 }
 
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	if claudeInfo.Usage.PromptTokens == 0 {
+		//上游出错
+	}
+	if claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done {
+		if common.DebugEnabled {
+			common.SysLog("claude response usage is not complete, maybe upstream error")
+		}
+		// 只补缺失字段，不整份覆盖——保留 message_start 已拿到的 cache 字段
+		fallback := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		if claudeInfo.Usage.CompletionTokens == 0 ||
+			(!claudeInfo.Done && fallback.CompletionTokens > claudeInfo.Usage.CompletionTokens) {
+			claudeInfo.Usage.CompletionTokens = fallback.CompletionTokens
+		}
+		if claudeInfo.Usage.PromptTokens == 0 {
+			claudeInfo.Usage.PromptTokens = fallback.PromptTokens
+		}
+		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
+		claudeInfo.Usage.Estimated = true
+	}
 	if claudeInfo.Usage != nil {
 		claudeInfo.Usage.UsageSemantic = "anthropic"
 	}
 	if claudeInfo.Usage != nil && claudeInfo.Usage.BillingUsage == nil {
 		claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(buildMessageDeltaPatchUsage(nil, claudeInfo))
+	}
+	if claudeInfo.Usage != nil && claudeInfo.Usage.Estimated && claudeInfo.Usage.BillingUsage != nil {
+		claudeInfo.Usage.BillingUsage.Estimated = true
 	}
 
 	if info.RelayFormat == types.RelayFormatClaude {

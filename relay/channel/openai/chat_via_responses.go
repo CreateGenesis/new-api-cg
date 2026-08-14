@@ -53,8 +53,11 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		chatResp.Id = chatID
 	}
 	usage := chatResult.Usage
-	if usage == nil {
-		usage = &dto.Usage{}
+
+	if usage == nil || usage.TotalTokens == 0 {
+		text := service.ExtractOutputTextFromResponses(&responsesResp)
+		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		chatResp.Usage = *usage
 	}
 
 	responseValue := any(chatResp)
@@ -159,8 +162,10 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		chatResp.Id = chatID
 	}
 	usage := chatResult.Usage
-	if usage == nil {
-		usage = &dto.Usage{}
+	if usage == nil || usage.TotalTokens == 0 {
+		text := service.ExtractOutputTextFromResponses(finalResponse)
+		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
+		chatResp.Usage = *usage
 	}
 
 	responseValue := any(chatResp)
@@ -326,8 +331,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	})
 
 	usage := state.Usage()
-	if usage == nil {
-		usage = &dto.Usage{}
+	if usage == nil || usage.TotalTokens == 0 {
+		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		state.SetUsage(usage)
 	}
 	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
 		return usage, nil

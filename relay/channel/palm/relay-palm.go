@@ -121,7 +121,7 @@ func palmHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 		}, resp.StatusCode)
 	}
 	fullTextResponse := responsePaLM2OpenAI(&palmResponse)
-	usage := &dto.Usage{}
+	usage := service.ResponseText2Usage(c, palmResponse.Candidates[0].Content, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	fullTextResponse.Usage = *usage
 	jsonResponse, err := common.Marshal(fullTextResponse)
 	if err != nil {

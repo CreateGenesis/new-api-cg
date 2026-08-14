@@ -117,6 +117,7 @@ func TestOpenAIStreamHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 
 	c, recorder, info := newMappedOpenAIResponseTestContext(t)
+	info.SetEstimatePromptTokens(7)
 	body := strings.Join([]string{
 		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"xopglm52","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"xopglm52","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
@@ -132,6 +133,10 @@ func TestOpenAIStreamHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
 	usage, err := OaiStreamHandler(c, info, resp)
 	require.Nil(t, err)
 	require.NotNil(t, usage)
+	require.True(t, usage.Estimated)
+	require.Equal(t, 7, usage.PromptTokens)
+	require.Positive(t, usage.CompletionTokens)
+	require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
 
 	got := recorder.Body.String()
 	require.Contains(t, got, `"model":"glm-5.2"`)

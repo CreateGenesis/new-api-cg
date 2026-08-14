@@ -33,25 +33,25 @@ func secureUsageTokenLimitBasisPoints() (int, error) {
 	return usageTokenLimitMinBasisPoints + int(value.Int64()), nil
 }
 
-// ApplyTextUsagePolicy validates complete upstream text usage and applies the
-// channel's configured usage limits before the response is delivered or billed.
+// ApplyTextUsagePolicy applies the channel's configured usage limits before the
+// response is delivered or billed. Protocol-level presence checks stay in the relay recorder.
 func ApplyTextUsagePolicy(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) (bool, error) {
 	return applyTextUsagePolicy(ctx, relayInfo, usage, secureUsageTokenLimitBasisPoints)
 }
 
 func applyTextUsagePolicy(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, random usageTokenLimitRandom) (bool, error) {
-	normalized := NormalizeUsageForBilling(usage)
-	if normalized.InputTokens.TotalInputTokens <= 0 {
-		return false, ErrUpstreamUsageMissingInput
-	}
-	if normalized.OutputTokens <= 0 {
-		return false, ErrUpstreamUsageMissingOutput
-	}
 	if relayInfo == nil || relayInfo.ChannelMeta == nil || relayInfo.ChannelOtherSettings.UsageTokenLimit == nil {
 		return false, nil
 	}
-
 	settings := relayInfo.ChannelOtherSettings.UsageTokenLimit
+	if settings.InputTokens <= 0 && settings.OutputTokens <= 0 {
+		return false, nil
+	}
+	if usage == nil || usage.Estimated {
+		return false, nil
+	}
+
+	normalized := NormalizeUsageForBilling(usage)
 	finalInput := normalized.InputTokens.TotalInputTokens
 	finalOutput := normalized.OutputTokens
 	audit := &relaycommon.UsageTokenLimitAudit{}
