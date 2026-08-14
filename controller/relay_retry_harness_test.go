@@ -35,6 +35,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		zeroInputFallback       bool
 		zeroOutputFallback      bool
 		zeroOutputStream        bool
+		sseToJSONFallback       bool
 		responseContentFallback bool
 		responseContentStream   bool
 	)
@@ -55,9 +56,20 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 		useZeroInputFallback := zeroInputFallback
 		useZeroOutputFallback := zeroOutputFallback
 		useZeroOutputStream := zeroOutputStream
+		useSSEToJSONFallback := sseToJSONFallback
 		useResponseContentFallback := responseContentFallback
 		useResponseContentStream := responseContentStream
 		attemptsMu.Unlock()
+		if useSSEToJSONFallback {
+			if channelKey == "channel-1" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"id\":\"sse-first-attempt\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"retry-harness-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0,\"total_tokens\":1}}\n\ndata: [DONE]\n\n"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"json-second-attempt","object":"chat.completion","created":1,"model":"retry-harness-model","choices":[{"index":0,"message":{"role":"assistant","content":"sse to json fallback ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			return
+		}
 		if useResponseContentFallback {
 			if useResponseContentStream {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -627,6 +639,37 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	assert.Contains(t, zeroInputRecorder.Body.String(), "zero input fallback ok")
 	assert.NotContains(t, zeroInputRecorder.Body.String(), "zero input channel 1")
 
+	attemptsMu.Lock()
+	attempts = nil
+	sseToJSONFallback = true
+	attemptsMu.Unlock()
+	sseToJSONRecorder := httptest.NewRecorder()
+	sseToJSONCtx, _ := gin.CreateTestContext(sseToJSONRecorder)
+	sseToJSONCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	sseToJSONCtx.Request.Header.Set("Content-Type", "application/json")
+	sseToJSONCtx.Set(common.RequestIdKey, "relay-sse-to-json-recovered")
+	common.SetContextKey(sseToJSONCtx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(sseToJSONCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(sseToJSONCtx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(sseToJSONCtx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(sseToJSONCtx, &channels[0], modelName))
+
+	Relay(sseToJSONCtx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	sseToJSONAttempts := append([]string(nil), attempts...)
+	sseToJSONFallback = false
+	attempts = nil
+	attemptsMu.Unlock()
+	assert.Equal(t, []string{"channel-1", "channel-2"}, sseToJSONAttempts)
+	assert.Equal(t, http.StatusOK, sseToJSONRecorder.Code)
+	assert.Contains(t, sseToJSONRecorder.Body.String(), "sse to json fallback ok")
+	assert.NotContains(t, sseToJSONRecorder.Body.String(), "sse-first-attempt")
+
 	channels[0].OtherSettings = `{"disable_non_stream":true}`
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)
 	disableNonStreamRecorder := httptest.NewRecorder()
@@ -845,4 +888,159 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	assert.Equal(t, http.StatusBadRequest, noHigherRecorder.Code)
 	assert.Equal(t, []string{"channel-1"}, noHigherAttempts)
 	assert.Contains(t, noHigherRecorder.Body.String(), "input exceeds this route capacity")
+}
+
+func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type upstreamAttempt struct {
+		Path          string
+		Model         string
+		Authorization string
+	}
+	var (
+		attemptsMu sync.Mutex
+		attempts   []upstreamAttempt
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+		}
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		attemptsMu.Lock()
+		attempts = append(attempts, upstreamAttempt{Path: r.URL.Path, Model: request.Model, Authorization: r.Header.Get("Authorization")})
+		attemptsMu.Unlock()
+
+		if r.URL.Path == "/v1/messages" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("<html><body><h1>403 Forbidden</h1>Request forbidden by administrative rules.</body></html>"))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-k3-fallback","object":"chat.completion","created":1,"model":"k3","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	originalDB := model.DB
+	originalLogDB := model.LOG_DB
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	originalRedisEnabled := common.RedisEnabled
+	originalSQLitePath := common.SQLitePath
+	originalIsMasterNode := common.IsMasterNode
+	originalMainDatabaseType := common.MainDatabaseType()
+	originalLogDatabaseType := common.LogDatabaseType()
+	t.Setenv("SQL_DSN", "")
+	common.SQLitePath = fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	common.IsMasterNode = false
+	common.RedisEnabled = false
+	require.NoError(t, model.InitDB())
+	db := model.DB
+	model.LOG_DB = db
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	common.MemoryCacheEnabled = false
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, sqlDB.Close())
+		model.DB = originalDB
+		model.LOG_DB = originalLogDB
+		common.MemoryCacheEnabled = originalMemoryCacheEnabled
+		common.RedisEnabled = originalRedisEnabled
+		common.SQLitePath = originalSQLitePath
+		common.IsMasterNode = originalIsMasterNode
+		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
+	})
+
+	modelName := "kimi-retry-alias"
+	compatibleMapping := fmt.Sprintf(`{"%s":"kimi-k3"}`, modelName)
+	ordinaryMapping := fmt.Sprintf(`{"%s":"k3"}`, modelName)
+	compatibleOverride := `{"operations":[{"mode":"set_header","path":"Authorization","value":"Bearer leaked-first-channel"}]}`
+	weight := uint(1)
+	autoBan := 0
+	firstPriority := int64(10)
+	secondPriority := int64(5)
+	baseURL := upstream.URL
+	channels := []model.Channel{
+		{
+			Id:            48,
+			Type:          constant.ChannelTypeAnthropic,
+			Key:           "compatible-channel",
+			Status:        common.ChannelStatusEnabled,
+			Name:          "kimi-compatible",
+			Weight:        &weight,
+			BaseURL:       &baseURL,
+			Models:        modelName,
+			Group:         "default",
+			ModelMapping:  &compatibleMapping,
+			ParamOverride: &compatibleOverride,
+			Priority:      &firstPriority,
+			AutoBan:       &autoBan,
+			OtherSettings: `{"kimi_k3_official_compatibility":true}`,
+		},
+		{
+			Id:            35,
+			Type:          constant.ChannelTypeOpenAI,
+			Key:           "ordinary-channel",
+			Status:        common.ChannelStatusEnabled,
+			Name:          "ordinary-openai",
+			Weight:        &weight,
+			BaseURL:       &baseURL,
+			Models:        modelName,
+			Group:         "default",
+			ModelMapping:  &ordinaryMapping,
+			Priority:      &secondPriority,
+			AutoBan:       &autoBan,
+			OtherSettings: `{}`,
+		},
+	}
+	abilities := []model.Ability{
+		{Group: "default", Model: modelName, ChannelId: channels[0].Id, Enabled: true, Priority: &firstPriority, Weight: weight},
+		{Group: "default", Model: modelName, ChannelId: channels[1].Id, Enabled: true, Priority: &secondPriority, Weight: weight},
+	}
+	require.NoError(t, db.Create(&channels).Error)
+	require.NoError(t, db.Create(&abilities).Error)
+
+	originalRetryTimes := common.RetryTimes
+	originalRetryRanges := append([]operation_setting.StatusCodeRange(nil), operation_setting.AutomaticRetryStatusCodeRanges...)
+	originalModelRatios := ratio_setting.ModelRatio2JSONString()
+	originalFreeModelPreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+	common.RetryTimes = 1
+	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 403, End: 403}}
+	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{"%s":0}`, modelName)))
+	t.Cleanup(func() {
+		common.RetryTimes = originalRetryTimes
+		operation_setting.AutomaticRetryStatusCodeRanges = originalRetryRanges
+		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = originalFreeModelPreConsume
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
+	})
+	service.InitHttpClient()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"test"}]}`, modelName)),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set(common.RequestIdKey, "kimi-compatibility-channel-switch")
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyRequestStartTime, time.Now())
+	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, &channels[0], modelName))
+
+	Relay(ctx, types.RelayFormatOpenAI)
+
+	attemptsMu.Lock()
+	gotAttempts := append([]upstreamAttempt(nil), attempts...)
+	attemptsMu.Unlock()
+	require.Len(t, gotAttempts, 2)
+	assert.Equal(t, upstreamAttempt{Path: "/v1/messages", Model: "kimi-k3", Authorization: "Bearer leaked-first-channel"}, gotAttempts[0])
+	assert.Equal(t, upstreamAttempt{Path: "/v1/chat/completions", Model: "k3", Authorization: "Bearer ordinary-channel"}, gotAttempts[1])
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"content":"ok"`)
+	assert.NotContains(t, recorder.Body.String(), "invalid_request")
 }

@@ -186,6 +186,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			return
 		}
 	}
+	relayInfo.CaptureUpstreamAttemptBaseline()
 
 	defer func() {
 		// Only return quota if downstream failed and quota was actually pre-consumed
@@ -294,6 +295,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				relayInfo.ClientWs = ws
 			}
 
+			relayInfo.BeginUpstreamAttempt(c)
 			service.BeginRelayDebugAttempt(c, "relay", relayDebugAttemptMeta(c, channel))
 			if modeErr := relaychannel.ValidateChannelRequestMode(relayInfo); modeErr != nil {
 				newAPIError = types.NewError(modeErr, types.ErrorCodeDoRequestFailed)
@@ -409,7 +411,7 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 				return channel, nil, channelRequestModeError(selectParam.ClientRequestMode, false)
 			}
 			service.ClearRequestChannelAffinitySelection(c)
-			if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.OriginModelName); setupErr != nil {
+			if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.UpstreamAttemptModelName()); setupErr != nil {
 				return channel, nil, setupErr
 			}
 			if selectParam.TokenGroup == "auto" {
@@ -434,7 +436,7 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 		if scope == service.OverloadScopeMultiKey {
 			c.Set("overload_key_selection", true)
 			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyOverload, true)
-			setupErr := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
+			setupErr := middleware.SetupContextForSelectedChannel(c, channel, info.UpstreamAttemptModelName())
 			c.Set("overload_key_selection", false)
 			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyOverload, false)
 			if setupErr == nil {
@@ -455,7 +457,7 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 			return channel, nil, channelOverloadedError()
 		}
 		service.ClearRequestChannelAffinitySelection(c)
-		if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.OriginModelName); setupErr != nil {
+		if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.UpstreamAttemptModelName()); setupErr != nil {
 			return channel, nil, setupErr
 		}
 		if selectParam.TokenGroup == "auto" {
@@ -683,7 +685,7 @@ func prepareMultiKeyChannelRetry(c *gin.Context, channel *model.Channel, info *r
 		}
 		channel = loadedChannel
 	}
-	if newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName); newAPIError != nil {
+	if newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.UpstreamAttemptModelName()); newAPIError != nil {
 		return channel, newAPIError
 	}
 	info.InitChannelMeta(c)
@@ -705,7 +707,7 @@ func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInf
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
+	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.UpstreamAttemptModelName())
 	if newAPIError != nil {
 		return nil, newAPIError
 	}
@@ -1265,6 +1267,7 @@ func RelayTask(c *gin.Context) {
 		respondTaskError(c, taskErr)
 		return
 	}
+	relayInfo.CaptureUpstreamAttemptBaseline()
 
 	var result *relay.TaskSubmitResult
 	var taskErr *dto.TaskError
@@ -1298,7 +1301,7 @@ func RelayTask(c *gin.Context) {
 				break
 			}
 			if interChannelRetryState.Count() > 0 {
-				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.UpstreamAttemptModelName()); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
 					service.RecordRelayDebugStageError(c, "retry_setup", relayDebugAttemptMeta(c, channel), setupErr, service.RelayDebugDecision{Action: "stop", Reason: "retry_setup_failed"})
 					break
@@ -1345,6 +1348,7 @@ func RelayTask(c *gin.Context) {
 		}
 		service.SetChannelOverloadLease(c, overloadLease)
 		addUsedChannel(c, channel.Id)
+		relayInfo.BeginUpstreamAttempt(c)
 		service.BeginRelayDebugAttempt(c, "task_submit", relayDebugAttemptMeta(c, channel))
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		service.CompleteRelayDebugTaskAttempt(c, taskErr)

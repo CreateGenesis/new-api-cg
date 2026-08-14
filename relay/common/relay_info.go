@@ -60,6 +60,15 @@ type ResponsesUsageInfo struct {
 	BuiltInTools map[string]*BuildInToolInfo
 }
 
+type upstreamAttemptBaseline struct {
+	OriginModelName string
+	RequestURLPath  string
+	IsStream        bool
+	OtherRatios     map[string]float64
+	ResponsesUsage  *ResponsesUsageInfo
+	TaskAction      string
+}
+
 type ChannelMeta struct {
 	ChannelType          int
 	ChannelId            int
@@ -202,6 +211,8 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+
+	upstreamAttemptBaseline *upstreamAttemptBaseline
 }
 
 type UsageTokenLimitDirectionAudit struct {
@@ -221,7 +232,15 @@ func (info *RelayInfo) IsTNTTencentOpenAIConversion() bool {
 }
 
 func (info *RelayInfo) ActivateKimiK3OfficialCompatibility() {
-	if info == nil || info.ChannelMeta == nil || !info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.UpstreamModelName != "kimi-k3" {
+	if info == nil {
+		return
+	}
+	info.KimiK3OfficialCompatibilityActive = false
+	info.KimiK3HideThinking = false
+	info.KimiK3BillingAudit = nil
+	info.KimiK3MatchedStopSequence = ""
+
+	if info.ChannelMeta == nil || !info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.UpstreamModelName != "kimi-k3" {
 		return
 	}
 	switch info.ChannelType {
@@ -301,6 +320,118 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// 重置某些字段，例如模型名称等
 	if info.Request != nil {
 		info.Request.SetModelName(info.OriginModelName)
+	}
+}
+
+func cloneResponsesUsageInfo(source *ResponsesUsageInfo) *ResponsesUsageInfo {
+	if source == nil {
+		return nil
+	}
+	cloned := &ResponsesUsageInfo{BuiltInTools: make(map[string]*BuildInToolInfo, len(source.BuiltInTools))}
+	for name, tool := range source.BuiltInTools {
+		if tool == nil {
+			cloned.BuiltInTools[name] = nil
+			continue
+		}
+		toolCopy := *tool
+		cloned.BuiltInTools[name] = &toolCopy
+	}
+	return cloned
+}
+
+// CaptureUpstreamAttemptBaseline freezes request-scoped values that channel
+// adaptors are allowed to mutate while handling one upstream attempt.
+func (info *RelayInfo) CaptureUpstreamAttemptBaseline() {
+	if info == nil || info.upstreamAttemptBaseline != nil {
+		return
+	}
+	baseline := &upstreamAttemptBaseline{
+		OriginModelName: info.OriginModelName,
+		RequestURLPath:  info.RequestURLPath,
+		IsStream:        info.IsStream,
+		OtherRatios:     info.PriceData.OtherRatios(),
+		ResponsesUsage:  cloneResponsesUsageInfo(info.ResponsesUsageInfo),
+	}
+	if info.TaskRelayInfo != nil {
+		baseline.TaskAction = info.TaskRelayInfo.Action
+	}
+	info.upstreamAttemptBaseline = baseline
+}
+
+// UpstreamAttemptModelName returns the immutable model used for channel
+// selection and key rotation. OriginModelName may be changed by an adaptor.
+func (info *RelayInfo) UpstreamAttemptModelName() string {
+	if info == nil {
+		return ""
+	}
+	if info.upstreamAttemptBaseline != nil {
+		return info.upstreamAttemptBaseline.OriginModelName
+	}
+	if info.RequestedModelName != "" {
+		return info.RequestedModelName
+	}
+	return info.OriginModelName
+}
+
+// BeginUpstreamAttempt restores all attempt-scoped relay and billing state,
+// then binds RelayInfo to the channel currently stored in the Gin context.
+func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
+	if info == nil {
+		return
+	}
+	info.CaptureUpstreamAttemptBaseline()
+	baseline := info.upstreamAttemptBaseline
+
+	info.OriginModelName = baseline.OriginModelName
+	info.RequestURLPath = baseline.RequestURLPath
+	info.IsStream = baseline.IsStream
+	info.IsGeminiBatchEmbedding = false
+	info.FirstResponseTime = info.StartTime.Add(-time.Second)
+	info.isFirstResponse = true
+	info.DisablePing = false
+	info.ReasoningEffort = ""
+	info.SendResponseCount = 0
+	info.ReceivedResponseCount = 0
+	info.RuntimeHeadersOverride = nil
+	info.UseRuntimeHeadersOverride = false
+	info.ParamOverrideAudit = nil
+	info.KimiK3OfficialCompatibilityActive = false
+	info.KimiK3HideThinking = false
+	info.KimiK3BillingAudit = nil
+	info.KimiK3MatchedStopSequence = ""
+	info.UpstreamRequestBodySize = 0
+	info.SimulatedModelCacheInfo = nil
+	info.UsageTokenLimitAudit = nil
+	info.RequestConversionChain = nil
+	info.InitRequestConversionChain()
+	info.FinalRequestRelayFormat = ""
+	info.StreamStatus = nil
+	info.StreamProtocolEndRequired = false
+	info.ThinkingContentInfo = ThinkingContentInfo{IsFirstThinkingContent: true}
+	info.ResponsesUsageInfo = cloneResponsesUsageInfo(baseline.ResponsesUsage)
+	if info.RelayFormat == types.RelayFormatClaude {
+		info.ClaudeConvertInfo = &ClaudeConvertInfo{LastMessagesType: LastMessageTypeNone}
+	} else {
+		info.ClaudeConvertInfo = nil
+	}
+	info.PriceData.ReplaceOtherRatios(baseline.OtherRatios)
+
+	if info.TaskRelayInfo != nil {
+		info.TaskRelayInfo.Action = baseline.TaskAction
+	}
+	if info.Request != nil {
+		info.Request.SetModelName(baseline.OriginModelName)
+	}
+	if c != nil {
+		c.Set("claude_web_search_requests", 0)
+		c.Set("image_generation_call", false)
+		c.Set("image_generation_call_quality", "")
+		c.Set("image_generation_call_size", "")
+		if info.TaskRelayInfo != nil {
+			c.Set("task_request", nil)
+			c.Set("action", "")
+		}
+		info.InitChannelMeta(c)
 	}
 }
 

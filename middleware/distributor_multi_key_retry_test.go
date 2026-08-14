@@ -34,6 +34,45 @@ func TestSimulatedModelCacheRequestFormat(t *testing.T) {
 	assert.Empty(t, simulatedModelCacheRequestFormat("/v1/images/generations"))
 }
 
+func TestSetupContextForSelectedChannelClearsPreviousOptionalChannelState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name         string
+		firstType    int
+		firstOther   string
+		organization string
+		contextKey   string
+	}{
+		{name: "azure api version", firstType: constant.ChannelTypeAzure, firstOther: "2025-01-01", contextKey: "api_version"},
+		{name: "vertex region", firstType: constant.ChannelTypeVertexAi, firstOther: "us-central1", contextKey: "region"},
+		{name: "ali plugin", firstType: constant.ChannelTypeAli, firstOther: "plugin-a", contextKey: "plugin"},
+		{name: "coze bot", firstType: constant.ChannelTypeCoze, firstOther: "bot-a", contextKey: "bot_id"},
+		{name: "organization", firstType: constant.ChannelTypeOpenAI, organization: "org-a", contextKey: "channel_organization"},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			first := &model.Channel{Id: 960000 + index, Type: test.firstType, Key: "first-key", Other: test.firstOther}
+			if test.organization != "" {
+				first.OpenAIOrganization = &test.organization
+			}
+			require.Nil(t, SetupContextForSelectedChannel(ctx, first, "gpt-test"))
+			require.NotEmpty(t, ctx.GetString(test.contextKey))
+
+			second := &model.Channel{Id: 970000 + index, Type: constant.ChannelTypeOpenAI, Key: "second-key"}
+			require.Nil(t, SetupContextForSelectedChannel(ctx, second, "gpt-test"))
+
+			require.Empty(t, ctx.GetString("api_version"))
+			require.Empty(t, ctx.GetString("region"))
+			require.Empty(t, ctx.GetString("plugin"))
+			require.Empty(t, ctx.GetString("bot_id"))
+			require.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyChannelOrganization))
+		})
+	}
+}
+
 func TestSetupContextCacheAwareStrategyPrefersBestMatchingKeyWhenFieldsHidden(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

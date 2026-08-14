@@ -242,6 +242,8 @@ func TestPrepareMultiKeyChannelRetrySynchronizesContextAndRelayInfo(t *testing.T
 	firstKey := common.GetContextKeyString(ctx, constant.ContextKeyChannelKey)
 	firstIndex := common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
 	info := &relaycommon.RelayInfo{OriginModelName: "gpt-4o"}
+	info.CaptureUpstreamAttemptBaseline()
+	info.OriginModelName = "gpt-4o-nothinking"
 	info.InitChannelMeta(ctx)
 
 	updatedChannel, newAPIError := prepareMultiKeyChannelRetry(ctx, channel, info)
@@ -253,6 +255,7 @@ func TestPrepareMultiKeyChannelRetrySynchronizesContextAndRelayInfo(t *testing.T
 	require.NotNil(t, info.ChannelMeta)
 	assert.Equal(t, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey), info.ApiKey)
 	assert.Equal(t, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex), info.ChannelMultiKeyIndex)
+	assert.Equal(t, "gpt-4o", common.GetContextKeyString(ctx, constant.ContextKeyOriginalModel))
 }
 
 func TestRelayRetryPolicyFromContextUsesChannelOverride(t *testing.T) {
