@@ -64,6 +64,19 @@ func TestGetPreferredModelOwnerChannelTypesReportsMoonshotForKimiK3OfficialCompa
 	}
 }
 
+func TestGetPreferredModelOwnerChannelTypesReportsZhipuForGLM53Compatibility(t *testing.T) {
+	const modelName = "client-glm"
+	clearPreferredOwnerTables(t)
+	insertPreferredOwnerCandidate(t, 1, modelName, "default", constant.ChannelTypeAnthropic, 0, 0, common.ChannelStatusEnabled, true)
+	settings, err := common.Marshal(dto.ChannelOtherSettings{GLM53OfficialCompatibility: true})
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&Channel{}).Where("id = ?", 1).Update("settings", string(settings)).Error)
+
+	owners, err := GetPreferredModelOwnerChannelTypes([]string{modelName}, []string{"default"})
+	require.NoError(t, err)
+	require.Equal(t, constant.ChannelTypeZhipu, owners[modelName])
+}
+
 func insertPreferredOwnerCandidate(
 	t *testing.T,
 	channelID int,

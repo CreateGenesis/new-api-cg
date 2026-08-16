@@ -695,7 +695,7 @@ func TestChannelOutputRecorderPreservesInterruptedStreamWithoutUsage(t *testing.
 		ChannelMeta: &relaycommon.ChannelMeta{
 			UpstreamModelName: "gpt-test",
 			ChannelOtherSettings: dto.ChannelOtherSettings{
-				UsageTokenLimit: &dto.UsageTokenLimitSettings{InputTokens: 1_000_000},
+				UsageTokenLimit: &dto.UsageTokenLimitSettings{InputTokens: 100},
 			},
 		},
 	}
@@ -704,11 +704,18 @@ func TestChannelOutputRecorderPreservesInterruptedStreamWithoutUsage(t *testing.
 
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 	require.NoError(t, err)
-	require.Nil(t, recorder.finish(c, info, &dto.Usage{}))
+	usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1010, Estimated: true}
+	require.Nil(t, recorder.finish(c, info, usage))
 
 	assert.Contains(t, response.Body.String(), "partial")
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, status.Snapshot().EndReason)
 	assert.True(t, status.IsInterrupted())
+	assert.GreaterOrEqual(t, usage.PromptTokens, 30)
+	assert.LessOrEqual(t, usage.PromptTokens, 95)
+	assert.Equal(t, 10, usage.CompletionTokens)
+	assert.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	require.NotNil(t, info.UsageTokenLimitAudit)
+	require.NotNil(t, info.UsageTokenLimitAudit.Input)
 }
 
 func TestChannelOutputRecorderMarksCanceledRequestAsClientGone(t *testing.T) {
@@ -727,7 +734,7 @@ func TestChannelOutputRecorderMarksCanceledRequestAsClientGone(t *testing.T) {
 		ChannelMeta: &relaycommon.ChannelMeta{
 			UpstreamModelName: "gpt-test",
 			ChannelOtherSettings: dto.ChannelOtherSettings{
-				UsageTokenLimit: &dto.UsageTokenLimitSettings{InputTokens: 1_000_000},
+				UsageTokenLimit: &dto.UsageTokenLimitSettings{OutputTokens: 40},
 			},
 		},
 	}
@@ -737,10 +744,17 @@ func TestChannelOutputRecorderMarksCanceledRequestAsClientGone(t *testing.T) {
 	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 	require.NoError(t, err)
 	cancel()
-	require.Nil(t, recorder.finish(c, info, &dto.Usage{}))
+	usage := &dto.Usage{PromptTokens: 10, CompletionTokens: 500, TotalTokens: 510, Estimated: true}
+	require.Nil(t, recorder.finish(c, info, usage))
 
 	assert.Equal(t, relaycommon.StreamEndReasonClientGone, status.Snapshot().EndReason)
 	assert.ErrorIs(t, status.Snapshot().EndError, context.Canceled)
+	assert.Equal(t, 10, usage.PromptTokens)
+	assert.GreaterOrEqual(t, usage.CompletionTokens, 12)
+	assert.LessOrEqual(t, usage.CompletionTokens, 38)
+	assert.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	require.NotNil(t, info.UsageTokenLimitAudit)
+	require.NotNil(t, info.UsageTokenLimitAudit.Output)
 }
 
 func TestChannelOutputRecorderDoesNotOverrideInterruptedEmptyStream(t *testing.T) {

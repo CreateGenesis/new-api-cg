@@ -6,21 +6,22 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
-type kimiK3StopMatcher struct {
+type stopMatcher struct {
 	sequences []string
 	pending   string
 	matched   string
+	didMatch  bool
 }
 
-func newKimiK3StopMatcher(sequences []string) *kimiK3StopMatcher {
-	return &kimiK3StopMatcher{sequences: append([]string(nil), sequences...)}
+func newStopMatcher(sequences []string) *stopMatcher {
+	return &stopMatcher{sequences: append([]string(nil), sequences...)}
 }
 
-func (m *kimiK3StopMatcher) push(text string) string {
+func (m *stopMatcher) push(text string) string {
 	if m == nil || len(m.sequences) == 0 {
 		return text
 	}
-	if m.matched != "" {
+	if m.didMatch {
 		return ""
 	}
 
@@ -36,6 +37,7 @@ func (m *kimiK3StopMatcher) push(text string) string {
 	if matchIndex >= 0 {
 		m.pending = ""
 		m.matched = matchedSequence
+		m.didMatch = true
 		return combined[:matchIndex]
 	}
 
@@ -54,8 +56,8 @@ func (m *kimiK3StopMatcher) push(text string) string {
 	return combined[:emitUntil]
 }
 
-func (m *kimiK3StopMatcher) flush() string {
-	if m == nil || m.matched != "" {
+func (m *stopMatcher) flush() string {
+	if m == nil || m.didMatch {
 		return ""
 	}
 	pending := m.pending
@@ -63,7 +65,7 @@ func (m *kimiK3StopMatcher) flush() string {
 	return pending
 }
 
-func KimiK3StopSequencesFromRequest(request any) []string {
+func StopSequencesFromRequest(request any) []string {
 	switch value := request.(type) {
 	case *dto.GeneralOpenAIRequest:
 		if value == nil {
@@ -82,6 +84,10 @@ func KimiK3StopSequencesFromRequest(request any) []string {
 	default:
 		return nil
 	}
+}
+
+func KimiK3StopSequencesFromRequest(request any) []string {
+	return StopSequencesFromRequest(request)
 }
 
 func kimiK3StopSequences(stop any) []string {
@@ -105,44 +111,95 @@ func kimiK3StopSequences(stop any) []string {
 	}
 }
 
-func ApplyKimiK3StopToChatResponse(response *dto.OpenAITextResponse, sequences []string, matchedFinishReason ...string) string {
+func ApplyStopToChatResponse(response *dto.OpenAITextResponse, sequences []string, matchedFinishReason ...string) string {
+	matched, _ := ApplyStopToChatResponseWithMatch(response, sequences, matchedFinishReason...)
+	return matched
+}
+
+func ApplyStopToChatResponseWithMatch(response *dto.OpenAITextResponse, sequences []string, matchedFinishReason ...string) (string, bool) {
+	return applyStopToChatResponse(response, sequences, false, matchedFinishReason...)
+}
+
+func ApplyGLM53StopToChatResponse(response *dto.OpenAITextResponse, sequences []string, matchedFinishReason ...string) (string, bool) {
+	return applyStopToChatResponse(response, sequences, true, matchedFinishReason...)
+}
+
+func applyStopToChatResponse(response *dto.OpenAITextResponse, sequences []string, filterReasoning bool, matchedFinishReason ...string) (string, bool) {
 	if response == nil || len(sequences) == 0 {
-		return ""
+		return "", false
 	}
 	matchedSequence := ""
+	matchedAny := false
 	for index := range response.Choices {
-		matcher := newKimiK3StopMatcher(sequences)
-		content := response.Choices[index].Message.StringContent()
-		filtered := matcher.push(content) + matcher.flush()
-		response.Choices[index].Message.SetStringContent(filtered)
-		if matcher.matched != "" {
-			response.Choices[index].FinishReason = kimiK3MatchedFinishReason(matchedFinishReason)
-			if matchedSequence == "" {
-				matchedSequence = matcher.matched
+		contentMatcher := newStopMatcher(sequences)
+		var reasoningMatcher *stopMatcher
+		if filterReasoning {
+			message := &response.Choices[index].Message
+			if message.ReasoningContent != nil {
+				reasoningMatcher = newStopMatcher(sequences)
+				filtered := reasoningMatcher.push(*message.ReasoningContent) + reasoningMatcher.flush()
+				message.ReasoningContent = &filtered
+			} else if message.Reasoning != nil {
+				reasoningMatcher = newStopMatcher(sequences)
+				filtered := reasoningMatcher.push(*message.Reasoning) + reasoningMatcher.flush()
+				message.Reasoning = &filtered
 			}
 		}
+		content := response.Choices[index].Message.StringContent()
+		filtered := ""
+		if reasoningMatcher == nil || !reasoningMatcher.didMatch {
+			filtered = contentMatcher.push(content) + contentMatcher.flush()
+		}
+		response.Choices[index].Message.SetStringContent(filtered)
+		matched := contentMatcher
+		if reasoningMatcher != nil && reasoningMatcher.didMatch {
+			matched = reasoningMatcher
+		}
+		if matched.didMatch {
+			response.Choices[index].FinishReason = matchedStopFinishReason(matchedFinishReason)
+			if !matchedAny {
+				matchedSequence = matched.matched
+			}
+			matchedAny = true
+		}
 	}
-	return matchedSequence
+	return matchedSequence, matchedAny
 }
 
-type KimiK3ChatStreamStopFilter struct {
-	sequences []string
-	matchers  map[int]*kimiK3StopMatcher
-	finish    string
+func ApplyKimiK3StopToChatResponse(response *dto.OpenAITextResponse, sequences []string, matchedFinishReason ...string) string {
+	return ApplyStopToChatResponse(response, sequences, matchedFinishReason...)
 }
 
-func NewKimiK3ChatStreamStopFilter(sequences []string, matchedFinishReason ...string) *KimiK3ChatStreamStopFilter {
+type ChatStreamStopFilter struct {
+	sequences        []string
+	matchers         map[int]*stopMatcher
+	reasoningMatcher map[int]*stopMatcher
+	finish           string
+	filterReasoning  bool
+}
+
+func NewChatStreamStopFilter(sequences []string, matchedFinishReason ...string) *ChatStreamStopFilter {
+	return newChatStreamStopFilter(sequences, false, matchedFinishReason...)
+}
+
+func NewGLM53ChatStreamStopFilter(sequences []string, matchedFinishReason ...string) *ChatStreamStopFilter {
+	return newChatStreamStopFilter(sequences, true, matchedFinishReason...)
+}
+
+func newChatStreamStopFilter(sequences []string, filterReasoning bool, matchedFinishReason ...string) *ChatStreamStopFilter {
 	if len(sequences) == 0 {
 		return nil
 	}
-	return &KimiK3ChatStreamStopFilter{
-		sequences: append([]string(nil), sequences...),
-		matchers:  make(map[int]*kimiK3StopMatcher),
-		finish:    kimiK3MatchedFinishReason(matchedFinishReason),
+	return &ChatStreamStopFilter{
+		sequences:        append([]string(nil), sequences...),
+		matchers:         make(map[int]*stopMatcher),
+		reasoningMatcher: make(map[int]*stopMatcher),
+		finish:           matchedStopFinishReason(matchedFinishReason),
+		filterReasoning:  filterReasoning,
 	}
 }
 
-func (f *KimiK3ChatStreamStopFilter) Filter(chunk *dto.ChatCompletionsStreamResponse) {
+func (f *ChatStreamStopFilter) Filter(chunk *dto.ChatCompletionsStreamResponse) {
 	if f == nil || chunk == nil {
 		return
 	}
@@ -150,47 +207,102 @@ func (f *KimiK3ChatStreamStopFilter) Filter(chunk *dto.ChatCompletionsStreamResp
 		choice := &chunk.Choices[index]
 		matcher := f.matchers[choice.Index]
 		if matcher == nil {
-			matcher = newKimiK3StopMatcher(f.sequences)
+			matcher = newStopMatcher(f.sequences)
 			f.matchers[choice.Index] = matcher
 		}
+		reasoningMatcher := f.reasoningMatcher[choice.Index]
+		if reasoningMatcher == nil {
+			reasoningMatcher = newStopMatcher(f.sequences)
+			f.reasoningMatcher[choice.Index] = reasoningMatcher
+		}
+		if f.filterReasoning {
+			if choice.Delta.ReasoningContent != nil {
+				filtered := reasoningMatcher.push(*choice.Delta.ReasoningContent)
+				choice.Delta.ReasoningContent = &filtered
+			} else if choice.Delta.Reasoning != nil {
+				filtered := reasoningMatcher.push(*choice.Delta.Reasoning)
+				choice.Delta.Reasoning = &filtered
+			}
+		}
 		if choice.Delta.Content != nil {
-			choice.Delta.SetContentString(matcher.push(choice.Delta.GetContentString()))
+			if f.filterReasoning {
+				appendChatDeltaReasoning(&choice.Delta, reasoningMatcher.flush())
+			}
+			if reasoningMatcher.didMatch {
+				choice.Delta.SetContentString("")
+			} else {
+				choice.Delta.SetContentString(matcher.push(choice.Delta.GetContentString()))
+			}
 		}
 		if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
+			if f.filterReasoning {
+				appendChatDeltaReasoning(&choice.Delta, reasoningMatcher.flush())
+			}
 			if pending := matcher.flush(); pending != "" {
 				choice.Delta.SetContentString(choice.Delta.GetContentString() + pending)
 			}
-			if matcher.matched != "" {
+			if matcher.didMatch || reasoningMatcher.didMatch {
 				choice.FinishReason = &f.finish
 			}
 		}
 	}
 }
 
-func (f *KimiK3ChatStreamStopFilter) MatchedSequence() string {
+func appendChatDeltaReasoning(delta *dto.ChatCompletionsStreamResponseChoiceDelta, text string) {
+	if delta == nil || text == "" {
+		return
+	}
+	if delta.ReasoningContent != nil {
+		value := *delta.ReasoningContent + text
+		delta.ReasoningContent = &value
+		return
+	}
+	if delta.Reasoning != nil {
+		value := *delta.Reasoning + text
+		delta.Reasoning = &value
+		return
+	}
+	delta.ReasoningContent = &text
+}
+
+func (f *ChatStreamStopFilter) MatchedSequence() string {
 	if f == nil {
 		return ""
 	}
+	for _, matcher := range f.reasoningMatcher {
+		if matcher.didMatch {
+			return matcher.matched
+		}
+	}
 	for _, matcher := range f.matchers {
-		if matcher.matched != "" {
+		if matcher.didMatch {
 			return matcher.matched
 		}
 	}
 	return ""
 }
 
-func kimiK3MatchedFinishReason(values []string) string {
+func matchedStopFinishReason(values []string) string {
 	if len(values) > 0 && strings.TrimSpace(values[0]) != "" {
 		return values[0]
 	}
 	return "stop"
 }
 
-func ApplyKimiK3StopToClaudeResponse(response *dto.ClaudeResponse, sequences []string) {
+func ApplyStopToClaudeResponse(response *dto.ClaudeResponse, sequences []string) string {
+	matched, _ := applyStopToClaudeResponse(response, sequences, true)
+	return matched
+}
+
+func ApplyGLM53StopToClaudeResponse(response *dto.ClaudeResponse, sequences []string) (string, bool) {
+	return applyStopToClaudeResponse(response, sequences, false)
+}
+
+func applyStopToClaudeResponse(response *dto.ClaudeResponse, sequences []string, reportStopSequence bool) (string, bool) {
 	if response == nil || len(sequences) == 0 {
-		return
+		return "", false
 	}
-	matcher := newKimiK3StopMatcher(sequences)
+	matcher := newStopMatcher(sequences)
 	lastTextIndex := -1
 	for index := range response.Content {
 		if response.Content[index].Type != "text" {
@@ -202,28 +314,43 @@ func ApplyKimiK3StopToClaudeResponse(response *dto.ClaudeResponse, sequences []s
 	if pending := matcher.flush(); pending != "" && lastTextIndex >= 0 {
 		response.Content[lastTextIndex].SetText(response.Content[lastTextIndex].GetText() + pending)
 	}
-	if matcher.matched != "" {
+	if matcher.didMatch && reportStopSequence {
 		response.StopReason = "stop_sequence"
 		response.StopSequence = &matcher.matched
 	}
+	return matcher.matched, matcher.didMatch
 }
 
-type KimiK3ClaudeStreamStopFilter struct {
-	matcher   *kimiK3StopMatcher
-	textIndex int
+func ApplyKimiK3StopToClaudeResponse(response *dto.ClaudeResponse, sequences []string) {
+	_ = ApplyStopToClaudeResponse(response, sequences)
 }
 
-func NewKimiK3ClaudeStreamStopFilter(sequences []string) *KimiK3ClaudeStreamStopFilter {
+type ClaudeStreamStopFilter struct {
+	matcher            *stopMatcher
+	textIndex          int
+	reportStopSequence bool
+}
+
+func NewClaudeStreamStopFilter(sequences []string) *ClaudeStreamStopFilter {
+	return newClaudeStreamStopFilter(sequences, true)
+}
+
+func NewGLM53ClaudeStreamStopFilter(sequences []string) *ClaudeStreamStopFilter {
+	return newClaudeStreamStopFilter(sequences, false)
+}
+
+func newClaudeStreamStopFilter(sequences []string, reportStopSequence bool) *ClaudeStreamStopFilter {
 	if len(sequences) == 0 {
 		return nil
 	}
-	return &KimiK3ClaudeStreamStopFilter{
-		matcher:   newKimiK3StopMatcher(sequences),
-		textIndex: -1,
+	return &ClaudeStreamStopFilter{
+		matcher:            newStopMatcher(sequences),
+		textIndex:          -1,
+		reportStopSequence: reportStopSequence,
 	}
 }
 
-func (f *KimiK3ClaudeStreamStopFilter) Filter(response *dto.ClaudeResponse) []*dto.ClaudeResponse {
+func (f *ClaudeStreamStopFilter) Filter(response *dto.ClaudeResponse) []*dto.ClaudeResponse {
 	if response == nil {
 		return nil
 	}
@@ -260,7 +387,7 @@ func (f *KimiK3ClaudeStreamStopFilter) Filter(response *dto.ClaudeResponse) []*d
 			},
 		})
 	}
-	if response.Type == "message_delta" && f.matcher.matched != "" {
+	if response.Type == "message_delta" && f.matcher.didMatch && f.reportStopSequence {
 		if response.Delta == nil {
 			response.Delta = &dto.ClaudeMediaMessage{}
 		}
@@ -270,4 +397,16 @@ func (f *KimiK3ClaudeStreamStopFilter) Filter(response *dto.ClaudeResponse) []*d
 	}
 	result = append(result, response)
 	return result
+}
+
+type KimiK3ChatStreamStopFilter = ChatStreamStopFilter
+
+func NewKimiK3ChatStreamStopFilter(sequences []string, matchedFinishReason ...string) *KimiK3ChatStreamStopFilter {
+	return NewChatStreamStopFilter(sequences, matchedFinishReason...)
+}
+
+type KimiK3ClaudeStreamStopFilter = ClaudeStreamStopFilter
+
+func NewKimiK3ClaudeStreamStopFilter(sequences []string) *KimiK3ClaudeStreamStopFilter {
+	return NewClaudeStreamStopFilter(sequences)
 }

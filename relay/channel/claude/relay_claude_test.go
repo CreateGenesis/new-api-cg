@@ -198,6 +198,128 @@ func TestKimiK3TNTConversionPreservesOfficialReasoningAndResponseFormat(t *testi
 	assert.Equal(t, "json_object", responseFormat.Type)
 }
 
+func TestGLM53TNTConversionPreservesOfficialFields(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType:       constant.ChannelTypeAnthropic,
+		UpstreamModelName: "mapped-model",
+		ChannelOtherSettings: dto.ChannelOtherSettings{
+			TNTTencentOpenAIConversion: true,
+			GLM53OfficialCompatibility: true,
+		},
+	}}
+	info.ActivateGLM53OfficialCompatibility()
+	require.True(t, info.IsGLM53OfficialCompatibility())
+	adaptor := &Adaptor{}
+	maxTokens := uint(64)
+	zeroTopK := 0
+
+	claudeRequest := &dto.ClaudeRequest{
+		Model:          "mapped-model",
+		MaxTokens:      &maxTokens,
+		Thinking:       &dto.Thinking{Type: "adaptive"},
+		OutputConfig:   []byte(`{"effort":"high"}`),
+		ResponseFormat: []byte(`{"type":"json_object"}`),
+		StopSequences:  []string{"<END>"},
+		TopK:           &zeroTopK,
+	}
+	require.NoError(t, relayconvert.NormalizeGLM53ClaudeRequest(claudeRequest))
+	convertedClaude, err := adaptor.ConvertClaudeRequest(nil, info, claudeRequest)
+	require.NoError(t, err)
+	chatFromClaude := convertedClaude.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "high", chatFromClaude.ReasoningEffort)
+	assert.JSONEq(t, `{"type":"enabled"}`, string(chatFromClaude.THINKING))
+	assert.Nil(t, chatFromClaude.EnableThinking)
+	assert.Equal(t, maxTokens, chatFromClaude.GetMaxTokens())
+	assert.Equal(t, []string{"<END>"}, chatFromClaude.Stop)
+	assert.Nil(t, chatFromClaude.TopK)
+	require.NotNil(t, chatFromClaude.ResponseFormat)
+	assert.Equal(t, "json_object", chatFromClaude.ResponseFormat.Type)
+
+	responsesRequest := dto.OpenAIResponsesRequest{
+		Model:           "mapped-model",
+		Input:           []byte(`"hello"`),
+		MaxOutputTokens: &maxTokens,
+		Reasoning:       &dto.Reasoning{Effort: "low"},
+		Text:            []byte(`{"format":{"type":"json_object"}}`),
+	}
+	convertedResponses, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
+	require.NoError(t, err)
+	chatFromResponses := convertedResponses.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "low", chatFromResponses.ReasoningEffort)
+	assert.Equal(t, maxTokens, chatFromResponses.GetMaxTokens())
+	require.NotNil(t, chatFromResponses.ResponseFormat)
+	assert.Equal(t, "json_object", chatFromResponses.ResponseFormat.Type)
+
+	info.ChannelOtherSettings.TNTTencentOpenAIConversion = false
+	chatRequest := &dto.GeneralOpenAIRequest{
+		Model:           "mapped-model",
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: "max",
+	}
+	convertedChat, err := adaptor.ConvertOpenAIRequest(nil, info, chatRequest)
+	require.NoError(t, err)
+	claudeFromChat := convertedChat.(*dto.ClaudeRequest)
+	require.NotNil(t, claudeFromChat.Thinking)
+	assert.Equal(t, "enabled", claudeFromChat.Thinking.Type)
+	assert.Equal(t, "max", claudeFromChat.GetEfforts())
+
+	responsesRequest.Reasoning = &dto.Reasoning{Effort: "max"}
+	convertedResponses, err = adaptor.ConvertOpenAIResponsesRequest(nil, info, responsesRequest)
+	require.NoError(t, err)
+	claudeFromResponses := convertedResponses.(*dto.ClaudeRequest)
+	require.NotNil(t, claudeFromResponses.Thinking)
+	assert.Equal(t, "enabled", claudeFromResponses.Thinking.Type)
+	assert.Equal(t, "max", claudeFromResponses.GetEfforts())
+}
+
+func TestGLM53TNTConversionAcceptsScalarAnthropicResponseFormat(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType:       constant.ChannelTypeAnthropic,
+		UpstreamModelName: "mapped-model",
+		ChannelOtherSettings: dto.ChannelOtherSettings{
+			TNTTencentOpenAIConversion: true,
+			GLM53OfficialCompatibility: true,
+		},
+	}}
+	info.ActivateGLM53OfficialCompatibility()
+	request := &dto.ClaudeRequest{
+		Model:          "mapped-model",
+		ResponseFormat: []byte(`true`),
+	}
+	require.NoError(t, relayconvert.NormalizeGLM53ClaudeRequest(request))
+
+	converted, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, request)
+	require.NoError(t, err)
+	chatRequest := converted.(*dto.GeneralOpenAIRequest)
+	assert.Nil(t, chatRequest.ResponseFormat)
+}
+
+func TestGLM53ClaudeStopPatchPreservesUnknownResponseFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "mapped-model",
+		RelayFormat:     types.RelayFormatClaude,
+		Request: &dto.ClaudeRequest{
+			StopSequences: []string{"<END>"},
+		},
+		ChannelMeta:                      &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+		GLM53OfficialCompatibilityActive: true,
+	}
+	body := []byte(`{"id":"msg_1","type":"message","model":"mapped-model","content":[{"type":"text","text":"answer<END>ignored","block_extension":"kept"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":2},"upstream_extension":{"kept":true}}`)
+	httpResp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+
+	apiErr := HandleClaudeResponseData(c, info, &ClaudeResponseInfo{}, httpResp, body)
+	require.Nil(t, apiErr)
+	assert.Equal(t, "answer", gjson.Get(recorder.Body.String(), "content.0.text").String())
+	assert.Equal(t, "kept", gjson.Get(recorder.Body.String(), "content.0.block_extension").String())
+	assert.True(t, gjson.Get(recorder.Body.String(), "upstream_extension.kept").Bool())
+	assert.Equal(t, "end_turn", gjson.Get(recorder.Body.String(), "stop_reason").String())
+	assert.Equal(t, gjson.Null, gjson.Get(recorder.Body.String(), "stop_sequence").Type)
+}
+
 func TestKimiK3TNTConversionPreservesExtendedReasoningEfforts(t *testing.T) {
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
 		ChannelType:       constant.ChannelTypeAnthropic,

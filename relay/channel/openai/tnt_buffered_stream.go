@@ -222,13 +222,9 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 
 	buffered := &bufferedChatStream{choices: make(map[int]*bufferedChatChoice)}
 	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
-	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
-	if info.IsKimiK3OfficialCompatibility() {
-		finishReason := "stop"
-		if info.RelayFormat == types.RelayFormatClaude {
-			finishReason = "stop_sequence"
-		}
-		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request), finishReason)
+	var stopFilter *relayconvert.ChatStreamStopFilter
+	if info.IsOfficialCompatibility() {
+		stopFilter = newOfficialChatStreamStopFilter(info)
 	}
 	var streamErr *types.NewAPIError
 	info.RequireStreamProtocolEnd()
@@ -253,7 +249,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		jsonFenceFilter.Filter(&chunk)
 		stopFilter.Filter(&chunk)
 		if matched := stopFilter.MatchedSequence(); matched != "" {
-			info.KimiK3MatchedStopSequence = matched
+			setOfficialMatchedStop(info, matched)
 		}
 		buffered.add(&chunk)
 		if chunk.IsFinished() && info.StreamStatus != nil {

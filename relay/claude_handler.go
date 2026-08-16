@@ -26,12 +26,24 @@ import (
 func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 
 	info.InitChannelMeta(c)
+	info.ActivateGLM53OfficialCompatibility()
 	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 
 	claudeReq, ok := info.Request.(*dto.ClaudeRequest)
 
 	if !ok {
 		return types.NewErrorWithStatusCode(fmt.Errorf("invalid request type, expected *dto.ClaudeRequest, got %T", info.Request), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	if decodeErr := helper.GLM53CompatibilityDecodeError(c); decodeErr != nil && !info.IsGLM53OfficialCompatibility() {
+		return types.NewErrorWithStatusCode(decodeErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		normalized := &dto.ClaudeRequest{}
+		if err := helper.NormalizeGLM53RequestBody(c, types.RelayFormatClaude, normalized); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		claudeReq = normalized
+		info.Request = normalized
 	}
 
 	request, err := common.DeepCopy(claudeReq)
@@ -44,9 +56,15 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 	info.ActivateKimiK3OfficialCompatibility()
+	info.ActivateGLM53OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
 		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ClaudeRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		if err := relayconvert.NormalizeGLM53ClaudeRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	}
@@ -142,7 +160,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
-	if !tntTencentConversion && !info.IsKimiK3OfficialCompatibility() &&
+	if !tntTencentConversion && !info.IsOfficialCompatibility() &&
 		!model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -169,7 +187,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
-	if !tntTencentConversion && !info.IsKimiK3OfficialCompatibility() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.IsOfficialCompatibility() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -205,6 +223,12 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 		if tntTencentConversion {
 			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
+		if info.IsGLM53OfficialCompatibility() {
+			jsonData, err = relayconvert.NormalizeGLM53RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}

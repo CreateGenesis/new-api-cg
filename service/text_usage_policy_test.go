@@ -127,6 +127,25 @@ func TestApplyTextUsagePolicyUsesIndependentInclusiveRandomFactors(t *testing.T)
 	assert.Equal(t, 68, usage.TotalTokens)
 }
 
+func TestApplyTextUsagePolicyLimitsEstimatedInputAndOutput(t *testing.T) {
+	usage := &dto.Usage{PromptTokens: 3_000_000, CompletionTokens: 400_000, TotalTokens: 3_400_000, Estimated: true}
+	info := usagePolicyRelayInfo(1_000_000, 100_000)
+
+	modified, err := applyTextUsagePolicy(usagePolicyTestContext(), info, usage, func() (int, error) { return 5000, nil })
+
+	require.NoError(t, err)
+	assert.True(t, modified)
+	assert.Equal(t, 500_000, usage.PromptTokens)
+	assert.Equal(t, 50_000, usage.CompletionTokens)
+	assert.Equal(t, 550_000, usage.TotalTokens)
+	assert.True(t, usage.Estimated)
+	require.NotNil(t, info.UsageTokenLimitAudit)
+	require.NotNil(t, info.UsageTokenLimitAudit.Input)
+	require.NotNil(t, info.UsageTokenLimitAudit.Output)
+	assert.Equal(t, 3_000_000, info.UsageTokenLimitAudit.Input.Original)
+	assert.Equal(t, 400_000, info.UsageTokenLimitAudit.Output.Original)
+}
+
 func TestApplyTextUsagePolicyPropagatesRandomFailureWithoutMutation(t *testing.T) {
 	usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 20, TotalTokens: 1020}
 	wantErr := errors.New("entropy unavailable")

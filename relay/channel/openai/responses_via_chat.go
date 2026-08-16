@@ -157,9 +157,9 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
 		jsonFenceFilter.FilterResponse(&chatResp)
 	}
-	if info.IsKimiK3OfficialCompatibility() {
-		if matched := relayconvert.ApplyKimiK3StopToChatResponse(&chatResp, relayconvert.KimiK3StopSequencesFromRequest(info.Request)); matched != "" {
-			info.KimiK3MatchedStopSequence = matched
+	if info.IsOfficialCompatibility() {
+		if matched, didMatch := applyOfficialStopToChatResponse(info, &chatResp); didMatch {
+			setOfficialMatchedStop(info, matched)
 		}
 	}
 	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
@@ -213,10 +213,10 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	streamErr := (*types.NewAPIError)(nil)
 	sequenceNumber := 0
-	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
+	var stopFilter *relayconvert.ChatStreamStopFilter
 	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
-	if info.IsKimiK3OfficialCompatibility() {
-		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	if info.IsOfficialCompatibility() {
+		stopFilter = newOfficialChatStreamStopFilter(info)
 	}
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
@@ -317,7 +317,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			relayconvert.HideKimiK3ChatStreamThinking(&chunk)
 		}
 		if matched := stopFilter.MatchedSequence(); matched != "" {
-			info.KimiK3MatchedStopSequence = matched
+			setOfficialMatchedStop(info, matched)
 		}
 		if chunk.IsFinished() && info.StreamStatus != nil {
 			info.StreamStatus.MarkProtocolEnd("finish_reason")

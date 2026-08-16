@@ -1222,6 +1222,19 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("kimi_k3_official_compatibility and pass_through_body_enabled cannot both be enabled")
 		}
 	}
+	if channelOtherSettings.GLM53OfficialCompatibility {
+		switch channel.Type {
+		case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic:
+		default:
+			return fmt.Errorf("glm_5_3_official_compatibility is only supported for OpenAI and Anthropic channels")
+		}
+		if channelParams.PassThroughBodyEnabled {
+			return fmt.Errorf("glm_5_3_official_compatibility and pass_through_body_enabled cannot both be enabled")
+		}
+		if channelOtherSettings.KimiK3OfficialCompatibility {
+			return fmt.Errorf("glm_5_3_official_compatibility and kimi_k3_official_compatibility cannot both be enabled")
+		}
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

@@ -87,17 +87,26 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 			IncludeUsage: true,
 		}
 	}
-	if info.IsKimiK3OfficialCompatibility() {
+	if info.IsOfficialCompatibility() {
 		aiRequest.ReasoningEffort = request.GetEfforts()
-		if len(request.ResponseFormat) > 0 {
+		if len(request.ResponseFormat) > 0 && common.GetJsonType(request.ResponseFormat) == "object" {
 			var responseFormat dto.ResponseFormat
 			if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
 				return nil, fmt.Errorf("invalid response_format: %w", err)
 			}
 			aiRequest.ResponseFormat = &responseFormat
 		}
-		if err := relayconvert.NormalizeKimiK3ChatRequest(aiRequest); err != nil {
-			return nil, err
+		if info.IsKimiK3OfficialCompatibility() {
+			if err := relayconvert.NormalizeKimiK3ChatRequest(aiRequest); err != nil {
+				return nil, err
+			}
+		} else {
+			if aiRequest.TopK != nil && *aiRequest.TopK == 0 {
+				aiRequest.TopK = nil
+			}
+			if err := relayconvert.NormalizeGLM53ChatRequest(aiRequest); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return a.ConvertOpenAIRequest(c, info, aiRequest)

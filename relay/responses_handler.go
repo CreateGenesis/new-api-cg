@@ -73,9 +73,15 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 	info.ActivateKimiK3OfficialCompatibility()
+	info.ActivateGLM53OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
 		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ResponsesRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		if err := relayconvert.NormalizeGLM53ResponsesRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	}
@@ -87,7 +93,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	adaptor.Init(info)
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
-	if !tntTencentConversion && !info.IsKimiK3OfficialCompatibility() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.IsOfficialCompatibility() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
@@ -123,6 +129,12 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 		if tntTencentConversion {
 			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
+		if info.IsGLM53OfficialCompatibility() {
+			jsonData, err = relayconvert.NormalizeGLM53RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}

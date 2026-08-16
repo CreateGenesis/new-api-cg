@@ -33,7 +33,7 @@ func ClaudeToResponsesHandler(c *gin.Context, resp *http.Response, info *relayco
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return nil, types.WithClaudeError(*claudeError, resp.StatusCode)
 	}
-	relayconvert.ApplyKimiK3StopToClaudeResponse(&claudeResponse, relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	relayconvert.ApplyStopToClaudeResponse(&claudeResponse, relayconvert.StopSequencesFromRequest(info.Request))
 	if info.KimiK3HideThinking {
 		relayconvert.HideKimiK3ClaudeThinking(&claudeResponse)
 	}
@@ -68,7 +68,7 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	var streamErr *types.NewAPIError
-	stopFilter := relayconvert.NewKimiK3ClaudeStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	stopFilter := relayconvert.NewClaudeStreamStopFilter(relayconvert.StopSequencesFromRequest(info.Request))
 	var thinkingFilter *relayconvert.KimiK3ClaudeStreamThinkingFilter
 	if info.KimiK3HideThinking {
 		thinkingFilter = relayconvert.NewKimiK3ClaudeStreamThinkingFilter()

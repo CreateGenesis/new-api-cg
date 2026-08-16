@@ -23,6 +23,35 @@ func (f responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.R
 	return f(req)
 }
 
+type requestContextCaptureAdaptor struct {
+	*overloadAdmissionTestAdaptor
+	requestContext context.Context
+}
+
+func (a *requestContextCaptureAdaptor) FinalizeRequestHeader(_ *gin.Context, req *http.Request, _ *relaycommon.RelayInfo) error {
+	a.requestContext = req.Context()
+	return io.EOF
+}
+
+func TestDoApiRequestKeepsUpstreamContextIndependentFromDownstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	downstreamContext, cancelDownstream := context.WithCancel(context.Background())
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`)).WithContext(downstreamContext)
+	adaptor := &requestContextCaptureAdaptor{
+		overloadAdmissionTestAdaptor: &overloadAdmissionTestAdaptor{requestURL: "https://example.com/v1/chat/completions"},
+	}
+
+	_, err := DoApiRequest(adaptor, c, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, strings.NewReader(`{}`))
+	require.ErrorIs(t, err, io.EOF)
+	require.NotNil(t, adaptor.requestContext)
+
+	cancelDownstream()
+	require.ErrorIs(t, downstreamContext.Err(), context.Canceled)
+	require.NoError(t, adaptor.requestContext.Err())
+}
+
 func TestDoRequestWithResponseHeaderTimeoutCancelsBeforeHeaders(t *testing.T) {
 	client := &http.Client{Transport: responseHeaderTimeoutRoundTripper(func(req *http.Request) (*http.Response, error) {
 		<-req.Context().Done()

@@ -165,6 +165,45 @@ func TestPrepareSimulatedModelCacheAttemptScopesUsageValidationToConfiguredLimit
 	assert.True(t, attempt.validateUsage)
 }
 
+func TestGLM53ZeroOutputRetryIsNonStreamOnly(t *testing.T) {
+	originalPolicy := operation_setting.ResponseContentRetryPolicy2JSONString()
+	require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(`{"enabled":false,"rules":[]}`))
+	t.Cleanup(func() {
+		require.NoError(t, operation_setting.UpdateResponseContentRetryPolicyByJSONString(originalPolicy))
+	})
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:                      types.RelayFormatOpenAI,
+		RelayMode:                        relayconstant.RelayModeChatCompletions,
+		ChannelMeta:                      &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+		GLM53OfficialCompatibilityActive: true,
+	}
+
+	attempt := prepareSimulatedModelCacheAttempt(c, info, nil)
+	require.NotNil(t, attempt)
+	assert.True(t, attempt.retryZeroOutput)
+
+	outputRecorder := beginSimulatedModelCacheRecorder(c, info, attempt)
+	require.NotNil(t, outputRecorder)
+	_, err := outputRecorder.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`))
+	require.NoError(t, err)
+	usage := &dto.Usage{UpstreamInputReported: true}
+	policyErr := finishSimulatedModelCacheRecorder(c, info, attempt, outputRecorder, usage)
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+
+	streamInfo := *info
+	streamInfo.IsStream = true
+	streamRecorder := httptest.NewRecorder()
+	streamContext, _ := gin.CreateTestContext(streamRecorder)
+	streamContext.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	assert.Nil(t, prepareSimulatedModelCacheAttempt(streamContext, &streamInfo, nil))
+}
+
 func TestHiddenSimulatedModelCacheMatchDoesNotRewriteResponseOrLogInfo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

@@ -11,9 +11,12 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func newMappedOpenAIResponseTestContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder, *relaycommon.RelayInfo) {
@@ -36,6 +39,34 @@ func newMappedOpenAIResponseTestContext(t *testing.T) (*gin.Context, *httptest.R
 		},
 	}
 	return c, recorder, info
+}
+
+func TestGLM53ClaudeConversionDropsMessagesOnlyZeroTopK(t *testing.T) {
+	zeroTopK := 0
+	maxTokens := uint(64)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "glm-5.3",
+		},
+		GLM53OfficialCompatibilityActive: true,
+	}
+	request := &dto.ClaudeRequest{
+		Model:        "glm-5.3",
+		MaxTokens:    &maxTokens,
+		TopK:         &zeroTopK,
+		Thinking:     &dto.Thinking{Type: "enabled"},
+		OutputConfig: []byte(`{"effort":"high"}`),
+		Messages: []dto.ClaudeMessage{
+			{Role: "user", Content: "hello"},
+		},
+	}
+
+	converted, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, request)
+	require.NoError(t, err)
+	chatRequest := converted.(*dto.GeneralOpenAIRequest)
+	assert.Nil(t, chatRequest.TopK)
+	assert.Equal(t, "high", chatRequest.ReasoningEffort)
 }
 
 func TestOpenAIHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
@@ -64,6 +95,70 @@ func TestOpenAIHandlerReturnsOriginalModelNameWhenMapped(t *testing.T) {
 	got := recorder.Body.String()
 	require.Contains(t, got, `"model":"glm-5.2"`)
 	require.NotContains(t, got, `"model":"xopglm52"`)
+}
+
+func TestGLM53OpenAIStopPatchPreservesUnknownResponseFields(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			OriginModelName:                  "mapped-model",
+			RelayMode:                        relayconstant.RelayModeChatCompletions,
+			RelayFormat:                      types.RelayFormatOpenAI,
+			ShouldIncludeUsage:               true,
+			Request:                          &dto.GeneralOpenAIRequest{Stop: []string{"<END>"}},
+			ChannelMeta:                      &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+			GLM53OfficialCompatibilityActive: true,
+		}
+	}
+
+	t.Run("matched stop", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		body := `{"id":"chat_1","object":"chat.completion","model":"mapped-model","choices":[{"index":0,"message":{"role":"assistant","content":"answer<END>ignored","message_extension":"kept"},"finish_reason":"length","choice_extension":7}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"upstream_extension":{"kept":true}}`
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+
+		_, apiErr := OpenaiHandler(c, newInfo(), resp)
+		require.Nil(t, apiErr)
+		assert.Equal(t, "answer", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+		assert.Equal(t, "stop", gjson.Get(recorder.Body.String(), "choices.0.finish_reason").String())
+		assert.Equal(t, "kept", gjson.Get(recorder.Body.String(), "choices.0.message.message_extension").String())
+		assert.Equal(t, int64(7), gjson.Get(recorder.Body.String(), "choices.0.choice_extension").Int())
+		assert.True(t, gjson.Get(recorder.Body.String(), "upstream_extension.kept").Bool())
+	})
+
+	t.Run("empty stop ends before reasoning", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		info := newInfo()
+		info.Request = &dto.GeneralOpenAIRequest{Stop: []string{""}}
+		body := `{"id":"chat_empty","object":"chat.completion","model":"mapped-model","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"reasoning","content":"answer","message_extension":"kept"},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"upstream_extension":{"kept":true}}`
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+
+		_, apiErr := OpenaiHandler(c, info, resp)
+		require.Nil(t, apiErr)
+		assert.Empty(t, gjson.Get(recorder.Body.String(), "choices.0.message.reasoning_content").String())
+		assert.Empty(t, gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+		assert.Equal(t, "stop", gjson.Get(recorder.Body.String(), "choices.0.finish_reason").String())
+		assert.Equal(t, "kept", gjson.Get(recorder.Body.String(), "choices.0.message.message_extension").String())
+		assert.True(t, gjson.Get(recorder.Body.String(), "upstream_extension.kept").Bool())
+	})
+
+	t.Run("unmatched body", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		body := `{"id":"chat_2", "model":"mapped-model", "choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}], "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}, "upstream_extension":"kept"}`
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+
+		_, apiErr := OpenaiHandler(c, newInfo(), resp)
+		require.Nil(t, apiErr)
+		assert.Equal(t, body, recorder.Body.String())
+	})
 }
 
 func TestOpenAIHandlerHidesKimiK3ThinkingAndReasoningUsage(t *testing.T) {

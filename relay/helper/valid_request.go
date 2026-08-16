@@ -288,7 +288,7 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 
 func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest, err error) {
 	textRequest = &dto.ClaudeRequest{}
-	err = common.UnmarshalBodyReusable(c, textRequest)
+	err = unmarshalBodyWithGLM53Fallback(c, textRequest, types.RelayFormatClaude)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +311,7 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 
 func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenAIRequest, error) {
 	textRequest := &dto.GeneralOpenAIRequest{}
-	err := common.UnmarshalBodyReusable(c, textRequest)
+	err := unmarshalBodyWithGLM53Fallback(c, textRequest, types.RelayFormatOpenAI)
 	if err != nil {
 		return nil, err
 	}

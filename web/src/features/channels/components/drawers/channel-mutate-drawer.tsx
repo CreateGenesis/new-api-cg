@@ -312,6 +312,8 @@ const SENSITIVE_FORM_FIELDS = [
   'http2_connection_shards',
   'pass_through_body_enabled',
   'tnt_tencent_openai_conversion',
+  'kimi_k3_official_compatibility',
+  'glm_5_3_official_compatibility',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -398,6 +400,9 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
     (values.type === 14 && values.tnt_tencent_openai_conversion) ||
+    ([1, 14, 25].includes(values.type) &&
+      values.kimi_k3_official_compatibility) ||
+    ([1, 14].includes(values.type) && values.glm_5_3_official_compatibility) ||
     values.system_prompt_override ||
     (values.http_protocol && values.http_protocol !== 'auto') ||
     (values.http2_connection_shards != null &&
@@ -876,6 +881,9 @@ export function ChannelMutateDrawer({
   const currentKimiK3OfficialCompatibility = form.watch(
     'kimi_k3_official_compatibility'
   )
+  const currentGLM53OfficialCompatibility = form.watch(
+    'glm_5_3_official_compatibility'
+  )
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
@@ -1221,6 +1229,7 @@ export function ChannelMutateDrawer({
     currentPassThroughBodyEnabled ||
     (currentType === 14 && currentTNTTencentOpenAIConversion) ||
     ([1, 14, 25].includes(currentType) && currentKimiK3OfficialCompatibility) ||
+    ([1, 14].includes(currentType) && currentGLM53OfficialCompatibility) ||
     currentDisableTaskPollingSleep ||
     (currentType === 43 && currentDeepSeekV4RequestSanitizationEnabled) ||
     currentProxy?.trim() ||
@@ -5422,6 +5431,34 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'Align mapped kimi-k3 requests, responses, and billing with the official K3 API.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
+
+                              {[1, 14].includes(currentType) && (
+                                <FormField
+                                  control={form.control}
+                                  name='glm_5_3_official_compatibility'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('GLM 5.3 Official Compatibility')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Align requests with the official GLM 5.3 API without changing response formats.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />

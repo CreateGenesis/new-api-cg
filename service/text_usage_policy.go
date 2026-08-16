@@ -47,7 +47,7 @@ func applyTextUsagePolicy(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if settings.InputTokens <= 0 && settings.OutputTokens <= 0 {
 		return false, nil
 	}
-	if usage == nil || usage.Estimated {
+	if usage == nil {
 		return false, nil
 	}
 

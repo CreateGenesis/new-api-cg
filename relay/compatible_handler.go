@@ -26,11 +26,23 @@ import (
 
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	info.ActivateGLM53OfficialCompatibility()
 	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 
 	textReq, ok := info.Request.(*dto.GeneralOpenAIRequest)
 	if !ok {
 		return types.NewErrorWithStatusCode(fmt.Errorf("invalid request type, expected dto.GeneralOpenAIRequest, got %T", info.Request), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	if decodeErr := helper.GLM53CompatibilityDecodeError(c); decodeErr != nil && !info.IsGLM53OfficialCompatibility() {
+		return types.NewErrorWithStatusCode(decodeErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		normalized := &dto.GeneralOpenAIRequest{}
+		if err := helper.NormalizeGLM53RequestBody(c, types.RelayFormatOpenAI, normalized); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		textReq = normalized
+		info.Request = normalized
 	}
 
 	request, err := common.DeepCopy(textReq)
@@ -47,9 +59,15 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 	info.ActivateKimiK3OfficialCompatibility()
+	info.ActivateGLM53OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
 		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ChatRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		if err := relayconvert.NormalizeGLM53ChatRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	}
@@ -82,7 +100,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
-		!tntTencentConversion && !info.IsKimiK3OfficialCompatibility() &&
+		!tntTencentConversion && !info.IsOfficialCompatibility() &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -109,7 +127,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
 
-	if !tntTencentConversion && !info.IsKimiK3OfficialCompatibility() && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.IsOfficialCompatibility() && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -193,6 +211,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		if tntTencentConversion {
 			jsonData, err = relayconvert.FinalizeTNTTencentChatRequestJSON(jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
+		if info.IsGLM53OfficialCompatibility() {
+			jsonData, err = relayconvert.NormalizeGLM53RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}

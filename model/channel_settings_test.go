@@ -184,6 +184,50 @@ func TestChannelValidateSettingsScopesKimiK3OfficialCompatibility(t *testing.T) 
 	})
 }
 
+func TestChannelValidateSettingsScopesGLM53OfficialCompatibility(t *testing.T) {
+	for _, channelType := range []int{constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic} {
+		channel := &Channel{Type: channelType, OtherSettings: `{"glm_5_3_official_compatibility":true}`}
+		require.NoError(t, channel.ValidateSettings(), "channel type %d", channelType)
+	}
+
+	t.Run("rejects unsupported channel type", func(t *testing.T) {
+		channel := &Channel{Type: constant.ChannelTypeMoonshot, OtherSettings: `{"glm_5_3_official_compatibility":true}`}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported for OpenAI and Anthropic")
+	})
+
+	t.Run("rejects body passthrough", func(t *testing.T) {
+		setting := `{"pass_through_body_enabled":true}`
+		channel := &Channel{
+			Type:          constant.ChannelTypeOpenAI,
+			Setting:       &setting,
+			OtherSettings: `{"glm_5_3_official_compatibility":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+
+	t.Run("rejects Kimi compatibility", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"glm_5_3_official_compatibility":true,"kimi_k3_official_compatibility":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+
+	t.Run("allows TNT conversion", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"glm_5_3_official_compatibility":true,"tnt_tencent_openai_conversion":true}`,
+		}
+		require.NoError(t, channel.ValidateSettings())
+	})
+}
+
 func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,

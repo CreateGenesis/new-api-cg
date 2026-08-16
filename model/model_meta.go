@@ -191,12 +191,25 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 			continue
 		}
 		channelType := r.ChannelType
-		if channelMapsModelToKimiK3Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
+		if channelUsesGLM53OfficialCompatibility(r.ChannelType, r.ChannelSettings) {
+			channelType = constant.ChannelTypeZhipu
+		} else if channelMapsModelToKimiK3Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
 			channelType = constant.ChannelTypeMoonshot
 		}
 		result[r.Model] = channelType
 	}
 	return result, nil
+}
+
+func channelUsesGLM53OfficialCompatibility(channelType int, settingsJSON string) bool {
+	switch channelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic:
+	default:
+		return false
+	}
+
+	var settings dto.ChannelOtherSettings
+	return strings.TrimSpace(settingsJSON) != "" && common.UnmarshalJsonStr(settingsJSON, &settings) == nil && settings.GLM53OfficialCompatibility
 }
 
 func channelMapsModelToKimiK3Official(channelType int, modelName string, settingsJSON string, modelMappingJSON string) bool {

@@ -272,13 +272,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamDataSent bool
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
-	var stopFilter *relayconvert.KimiK3ChatStreamStopFilter
-	if info.IsKimiK3OfficialCompatibility() {
-		finishReason := "stop"
-		if info.RelayFormat == types.RelayFormatClaude {
-			finishReason = "stop_sequence"
-		}
-		stopFilter = relayconvert.NewKimiK3ChatStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request), finishReason)
+	var stopFilter *relayconvert.ChatStreamStopFilter
+	if info.IsOfficialCompatibility() {
+		stopFilter = newOfficialChatStreamStopFilter(info)
 	}
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
@@ -312,7 +308,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			stopFilter.Filter(&chunk)
 			if matched := stopFilter.MatchedSequence(); matched != "" {
-				info.KimiK3MatchedStopSequence = matched
+				setOfficialMatchedStop(info, matched)
 			}
 			filtered, err := common.Marshal(chunk)
 			if err != nil {
@@ -329,7 +325,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 			lastStreamData = data
 			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
-			finished, err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount)
+			usageData := data
+			if info.KimiK3HideThinking {
+				var err error
+				usageData, err = filterKimiK3ChatStreamData(info, usageData)
+				if err != nil {
+					logger.LogError(c, "error filtering stream token data: "+err.Error())
+					sr.Error(err)
+					return
+				}
+			}
+			finished, err := processTokenData(info.RelayMode, usageData, &responseTextBuilder, &toolCount)
 			if err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
@@ -413,6 +419,59 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	return usage, nil
 }
 
+func officialStopSequences(info *relaycommon.RelayInfo) []string {
+	if info == nil || !info.IsOfficialCompatibility() {
+		return nil
+	}
+	return relayconvert.StopSequencesFromRequest(info.Request)
+}
+
+func officialStopFinishReason(info *relaycommon.RelayInfo) string {
+	if info != nil && info.RelayFormat == types.RelayFormatClaude && info.IsKimiK3OfficialCompatibility() {
+		return "stop_sequence"
+	}
+	return "stop"
+}
+
+func newOfficialChatStreamStopFilter(info *relaycommon.RelayInfo) *relayconvert.ChatStreamStopFilter {
+	sequences := officialStopSequences(info)
+	finishReason := officialStopFinishReason(info)
+	if info != nil && info.IsGLM53OfficialCompatibility() && info.RelayFormat == types.RelayFormatOpenAI {
+		return relayconvert.NewGLM53ChatStreamStopFilter(sequences, finishReason)
+	}
+	return relayconvert.NewChatStreamStopFilter(sequences, finishReason)
+}
+
+func applyOfficialStopToChatResponse(info *relaycommon.RelayInfo, response *dto.OpenAITextResponse) (string, bool) {
+	sequences := officialStopSequences(info)
+	finishReason := officialStopFinishReason(info)
+	if info != nil && info.IsGLM53OfficialCompatibility() && info.RelayFormat == types.RelayFormatOpenAI {
+		return relayconvert.ApplyGLM53StopToChatResponse(response, sequences, finishReason)
+	}
+	return relayconvert.ApplyStopToChatResponseWithMatch(response, sequences, finishReason)
+}
+
+func setOfficialMatchedStop(info *relaycommon.RelayInfo, matched string) {
+	if info == nil || matched == "" {
+		return
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		info.GLM53MatchedStopSequence = matched
+		return
+	}
+	info.KimiK3MatchedStopSequence = matched
+}
+
+func officialMatchedStop(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	if info.IsGLM53OfficialCompatibility() {
+		return info.GLM53MatchedStopSequence
+	}
+	return info.KimiK3MatchedStopSequence
+}
+
 func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) {
 	var streamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
@@ -476,17 +535,28 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		jsonFenceFilter.FilterResponse(&simpleResponse)
 	}
 	stopResponseFiltered := false
-	if info.IsKimiK3OfficialCompatibility() {
-		stopSequences := relayconvert.KimiK3StopSequencesFromRequest(info.Request)
+	if info.IsOfficialCompatibility() {
+		stopSequences := officialStopSequences(info)
 		if len(stopSequences) > 0 {
-			finishReason := "stop"
-			if info.RelayFormat == types.RelayFormatClaude {
-				finishReason = "stop_sequence"
+			originalChoiceContent := make([]string, len(simpleResponse.Choices))
+			originalChoiceReasoning := make([]string, len(simpleResponse.Choices))
+			for index := range simpleResponse.Choices {
+				originalChoiceContent[index] = simpleResponse.Choices[index].Message.StringContent()
+				originalChoiceReasoning[index] = simpleResponse.Choices[index].Message.GetReasoningContent()
 			}
-			if matched := relayconvert.ApplyKimiK3StopToChatResponse(&simpleResponse, stopSequences, finishReason); matched != "" {
-				info.KimiK3MatchedStopSequence = matched
+			if matched, didMatch := applyOfficialStopToChatResponse(info, &simpleResponse); didMatch {
+				setOfficialMatchedStop(info, matched)
+				stopResponseFiltered = true
+				if info.IsGLM53OfficialCompatibility() {
+					responseBody, err = patchChatStopResponseJSON(responseBody, originalChoiceContent, originalChoiceReasoning, &simpleResponse)
+					if err != nil {
+						return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+					}
+				}
 			}
-			stopResponseFiltered = true
+			if info.IsKimiK3OfficialCompatibility() {
+				stopResponseFiltered = true
+			}
 		}
 	}
 	responseModelModified := rewriteTextResponseModel(info, &simpleResponse)
@@ -541,7 +611,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified || responseModelModified || tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
+		if usageModified || responseModelModified || tntResponseSanitized || (stopResponseFiltered && info.IsKimiK3OfficialCompatibility()) || thinkingResponseFiltered {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
@@ -555,7 +625,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			if responseModelModified {
 				bodyMap["model"] = simpleResponse.Model
 			}
-			if tntResponseSanitized || stopResponseFiltered || thinkingResponseFiltered {
+			if tntResponseSanitized || (stopResponseFiltered && info.IsKimiK3OfficialCompatibility()) || thinkingResponseFiltered {
 				bodyMap["choices"] = simpleResponse.Choices
 			}
 			responseBody, _ = common.Marshal(bodyMap)
@@ -595,8 +665,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
-		if claudeResponse, ok := convertResult.Value.(*dto.ClaudeResponse); ok && info.KimiK3MatchedStopSequence != "" {
-			claudeResponse.StopSequence = &info.KimiK3MatchedStopSequence
+		if claudeResponse, ok := convertResult.Value.(*dto.ClaudeResponse); ok && info.IsKimiK3OfficialCompatibility() && officialMatchedStop(info) != "" {
+			stopSequence := officialMatchedStop(info)
+			claudeResponse.StopSequence = &stopSequence
 		}
 		claudeRespStr, err := common.Marshal(convertResult.Value)
 		if err != nil {
@@ -618,4 +689,41 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil
+}
+
+func patchChatStopResponseJSON(body []byte, originalContent []string, originalReasoning []string, response *dto.OpenAITextResponse) ([]byte, error) {
+	patched := body
+	for index := range response.Choices {
+		content := response.Choices[index].Message.StringContent()
+		if index < len(originalContent) && content != originalContent[index] {
+			var err error
+			patched, err = sjson.SetBytes(patched, fmt.Sprintf("choices.%d.message.content", index), content)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		reasoning := response.Choices[index].Message.GetReasoningContent()
+		if index < len(originalReasoning) && reasoning != originalReasoning[index] {
+			path := fmt.Sprintf("choices.%d.message.reasoning_content", index)
+			if response.Choices[index].Message.ReasoningContent == nil {
+				path = fmt.Sprintf("choices.%d.message.reasoning", index)
+			}
+			var err error
+			patched, err = sjson.SetBytes(patched, path, reasoning)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		finishPath := fmt.Sprintf("choices.%d.finish_reason", index)
+		if gjson.GetBytes(patched, finishPath).String() != response.Choices[index].FinishReason {
+			var err error
+			patched, err = sjson.SetBytes(patched, finishPath, response.Choices[index].FinishReason)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return patched, nil
 }

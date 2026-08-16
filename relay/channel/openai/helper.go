@@ -57,8 +57,8 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		return fmt.Errorf("expected Claude stream responses, got %T", result.Value)
 	}
 	for _, resp := range claudeResponses {
-		if resp.Type == "message_delta" && resp.Delta != nil && info.KimiK3MatchedStopSequence != "" {
-			resp.Delta.StopSequence = &info.KimiK3MatchedStopSequence
+		if matchedStop := officialMatchedStop(info); resp.Type == "message_delta" && resp.Delta != nil && matchedStop != "" {
+			resp.Delta.StopSequence = &matchedStop
 		}
 		helper.ClaudeData(c, *resp)
 	}
@@ -120,17 +120,7 @@ func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, res
 }
 
 func processTokenData(relayMode int, data string, responseTextBuilder *strings.Builder, toolCount *int) (bool, error) {
-	switch relayMode {
-	case relayconstant.RelayModeChatCompletions:
-		var streamResponse dto.ChatCompletionsStreamResponse
-		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-			return false, err
-		}
-		if err := ProcessStreamResponse(streamResponse, responseTextBuilder, toolCount); err != nil {
-			return false, err
-		}
-		return streamResponse.IsFinished(), nil
-	case relayconstant.RelayModeCompletions:
+	if relayMode == relayconstant.RelayModeCompletions {
 		var streamResponse dto.CompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			return false, err
@@ -141,8 +131,19 @@ func processTokenData(relayMode int, data string, responseTextBuilder *strings.B
 				return true, nil
 			}
 		}
+		return false, nil
 	}
-	return false, nil
+
+	// OaiStreamHandler receives chat-completions SSE for converted downstream
+	// protocols such as Anthropic Messages, whose route mode is not chat.
+	var streamResponse dto.ChatCompletionsStreamResponse
+	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+		return false, err
+	}
+	if err := ProcessStreamResponse(streamResponse, responseTextBuilder, toolCount); err != nil {
+		return false, err
+	}
+	return streamResponse.IsFinished(), nil
 }
 
 func markResponsesStreamProtocolEnd(info *relaycommon.RelayInfo, eventType string) {
@@ -173,7 +174,7 @@ func shouldPreserveReportedTextUsage(info *relaycommon.RelayInfo, usage *dto.Usa
 	if info == nil || info.ChannelMeta == nil || usage == nil {
 		return false
 	}
-	if (info.ChannelOtherSettings.RetryZeroOutput || info.IsKimiK3OfficialCompatibility()) && usage.UpstreamInputReported {
+	if (info.ChannelOtherSettings.RetryZeroOutput || info.IsKimiK3OfficialCompatibility() || (info.IsGLM53OfficialCompatibility() && !info.IsStream)) && usage.UpstreamInputReported {
 		return true
 	}
 	limits := info.ChannelOtherSettings.UsageTokenLimit

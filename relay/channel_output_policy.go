@@ -234,22 +234,44 @@ func (w *channelOutputRecorder) observeStreamEvent(event []byte, observeOutput b
 
 func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
 	c.Writer = w.ResponseWriter
+	clientGone := false
 	if w.deliveryErr != nil {
 		w.markClientGone(c, info)
-		return nil
+		clientGone = true
 	}
 	if w.stream && c.Request != nil && c.Request.Context().Err() != nil {
 		w.markClientGone(c, info)
-		return nil
+		clientGone = true
 	}
 	if w.stream && info != nil && info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
-		return nil
+		clientGone = true
 	}
-	if w.policyErr != nil {
+	if !clientGone && w.policyErr != nil {
 		w.abortCommittedStream()
 		return channelOutputPolicyError(w.policyErr)
 	}
-	if w.nonStreamPassThrough {
+	if !clientGone && w.nonStreamPassThrough {
+		return nil
+	}
+
+	usageModified := false
+	if w.validateUsage {
+		var err error
+		usageModified, err = service.ApplyTextUsagePolicy(c, info, usage)
+		if err != nil {
+			if w.committed {
+				w.streamTail.Reset()
+				w.streamPending.Reset()
+				if info != nil && info.StreamStatus != nil {
+					info.StreamStatus.RecordError(err.Error())
+				}
+				w.ResponseWriter.Flush()
+				return channelCommittedUsageError(err)
+			}
+			return channelZeroOutputError(err)
+		}
+	}
+	if clientGone {
 		return nil
 	}
 
@@ -289,9 +311,7 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 
-	usageModified := false
-	validateUsage := w.validateUsage && !streamInterrupted
-	if validateUsage {
+	if w.validateUsage && !streamInterrupted {
 		var err error
 		if usage != nil && !usage.Estimated && info != nil && info.ChannelOtherSettings.UsageTokenLimit != nil {
 			limits := info.ChannelOtherSettings.UsageTokenLimit
@@ -303,9 +323,6 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 			} else if limits.OutputTokens > 0 && outputReported && normalized.OutputTokens <= 0 {
 				err = service.ErrUpstreamUsageMissingOutput
 			}
-		}
-		if err == nil {
-			usageModified, err = service.ApplyTextUsagePolicy(c, info, usage)
 		}
 		if err != nil {
 			if w.committed {

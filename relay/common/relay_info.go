@@ -163,6 +163,8 @@ type RelayInfo struct {
 	KimiK3HideThinking                    bool
 	KimiK3BillingAudit                    *dto.KimiK3BillingAudit
 	KimiK3MatchedStopSequence             string
+	GLM53OfficialCompatibilityActive      bool
+	GLM53MatchedStopSequence              string
 
 	// UpstreamRequestBodySize is the byte size of the marshaled upstream request
 	// body. It is set when the body is wrapped in a BodyStorage (see
@@ -239,7 +241,7 @@ func (info *RelayInfo) ActivateKimiK3OfficialCompatibility() {
 	info.KimiK3BillingAudit = nil
 	info.KimiK3MatchedStopSequence = ""
 
-	if info.ChannelMeta == nil || !info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.UpstreamModelName != "kimi-k3" {
+	if info.ChannelMeta == nil || !info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.ChannelOtherSettings.GLM53OfficialCompatibility || info.UpstreamModelName != "kimi-k3" {
 		return
 	}
 	switch info.ChannelType {
@@ -250,6 +252,30 @@ func (info *RelayInfo) ActivateKimiK3OfficialCompatibility() {
 
 func (info *RelayInfo) IsKimiK3OfficialCompatibility() bool {
 	return info != nil && info.KimiK3OfficialCompatibilityActive
+}
+
+func (info *RelayInfo) ActivateGLM53OfficialCompatibility() {
+	if info == nil {
+		return
+	}
+	info.GLM53OfficialCompatibilityActive = false
+	info.GLM53MatchedStopSequence = ""
+
+	if info.ChannelMeta == nil || !info.ChannelOtherSettings.GLM53OfficialCompatibility || info.ChannelOtherSettings.KimiK3OfficialCompatibility {
+		return
+	}
+	switch info.ChannelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic:
+		info.GLM53OfficialCompatibilityActive = true
+	}
+}
+
+func (info *RelayInfo) IsGLM53OfficialCompatibility() bool {
+	return info != nil && info.GLM53OfficialCompatibilityActive
+}
+
+func (info *RelayInfo) IsOfficialCompatibility() bool {
+	return info != nil && (info.IsKimiK3OfficialCompatibility() || info.IsGLM53OfficialCompatibility())
 }
 
 type SimulatedModelCacheInfo struct {
@@ -402,6 +428,8 @@ func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
 	info.KimiK3HideThinking = false
 	info.KimiK3BillingAudit = nil
 	info.KimiK3MatchedStopSequence = ""
+	info.GLM53OfficialCompatibilityActive = false
+	info.GLM53MatchedStopSequence = ""
 	info.UpstreamRequestBodySize = 0
 	info.SimulatedModelCacheInfo = nil
 	info.UsageTokenLimitAudit = nil

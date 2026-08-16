@@ -45,10 +45,27 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 			if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
 				return nil, err
 			}
+		} else if info.IsGLM53OfficialCompatibility() {
+			if len(request.StopSequences) > 0 {
+				converted.Stop = append([]string(nil), request.StopSequences...)
+			}
+			if len(request.ResponseFormat) > 0 && common.GetJsonType(request.ResponseFormat) == "object" {
+				var responseFormat dto.ResponseFormat
+				if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
+					return nil, fmt.Errorf("invalid response_format: %w", err)
+				}
+				converted.ResponseFormat = &responseFormat
+			}
+			if converted.TopK != nil && *converted.TopK == 0 {
+				converted.TopK = nil
+			}
+			if err := relayconvert.NormalizeGLM53ChatRequest(converted); err != nil {
+				return nil, err
+			}
 		}
 		return converted, nil
 	}
-	if !info.IsKimiK3OfficialCompatibility() {
+	if !info.IsOfficialCompatibility() {
 		request.ResponseFormat = nil
 	}
 	return request, nil
@@ -168,7 +185,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected Anthropic messages request, got %T", result.Value)
 	}
-	if info.IsKimiK3OfficialCompatibility() {
+	if info.IsOfficialCompatibility() {
 		if request.ResponseFormat != nil {
 			responseFormat, err := common.Marshal(request.ResponseFormat)
 			if err != nil {
@@ -183,8 +200,17 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 			converted.OutputConfig = outputConfig
 		}
-		if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
-			return nil, err
+		if info.IsKimiK3OfficialCompatibility() {
+			if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
+				return nil, err
+			}
+		} else {
+			if converted.Thinking == nil {
+				converted.Thinking = &dto.Thinking{Type: "enabled"}
+			}
+			if err := relayconvert.NormalizeGLM53ClaudeRequest(converted); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return converted, nil
@@ -209,10 +235,14 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
 				return nil, err
 			}
+		} else if info.IsGLM53OfficialCompatibility() {
+			if err := relayconvert.NormalizeGLM53ChatRequest(converted); err != nil {
+				return nil, err
+			}
 		}
 		return converted, nil
 	}
-	if info.IsKimiK3OfficialCompatibility() {
+	if info.IsOfficialCompatibility() {
 		converted, err := relayconvert.OpenAIResponsesRequestToClaudeMessages(c, info, &request)
 		if err != nil {
 			return nil, err
@@ -235,8 +265,17 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			}
 			converted.OutputConfig = outputConfig
 		}
-		if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
-			return nil, err
+		if info.IsKimiK3OfficialCompatibility() {
+			if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
+				return nil, err
+			}
+		} else {
+			if converted.Thinking == nil {
+				converted.Thinking = &dto.Thinking{Type: "enabled"}
+			}
+			if err := relayconvert.NormalizeGLM53ClaudeRequest(converted); err != nil {
+				return nil, err
+			}
 		}
 		return converted, nil
 	}
@@ -266,7 +305,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return openaiadapter.OpenaiHandler(c, info, resp)
 	}
 	info.FinalRequestRelayFormat = types.RelayFormatClaude
-	if info.IsKimiK3OfficialCompatibility() && info.RelayMode == relayconstant.RelayModeResponses {
+	if info.IsOfficialCompatibility() && info.RelayMode == relayconstant.RelayModeResponses {
 		if info.IsStream {
 			return ClaudeToResponsesStreamHandler(c, resp, info)
 		}

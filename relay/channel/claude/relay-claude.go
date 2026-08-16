@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 func stopReasonClaude2OpenAI(reason string) string {
@@ -243,10 +245,15 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
-	var stopFilter *relayconvert.KimiK3ClaudeStreamStopFilter
+	var stopFilter *relayconvert.ClaudeStreamStopFilter
 	var thinkingFilter *relayconvert.KimiK3ClaudeStreamThinkingFilter
-	if info.IsKimiK3OfficialCompatibility() {
-		stopFilter = relayconvert.NewKimiK3ClaudeStreamStopFilter(relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	if info.IsOfficialCompatibility() {
+		stopSequences := relayconvert.StopSequencesFromRequest(info.Request)
+		if info.IsGLM53OfficialCompatibility() {
+			stopFilter = relayconvert.NewGLM53ClaudeStreamStopFilter(stopSequences)
+		} else {
+			stopFilter = relayconvert.NewClaudeStreamStopFilter(stopSequences)
+		}
 		if info.KimiK3HideThinking {
 			thinkingFilter = relayconvert.NewKimiK3ClaudeStreamThinkingFilter()
 		}
@@ -281,8 +288,18 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
-	if info.IsKimiK3OfficialCompatibility() {
-		relayconvert.ApplyKimiK3StopToClaudeResponse(&claudeResponse, relayconvert.KimiK3StopSequencesFromRequest(info.Request))
+	originalTextContent := make([]string, len(claudeResponse.Content))
+	for index := range claudeResponse.Content {
+		originalTextContent[index] = claudeResponse.Content[index].GetText()
+	}
+	stopResponseFiltered := false
+	if info.IsOfficialCompatibility() {
+		stopSequences := relayconvert.StopSequencesFromRequest(info.Request)
+		if info.IsGLM53OfficialCompatibility() {
+			_, stopResponseFiltered = relayconvert.ApplyGLM53StopToClaudeResponse(&claudeResponse, stopSequences)
+		} else {
+			stopResponseFiltered = relayconvert.ApplyStopToClaudeResponse(&claudeResponse, stopSequences) != ""
+		}
 		if info.KimiK3HideThinking {
 			relayconvert.HideKimiK3ClaudeThinking(&claudeResponse)
 		}
@@ -318,6 +335,18 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			responseData, err = common.Marshal(claudeResponse)
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		} else if stopResponseFiltered && info.IsGLM53OfficialCompatibility() {
+			responseData = data
+			for index := range claudeResponse.Content {
+				text := claudeResponse.Content[index].GetText()
+				if text == originalTextContent[index] {
+					continue
+				}
+				responseData, err = sjson.SetBytes(responseData, fmt.Sprintf("content.%d.text", index), text)
+				if err != nil {
+					return types.NewError(err, types.ErrorCodeBadResponseBody)
+				}
 			}
 		} else {
 			responseData = data

@@ -384,6 +384,7 @@ export const channelFormSchema = z
     pass_through_body_enabled: z.boolean().optional(),
     tnt_tencent_openai_conversion: z.boolean().optional(),
     kimi_k3_official_compatibility: z.boolean().optional(),
+    glm_5_3_official_compatibility: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -674,6 +675,25 @@ export const channelFormSchema = z
       addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
       addRequiredIssue(ctx, 'pass_through_body_enabled', message)
     }
+    if (
+      [1, 14].includes(data.type) &&
+      data.glm_5_3_official_compatibility &&
+      data.pass_through_body_enabled
+    ) {
+      const message =
+        'GLM 5.3 official compatibility cannot be enabled with request body passthrough.'
+      addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
+      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
+    }
+    if (
+      data.glm_5_3_official_compatibility &&
+      data.kimi_k3_official_compatibility
+    ) {
+      const message =
+        'GLM 5.3 and Kimi K3 official compatibility cannot both be enabled.'
+      addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
+      addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
+    }
     for (const fieldName of [
       'usage_token_limit_input_tokens',
       'usage_token_limit_output_tokens',
@@ -898,6 +918,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   pass_through_body_enabled: false,
   tnt_tencent_openai_conversion: false,
   kimi_k3_official_compatibility: false,
+  glm_5_3_official_compatibility: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -1029,6 +1050,7 @@ export function transformChannelToFormDefaults(
   let disableTaskPollingSleep = false
   let tntTencentOpenAIConversion = false
   let kimiK3OfficialCompatibility = false
+  let glm53OfficialCompatibility = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
   let disableStream = false
@@ -1087,6 +1109,9 @@ export function transformChannelToFormDefaults(
       kimiK3OfficialCompatibility =
         [1, 14, 25].includes(channel.type) &&
         parsed.kimi_k3_official_compatibility === true
+      glm53OfficialCompatibility =
+        [1, 14].includes(channel.type) &&
+        parsed.glm_5_3_official_compatibility === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
       disableStream = parsed.disable_stream === true
@@ -1380,6 +1405,7 @@ export function transformChannelToFormDefaults(
     disable_task_polling_sleep: disableTaskPollingSleep,
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
     kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
+    glm_5_3_official_compatibility: glm53OfficialCompatibility,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
@@ -1578,6 +1604,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.kimi_k3_official_compatibility = true
   } else if ('kimi_k3_official_compatibility' in settingsObj) {
     delete settingsObj.kimi_k3_official_compatibility
+  }
+
+  if (
+    [1, 14].includes(formData.type) &&
+    formData.glm_5_3_official_compatibility === true
+  ) {
+    settingsObj.glm_5_3_official_compatibility = true
+  } else if ('glm_5_3_official_compatibility' in settingsObj) {
+    delete settingsObj.glm_5_3_official_compatibility
   }
 
   settingsObj.disable_task_polling_sleep =

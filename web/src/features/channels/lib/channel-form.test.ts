@@ -959,3 +959,86 @@ describe('Kimi K3 official compatibility settings', () => {
     assert.equal(coexistence.success, true)
   })
 })
+
+describe('GLM 5.3 official compatibility settings', () => {
+  test('loads and saves the setting for OpenAI and Anthropic channels', () => {
+    for (const type of [1, 14]) {
+      const channel = testChannel('{"glm_5_3_official_compatibility":true}')
+      channel.type = type
+
+      const form = transformChannelToFormDefaults(channel)
+      assert.equal(form.glm_5_3_official_compatibility, true)
+
+      const payload = transformFormDataToCreatePayload({
+        ...form,
+        name: 'glm-5.3',
+        key: 'sk-test',
+        models: 'mapped-model',
+        group: ['default'],
+        status: 1,
+        type,
+      })
+      const settings = JSON.parse(String(payload.channel.settings))
+      assert.equal(settings.glm_5_3_official_compatibility, true)
+    }
+  })
+
+  test('removes the setting after changing to an unsupported channel type', () => {
+    const channel = testChannel('{"glm_5_3_official_compatibility":true}')
+    channel.type = 14
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'other',
+      key: 'sk-test',
+      models: 'mapped-model',
+      group: ['default'],
+      status: 1,
+      type: 25,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.glm_5_3_official_compatibility, undefined)
+  })
+
+  test('rejects passthrough and Kimi but allows TNT conversion', () => {
+    const passthroughConflict = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'glm-5.3',
+      key: 'sk-test',
+      models: 'mapped-model',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      pass_through_body_enabled: true,
+      glm_5_3_official_compatibility: true,
+    })
+    assert.equal(passthroughConflict.success, false)
+
+    const kimiConflict = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'glm-5.3',
+      key: 'sk-test',
+      models: 'mapped-model',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      kimi_k3_official_compatibility: true,
+      glm_5_3_official_compatibility: true,
+    })
+    assert.equal(kimiConflict.success, false)
+
+    const tntCoexistence = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'glm-5.3',
+      key: 'sk-test',
+      models: 'mapped-model',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      tnt_tencent_openai_conversion: true,
+      glm_5_3_official_compatibility: true,
+    })
+    assert.equal(tntCoexistence.success, true)
+  })
+})

@@ -99,6 +99,7 @@ type ChannelOtherSettings struct {
 	DeepSeekV4RequestSanitization         bool                               `json:"deepseek_v4_request_sanitization,omitempty"`
 	TNTTencentOpenAIConversion            bool                               `json:"tnt_tencent_openai_conversion,omitempty"`
 	KimiK3OfficialCompatibility           bool                               `json:"kimi_k3_official_compatibility,omitempty"`
+	GLM53OfficialCompatibility            bool                               `json:"glm_5_3_official_compatibility,omitempty"`
 	StreamInterruptionBilling             *StreamInterruptionBillingSettings `json:"stream_interruption_billing,omitempty"`
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`

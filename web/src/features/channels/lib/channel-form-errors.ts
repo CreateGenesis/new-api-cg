@@ -42,6 +42,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'pass_through_body_enabled',
   'tnt_tencent_openai_conversion',
   'kimi_k3_official_compatibility',
+  'glm_5_3_official_compatibility',
   'proxy',
   'proxy_fallback_direct',
   'http_protocol',
