@@ -383,6 +383,7 @@ export const channelFormSchema = z
     http2_connection_shards: z.number().int().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     tnt_tencent_openai_conversion: z.boolean().optional(),
+    anthropic_input_includes_cache: z.boolean().optional(),
     kimi_k3_official_compatibility: z.boolean().optional(),
     glm_5_3_official_compatibility: z.boolean().optional(),
     deepseek_v4_official_compatibility: z.boolean().optional(),
@@ -667,6 +668,16 @@ export const channelFormSchema = z
       addRequiredIssue(ctx, 'pass_through_body_enabled', message)
     }
     if (
+      data.type === 14 &&
+      data.anthropic_input_includes_cache &&
+      data.pass_through_body_enabled
+    ) {
+      const message =
+        'Anthropic input cache conversion cannot be enabled with request body passthrough.'
+      addRequiredIssue(ctx, 'anthropic_input_includes_cache', message)
+      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
+    }
+    if (
       [1, 14, 25].includes(data.type) &&
       data.kimi_k3_official_compatibility &&
       data.pass_through_body_enabled
@@ -943,6 +954,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http2_connection_shards: 1,
   pass_through_body_enabled: false,
   tnt_tencent_openai_conversion: false,
+  anthropic_input_includes_cache: false,
   kimi_k3_official_compatibility: false,
   glm_5_3_official_compatibility: false,
   deepseek_v4_official_compatibility: false,
@@ -1076,6 +1088,7 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
   let tntTencentOpenAIConversion = false
+  let anthropicInputIncludesCache = false
   let kimiK3OfficialCompatibility = false
   let glm53OfficialCompatibility = false
   let deepSeekV4OfficialCompatibility = false
@@ -1134,6 +1147,8 @@ export function transformChannelToFormDefaults(
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       tntTencentOpenAIConversion =
         channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
+      anthropicInputIncludesCache =
+        channel.type === 14 && parsed.anthropic_input_includes_cache === true
       kimiK3OfficialCompatibility =
         [1, 14, 25].includes(channel.type) &&
         parsed.kimi_k3_official_compatibility === true
@@ -1435,6 +1450,7 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
+    anthropic_input_includes_cache: anthropicInputIncludesCache,
     kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
     glm_5_3_official_compatibility: glm53OfficialCompatibility,
     deepseek_v4_official_compatibility: deepSeekV4OfficialCompatibility,
@@ -1617,6 +1633,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     } else if ('tnt_tencent_openai_conversion' in settingsObj) {
       delete settingsObj.tnt_tencent_openai_conversion
     }
+    if (formData.anthropic_input_includes_cache === true) {
+      settingsObj.anthropic_input_includes_cache = true
+    } else if ('anthropic_input_includes_cache' in settingsObj) {
+      delete settingsObj.anthropic_input_includes_cache
+    }
   } else {
     if ('allow_speed' in settingsObj) {
       delete settingsObj.allow_speed
@@ -1626,6 +1647,9 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
     if ('tnt_tencent_openai_conversion' in settingsObj) {
       delete settingsObj.tnt_tencent_openai_conversion
+    }
+    if ('anthropic_input_includes_cache' in settingsObj) {
+      delete settingsObj.anthropic_input_includes_cache
     }
   }
 

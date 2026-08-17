@@ -150,6 +150,38 @@ func TestChannelValidateSettingsScopesTNTTencentConversion(t *testing.T) {
 	})
 }
 
+func TestChannelValidateSettingsScopesAnthropicInputIncludesCache(t *testing.T) {
+	t.Run("accepts Anthropic and TNT conversion", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"anthropic_input_includes_cache":true,"tnt_tencent_openai_conversion":true}`,
+		}
+		require.NoError(t, channel.ValidateSettings())
+	})
+
+	t.Run("rejects other channel types", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeOpenAI,
+			OtherSettings: `{"anthropic_input_includes_cache":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported for Anthropic channels")
+	})
+
+	t.Run("rejects body passthrough", func(t *testing.T) {
+		setting := `{"pass_through_body_enabled":true}`
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			Setting:       &setting,
+			OtherSettings: `{"anthropic_input_includes_cache":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+}
+
 func TestChannelValidateSettingsScopesKimiK3OfficialCompatibility(t *testing.T) {
 	for _, channelType := range []int{constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot} {
 		channel := &Channel{Type: channelType, OtherSettings: `{"kimi_k3_official_compatibility":true}`}

@@ -345,6 +345,37 @@ func TestConvertResponseProviderToOAIChatUsage(t *testing.T) {
 	assert.Equal(t, 17, toChat.Usage.BillingUsage.GeminiUsageMetadata.TotalTokenCount)
 }
 
+func TestConvertNormalizedAnthropicUsageKeepsOpenAITargetsInclusive(t *testing.T) {
+	text := "ok"
+	claude := &dto.ClaudeResponse{
+		Id:         "msg_cache",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-test",
+		StopReason: "end_turn",
+		Content:    []dto.ClaudeMediaMessage{{Type: "text", Text: &text}},
+		Usage: &dto.ClaudeUsage{
+			InputTokens:          17748,
+			CacheReadInputTokens: 17664,
+			OutputTokens:         12,
+		},
+	}
+	require.True(t, NormalizeAnthropicInputIncludesCache(claude.Usage))
+
+	toChat, err := ConvertResponse(nil, nil, types.RelayFormatOpenAI, claude)
+	require.NoError(t, err)
+	assert.Equal(t, 17748, toChat.Usage.PromptTokens)
+	assert.Equal(t, 17664, toChat.Usage.PromptTokensDetails.CachedTokens)
+	assert.True(t, toChat.Usage.BillingUsage.HasNormalizedAnthropicInputCache())
+
+	toResponses, err := ConvertResponse(nil, nil, types.RelayFormatOpenAIResponses, claude)
+	require.NoError(t, err)
+	assert.Equal(t, 17748, toResponses.Usage.InputTokens)
+	require.NotNil(t, toResponses.Usage.InputTokensDetails)
+	assert.Equal(t, 17664, toResponses.Usage.InputTokensDetails.CachedTokens)
+	assert.True(t, toResponses.Usage.BillingUsage.HasNormalizedAnthropicInputCache())
+}
+
 func TestConvertResponsePreservesBillingUsageAcrossChatResponsesBridge(t *testing.T) {
 	chat := textRegistryChatResponse()
 	chat.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{

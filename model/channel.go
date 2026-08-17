@@ -1212,6 +1212,14 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("tnt_tencent_openai_conversion and pass_through_body_enabled cannot both be enabled")
 		}
 	}
+	if channelOtherSettings.AnthropicInputIncludesCache {
+		if channel.Type != constant.ChannelTypeAnthropic {
+			return fmt.Errorf("anthropic_input_includes_cache is only supported for Anthropic channels")
+		}
+		if channelParams.PassThroughBodyEnabled {
+			return fmt.Errorf("anthropic_input_includes_cache and pass_through_body_enabled cannot both be enabled")
+		}
+	}
 	if channelOtherSettings.KimiK3OfficialCompatibility {
 		switch channel.Type {
 		case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeMoonshot:

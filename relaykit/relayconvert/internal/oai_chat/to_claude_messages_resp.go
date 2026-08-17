@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/reasonmap"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
+	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/samber/lo"
 )
@@ -35,13 +36,21 @@ func stopOpenBlocks(state *convmeta.ClaudeConvertInfo) []*dto.ClaudeResponse {
 	}
 }
 
-func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
+func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *dto.ClaudeUsage {
 	if oaiUsage == nil {
 		return nil
 	}
 	if billingUsage := dto.CloneBillingUsage(oaiUsage.BillingUsage); billingUsage != nil && billingUsage.ClaudeUsage != nil {
 		if billingUsage.Source == dto.BillingUsageSourceClaudeMessages || billingUsage.Semantic == dto.BillingUsageSemanticAnthropic {
-			return billingUsage.ClaudeUsage
+			usage := *billingUsage.ClaudeUsage
+			usage.BillingUsage = billingUsage
+			if info != nil {
+				if options := info.ConvOptions(); options != nil && options.Claude.AnthropicInputIncludesCache &&
+					!billingUsage.HasNormalizedAnthropicInputCache() {
+					sharedclaude.NormalizeInputIncludesCache(&usage)
+				}
+			}
+			return &usage
 		}
 	}
 	billingUsage := dto.NewOpenAIChatBillingUsage(oaiUsage)
@@ -58,19 +67,8 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 		oaiUsage.ClaudeCacheCreation1hTokens,
 	)
 	cacheCreationTokens := oaiUsage.PromptTokensDetails.CacheCreationTokensTotal()
-	inputTokens := oaiUsage.PromptTokens
-	if oaiUsage.PromptTokensDetails.CacheWriteTokens > 0 {
-		// OpenAI native cache-write usage counts cached and cache-write tokens
-		// inside prompt_tokens, while Claude semantics reports input_tokens
-		// excluding both. Both counts are unadjusted prefixes and may overlap,
-		// so clamp a negative remainder at zero.
-		inputTokens = oaiUsage.PromptTokens - oaiUsage.PromptTokensDetails.CachedTokens - cacheCreationTokens
-		if inputTokens < 0 {
-			inputTokens = 0
-		}
-	}
 	usage := &dto.ClaudeUsage{
-		InputTokens:              inputTokens,
+		InputTokens:              oaiUsage.PromptTokens,
 		OutputTokens:             oaiUsage.CompletionTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokens,
@@ -81,6 +79,15 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 			Ephemeral5mInputTokens: cacheCreation5m,
 			Ephemeral1hInputTokens: cacheCreation1h,
 		}
+	}
+	normalizeInput := oaiUsage.PromptTokensDetails.CacheWriteTokens > 0
+	if info != nil {
+		if options := info.ConvOptions(); options != nil && options.Claude.AnthropicInputIncludesCache {
+			normalizeInput = true
+		}
+	}
+	if normalizeInput {
+		sharedclaude.NormalizeInputIncludesCache(usage)
 	}
 	return usage
 }
@@ -258,7 +265,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			appendStopOpenBlocks()
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type:  "message_delta",
-				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
+				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage, info),
 				Delta: &dto.ClaudeMediaMessage{
 					StopReason: kitutil.GetPointer[string](stopReasonOpenAI2Claude(state.FinishReason)),
 				},
@@ -285,7 +292,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			}
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type:  "message_delta",
-				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
+				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage, info),
 				Delta: &dto.ClaudeMediaMessage{
 					StopReason: kitutil.GetPointer[string](stopReason),
 				},
@@ -418,7 +425,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			appendStopOpenBlocks()
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type:  "message_delta",
-				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
+				Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage, info),
 				Delta: &dto.ClaudeMediaMessage{
 					StopReason: kitutil.GetPointer[string](stopReasonOpenAI2Claude(state.FinishReason)),
 				},
@@ -451,7 +458,7 @@ func FinalizeStreamResponseOpenAI2Claude(info convmeta.Meta) []*dto.ClaudeRespon
 	responses = append(responses,
 		&dto.ClaudeResponse{
 			Type:  "message_delta",
-			Usage: buildClaudeUsageFromOpenAIUsage(state.Usage),
+			Usage: buildClaudeUsageFromOpenAIUsage(state.Usage, info),
 			Delta: &dto.ClaudeMediaMessage{
 				StopReason: kitutil.GetPointer[string](stopReason),
 			},
@@ -506,7 +513,7 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info convmeta
 	}
 	claudeResponse.Content = contents
 	claudeResponse.StopReason = stopReason
-	claudeResponse.Usage = buildClaudeUsageFromOpenAIUsage(&openAIResponse.Usage)
+	claudeResponse.Usage = buildClaudeUsageFromOpenAIUsage(&openAIResponse.Usage, info)
 
 	return claudeResponse
 }

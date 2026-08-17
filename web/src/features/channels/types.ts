@@ -185,6 +185,7 @@ export interface ChannelOtherSettings {
   deepseek_v4_request_sanitization?: boolean
   deepseek_v4_official_compatibility?: boolean
   tnt_tencent_openai_conversion?: boolean
+  anthropic_input_includes_cache?: boolean
   kimi_k3_official_compatibility?: boolean
   glm_5_3_official_compatibility?: boolean
   cache_usage_validation_split?: boolean

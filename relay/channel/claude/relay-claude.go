@@ -81,6 +81,37 @@ func patchClaudeMessageDeltaUsageData(data string, usage *dto.ClaudeUsage) strin
 	return relayconvert.PatchClaudeMessageDeltaUsageData(data, usage)
 }
 
+func normalizeAnthropicInputUsage(info *relaycommon.RelayInfo, response *dto.ClaudeResponse) bool {
+	if info == nil || response == nil {
+		return false
+	}
+	options := info.ConvOptions()
+	if options == nil || !options.Claude.AnthropicInputIncludesCache {
+		return false
+	}
+
+	normalized := false
+	if response.Message != nil && hasAnthropicInputUsage(response.Message.Usage) {
+		normalized = relayconvert.NormalizeAnthropicInputIncludesCache(response.Message.Usage) || normalized
+	}
+	if hasAnthropicInputUsage(response.Usage) {
+		normalized = relayconvert.NormalizeAnthropicInputIncludesCache(response.Usage) || normalized
+	}
+	return normalized
+}
+
+func hasAnthropicInputUsage(usage *dto.ClaudeUsage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.InputTokens != 0 || usage.CacheReadInputTokens != 0 || usage.CacheCreationInputTokens != 0 ||
+		usage.ClaudeCacheCreation5mTokens != 0 || usage.ClaudeCacheCreation1hTokens != 0 {
+		return true
+	}
+	return usage.CacheCreation != nil &&
+		(usage.CacheCreation.Ephemeral5mInputTokens != 0 || usage.CacheCreation.Ephemeral1hInputTokens != 0)
+}
+
 func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *dto.ChatCompletionsStreamResponse, claudeInfo *ClaudeResponseInfo) bool {
 	return relayconvert.FormatClaudeResponseInfo(claudeResponse, oaiResponse, claudeInfo)
 }
@@ -99,6 +130,7 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
 	for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
 		unfilteredResponse := filteredResponse
 		filteredResponse = thinkingFilter.Filter(unfilteredResponse)
@@ -107,7 +139,7 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			continue
 		}
 		eventData := data
-		if stopFilter != nil || thinkingFilter != nil {
+		if usageNormalized || stopFilter != nil || thinkingFilter != nil {
 			encoded, marshalErr := common.Marshal(filteredResponse)
 			if marshalErr != nil {
 				return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
@@ -288,6 +320,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
 	originalTextContent := make([]string, len(claudeResponse.Content))
 	for index := range claudeResponse.Content {
 		originalTextContent[index] = claudeResponse.Content[index].GetText()
@@ -314,7 +347,11 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.UsageSemantic = "anthropic"
-		claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(claudeResponse.Usage)
+		if claudeResponse.Usage.BillingUsage.IsRecognized() {
+			claudeInfo.Usage.BillingUsage = dto.CloneBillingUsage(claudeResponse.Usage.BillingUsage)
+		} else {
+			claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(claudeResponse.Usage)
+		}
 		claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Usage.CacheReadInputTokens
 		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
@@ -331,7 +368,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		if info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.GetUpstreamModelName() {
+		if usageNormalized || info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.GetUpstreamModelName() {
 			responseData, err = common.Marshal(claudeResponse)
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeBadResponseBody)

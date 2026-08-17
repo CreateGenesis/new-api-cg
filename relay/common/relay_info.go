@@ -1070,6 +1070,7 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 	geminiSettings := model_setting.GetGeminiSettings()
 	options := &convmeta.Options{
 		Claude: convmeta.ClaudeOptions{
+			AnthropicInputIncludesCache:           info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.AnthropicInputIncludesCache,
 			ThinkingAdapterEnabled:                claudeSettings.ThinkingAdapterEnabled,
 			ThinkingAdapterBudgetTokensPercentage: claudeSettings.ThinkingAdapterBudgetTokensPercentage,
 			DefaultMaxTokens:                      claudeSettings.GetDefaultMaxTokens,
