@@ -60,6 +60,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 	info.ActivateKimiK3OfficialCompatibility()
 	info.ActivateGLM53OfficialCompatibility()
+	info.ActivateDeepSeekV4OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
 		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ChatRequest(request); err != nil {
@@ -68,6 +69,11 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 	if info.IsGLM53OfficialCompatibility() {
 		if err := relayconvert.NormalizeGLM53ChatRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
+	if info.IsDeepSeekV4OfficialCompatibility() {
+		if err := relayconvert.NormalizeDeepSeekV4ChatRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	}
@@ -100,7 +106,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
-		!tntTencentConversion && !info.IsOfficialCompatibility() &&
+		!tntTencentConversion && !info.RequiresRequestConversion() &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -127,7 +133,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
 
-	if !tntTencentConversion && !info.IsOfficialCompatibility() && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.RequiresRequestConversion() && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -217,6 +223,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		if info.IsGLM53OfficialCompatibility() {
 			jsonData, err = relayconvert.NormalizeGLM53RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
+		if info.IsDeepSeekV4OfficialCompatibility() {
+			jsonData, err = relayconvert.NormalizeDeepSeekV4RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}

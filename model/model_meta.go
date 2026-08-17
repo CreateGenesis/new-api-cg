@@ -191,7 +191,9 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 			continue
 		}
 		channelType := r.ChannelType
-		if channelUsesGLM53OfficialCompatibility(r.ChannelType, r.ChannelSettings) {
+		if channelMapsModelToDeepSeekV4Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
+			channelType = constant.ChannelTypeDeepSeek
+		} else if channelUsesGLM53OfficialCompatibility(r.ChannelType, r.ChannelSettings) {
 			channelType = constant.ChannelTypeZhipu
 		} else if channelMapsModelToKimiK3Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
 			channelType = constant.ChannelTypeMoonshot
@@ -199,6 +201,46 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 		result[r.Model] = channelType
 	}
 	return result, nil
+}
+
+func channelMapsModelToDeepSeekV4Official(channelType int, modelName string, settingsJSON string, modelMappingJSON string) bool {
+	switch channelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeDeepSeek:
+	default:
+		return false
+	}
+
+	var settings dto.ChannelOtherSettings
+	if strings.TrimSpace(settingsJSON) == "" || common.UnmarshalJsonStr(settingsJSON, &settings) != nil || !settings.DeepSeekV4OfficialCompatibility {
+		return false
+	}
+
+	mappedModel := strings.TrimSpace(modelName)
+	if strings.HasPrefix(strings.ToLower(mappedModel), "deepseek-v4-") {
+		return true
+	}
+	if strings.TrimSpace(modelMappingJSON) == "" {
+		return false
+	}
+	var mapping map[string]string
+	if common.UnmarshalJsonStr(modelMappingJSON, &mapping) != nil {
+		return false
+	}
+	visited := map[string]struct{}{mappedModel: {}}
+	for {
+		next := strings.TrimSpace(mapping[mappedModel])
+		if next == "" {
+			return false
+		}
+		if _, exists := visited[next]; exists {
+			return false
+		}
+		if strings.HasPrefix(strings.ToLower(next), "deepseek-v4-") {
+			return true
+		}
+		visited[next] = struct{}{}
+		mappedModel = next
+	}
 }
 
 func channelUsesGLM53OfficialCompatibility(channelType int, settingsJSON string) bool {

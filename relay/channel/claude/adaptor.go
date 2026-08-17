@@ -34,7 +34,21 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		if err != nil {
 			return nil, err
 		}
-		if info.IsKimiK3OfficialCompatibility() {
+		if info.IsDeepSeekV4OfficialCompatibility() {
+			if len(request.ResponseFormat) > 0 && common.GetJsonType(request.ResponseFormat) == "object" {
+				var responseFormat dto.ResponseFormat
+				if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
+					return nil, fmt.Errorf("invalid response_format: %w", err)
+				}
+				converted.ResponseFormat = &responseFormat
+			}
+			if err := relayconvert.ApplyDeepSeekV4ClaudeControlsToChat(request, converted); err != nil {
+				return nil, err
+			}
+			if err := relayconvert.NormalizeDeepSeekV4ChatRequest(converted); err != nil {
+				return nil, err
+			}
+		} else if info.IsKimiK3OfficialCompatibility() {
 			if len(request.ResponseFormat) > 0 {
 				var responseFormat dto.ResponseFormat
 				if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
@@ -65,7 +79,7 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 		return converted, nil
 	}
-	if !info.IsOfficialCompatibility() {
+	if !info.IsOfficialCompatibility() && !info.IsDeepSeekV4OfficialCompatibility() {
 		request.ResponseFormat = nil
 	}
 	return request, nil
@@ -213,6 +227,21 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
+	if info.IsDeepSeekV4OfficialCompatibility() {
+		if request.ResponseFormat != nil {
+			responseFormat, err := common.Marshal(request.ResponseFormat)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal response_format: %w", err)
+			}
+			converted.ResponseFormat = responseFormat
+		}
+		if err := relayconvert.ApplyDeepSeekV4ChatControlsToClaude(request, converted); err != nil {
+			return nil, err
+		}
+		if err := relayconvert.NormalizeDeepSeekV4ClaudeRequest(converted); err != nil {
+			return nil, err
+		}
+	}
 	return converted, nil
 }
 
@@ -231,7 +260,13 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		if err != nil {
 			return nil, err
 		}
-		if info.IsKimiK3OfficialCompatibility() {
+		if info.IsDeepSeekV4OfficialCompatibility() {
+			converted.FrequencyPenalty = request.FrequencyPenalty
+			converted.PresencePenalty = request.PresencePenalty
+			if err := relayconvert.NormalizeDeepSeekV4ChatRequest(converted); err != nil {
+				return nil, err
+			}
+		} else if info.IsKimiK3OfficialCompatibility() {
 			if err := relayconvert.NormalizeKimiK3ChatRequest(converted); err != nil {
 				return nil, err
 			}
@@ -242,7 +277,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		}
 		return converted, nil
 	}
-	if info.IsOfficialCompatibility() {
+	if info.RequiresRequestConversion() {
 		converted, err := relayconvert.OpenAIResponsesRequestToClaudeMessages(c, info, &request)
 		if err != nil {
 			return nil, err
@@ -257,6 +292,15 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 				return nil, fmt.Errorf("failed to marshal response_format: %w", err)
 			}
 			converted.ResponseFormat = responseFormat
+		}
+		if info.IsDeepSeekV4OfficialCompatibility() {
+			if err := relayconvert.ApplyDeepSeekV4ResponsesControlsToClaude(&request, converted); err != nil {
+				return nil, err
+			}
+			if err := relayconvert.NormalizeDeepSeekV4ClaudeRequest(converted); err != nil {
+				return nil, err
+			}
+			return converted, nil
 		}
 		if request.Reasoning != nil && request.Reasoning.Effort != "" {
 			outputConfig, err := common.Marshal(dto.OutputConfigForEffort{Effort: request.Reasoning.Effort})
@@ -305,7 +349,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return openaiadapter.OpenaiHandler(c, info, resp)
 	}
 	info.FinalRequestRelayFormat = types.RelayFormatClaude
-	if info.IsOfficialCompatibility() && info.RelayMode == relayconstant.RelayModeResponses {
+	if info.RequiresRequestConversion() && info.RelayMode == relayconstant.RelayModeResponses {
 		if info.IsStream {
 			return ClaudeToResponsesStreamHandler(c, resp, info)
 		}

@@ -1042,3 +1042,91 @@ describe('GLM 5.3 official compatibility settings', () => {
     assert.equal(tntCoexistence.success, true)
   })
 })
+
+describe('DeepSeek V4 official compatibility settings', () => {
+  test('loads and saves the setting for supported channels', () => {
+    for (const type of [1, 14, 43]) {
+      const channel = testChannel('{"deepseek_v4_official_compatibility":true}')
+      channel.type = type
+
+      const form = transformChannelToFormDefaults(channel)
+      assert.equal(form.deepseek_v4_official_compatibility, true)
+
+      const payload = transformFormDataToCreatePayload({
+        ...form,
+        name: 'deepseek-v4',
+        key: 'sk-test',
+        models: 'deepseek-v4-flash-0731',
+        group: ['default'],
+        status: 1,
+        type,
+      })
+      const settings = JSON.parse(String(payload.channel.settings))
+      assert.equal(settings.deepseek_v4_official_compatibility, true)
+    }
+  })
+
+  test('removes the setting for unsupported channel types', () => {
+    const channel = testChannel('{"deepseek_v4_official_compatibility":true}')
+    channel.type = 14
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'other',
+      key: 'sk-test',
+      models: 'deepseek-v4-flash-0731',
+      group: ['default'],
+      status: 1,
+      type: 25,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.deepseek_v4_official_compatibility, undefined)
+  })
+
+  test('rejects passthrough and other official compatibility modes but allows TNT', () => {
+    const passthroughConflict = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'deepseek-v4',
+      key: 'sk-test',
+      models: 'deepseek-v4-flash-0731',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      pass_through_body_enabled: true,
+      deepseek_v4_official_compatibility: true,
+    })
+    assert.equal(passthroughConflict.success, false)
+
+    for (const conflict of [
+      'kimi_k3_official_compatibility',
+      'glm_5_3_official_compatibility',
+    ] as const) {
+      const result = channelFormSchema.safeParse({
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        name: 'deepseek-v4',
+        key: 'sk-test',
+        models: 'deepseek-v4-flash-0731',
+        group: ['default'],
+        status: 1,
+        type: 14,
+        deepseek_v4_official_compatibility: true,
+        [conflict]: true,
+      })
+      assert.equal(result.success, false)
+    }
+
+    const tntCoexistence = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'deepseek-v4',
+      key: 'sk-test',
+      models: 'deepseek-v4-flash-0731',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      tnt_tencent_openai_conversion: true,
+      deepseek_v4_official_compatibility: true,
+    })
+    assert.equal(tntCoexistence.success, true)
+  })
+})

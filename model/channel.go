@@ -1235,6 +1235,19 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("glm_5_3_official_compatibility and kimi_k3_official_compatibility cannot both be enabled")
 		}
 	}
+	if channelOtherSettings.DeepSeekV4OfficialCompatibility {
+		switch channel.Type {
+		case constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeDeepSeek:
+		default:
+			return fmt.Errorf("deepseek_v4_official_compatibility is only supported for OpenAI, Anthropic, and DeepSeek channels")
+		}
+		if channelParams.PassThroughBodyEnabled {
+			return fmt.Errorf("deepseek_v4_official_compatibility and pass_through_body_enabled cannot both be enabled")
+		}
+		if channelOtherSettings.KimiK3OfficialCompatibility || channelOtherSettings.GLM53OfficialCompatibility {
+			return fmt.Errorf("deepseek_v4_official_compatibility cannot be enabled with Kimi K3 or GLM 5.3 official compatibility")
+		}
+	}
 	if channelOtherSettings.InputTokenRouting != nil {
 		if err := channelOtherSettings.InputTokenRouting.Validate(); err != nil {
 			return fmt.Errorf("input_token_routing: %w", err)

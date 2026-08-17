@@ -385,6 +385,7 @@ export const channelFormSchema = z
     tnt_tencent_openai_conversion: z.boolean().optional(),
     kimi_k3_official_compatibility: z.boolean().optional(),
     glm_5_3_official_compatibility: z.boolean().optional(),
+    deepseek_v4_official_compatibility: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -694,6 +695,31 @@ export const channelFormSchema = z
       addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
       addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
     }
+    if (
+      [1, 14, 43].includes(data.type) &&
+      data.deepseek_v4_official_compatibility &&
+      data.pass_through_body_enabled
+    ) {
+      const message =
+        'DeepSeek V4 official compatibility cannot be enabled with request body passthrough.'
+      addRequiredIssue(ctx, 'deepseek_v4_official_compatibility', message)
+      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
+    }
+    if (
+      data.deepseek_v4_official_compatibility &&
+      (data.kimi_k3_official_compatibility ||
+        data.glm_5_3_official_compatibility)
+    ) {
+      const message =
+        'DeepSeek V4 official compatibility cannot be enabled with Kimi K3 or GLM 5.3 official compatibility.'
+      addRequiredIssue(ctx, 'deepseek_v4_official_compatibility', message)
+      if (data.kimi_k3_official_compatibility) {
+        addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
+      }
+      if (data.glm_5_3_official_compatibility) {
+        addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
+      }
+    }
     for (const fieldName of [
       'usage_token_limit_input_tokens',
       'usage_token_limit_output_tokens',
@@ -919,6 +945,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   tnt_tencent_openai_conversion: false,
   kimi_k3_official_compatibility: false,
   glm_5_3_official_compatibility: false,
+  deepseek_v4_official_compatibility: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -1051,6 +1078,7 @@ export function transformChannelToFormDefaults(
   let tntTencentOpenAIConversion = false
   let kimiK3OfficialCompatibility = false
   let glm53OfficialCompatibility = false
+  let deepSeekV4OfficialCompatibility = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
   let disableStream = false
@@ -1112,6 +1140,9 @@ export function transformChannelToFormDefaults(
       glm53OfficialCompatibility =
         [1, 14].includes(channel.type) &&
         parsed.glm_5_3_official_compatibility === true
+      deepSeekV4OfficialCompatibility =
+        [1, 14, 43].includes(channel.type) &&
+        parsed.deepseek_v4_official_compatibility === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
       disableStream = parsed.disable_stream === true
@@ -1406,6 +1437,7 @@ export function transformChannelToFormDefaults(
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
     kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
     glm_5_3_official_compatibility: glm53OfficialCompatibility,
+    deepseek_v4_official_compatibility: deepSeekV4OfficialCompatibility,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
@@ -1613,6 +1645,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.glm_5_3_official_compatibility = true
   } else if ('glm_5_3_official_compatibility' in settingsObj) {
     delete settingsObj.glm_5_3_official_compatibility
+  }
+
+  if (
+    [1, 14, 43].includes(formData.type) &&
+    formData.deepseek_v4_official_compatibility === true
+  ) {
+    settingsObj.deepseek_v4_official_compatibility = true
+  } else if ('deepseek_v4_official_compatibility' in settingsObj) {
+    delete settingsObj.deepseek_v4_official_compatibility
   }
 
   settingsObj.disable_task_polling_sleep =

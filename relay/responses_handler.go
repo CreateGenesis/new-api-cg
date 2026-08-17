@@ -74,6 +74,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 	info.ActivateKimiK3OfficialCompatibility()
 	info.ActivateGLM53OfficialCompatibility()
+	info.ActivateDeepSeekV4OfficialCompatibility()
 	if info.IsKimiK3OfficialCompatibility() {
 		info.KimiK3HideThinking = relayconvert.KimiK3RequestDisablesThinking(request)
 		if err := relayconvert.NormalizeKimiK3ResponsesRequest(request); err != nil {
@@ -85,6 +86,14 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	}
+	if info.IsDeepSeekV4OfficialCompatibility() {
+		if err := relayconvert.NormalizeDeepSeekV4ResponsesRequest(request); err != nil {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	} else {
+		request.FrequencyPenalty = nil
+		request.PresencePenalty = nil
+	}
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
@@ -93,7 +102,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	adaptor.Init(info)
 	var requestBody io.Reader
 	var cacheAttempt *simulatedModelCacheAttempt
-	if !tntTencentConversion && !info.IsOfficialCompatibility() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
+	if !tntTencentConversion && !info.RequiresRequestConversion() && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
@@ -135,6 +144,12 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 		if info.IsGLM53OfficialCompatibility() {
 			jsonData, err = relayconvert.NormalizeGLM53RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
+		if info.IsDeepSeekV4OfficialCompatibility() {
+			jsonData, err = relayconvert.NormalizeDeepSeekV4RequestJSON(jsonData, info.GetFinalRequestRelayFormat())
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 			}

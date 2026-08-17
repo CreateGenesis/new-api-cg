@@ -128,3 +128,39 @@ func TestClaudeToResponsesStreamHandlerRestoresKimiK3MetadataAndTerminalUsage(t 
 	assert.Equal(t, 2, strings.Count(got, `"max_output_tokens":64`))
 	assert.NotContains(t, got, `"max_output_tokens":0`)
 }
+
+func TestDeepSeekV4ClaudeAdaptorReturnsResponsesProtocol(t *testing.T) {
+	body := `{
+		"id":"msg_deepseek_1",
+		"type":"message",
+		"role":"assistant",
+		"model":"deepseek-v4-pro",
+		"content":[{"type":"text","text":"OK"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":2,"output_tokens":1}
+	}`
+	c, recorder, resp, info := newKimiK3ClaudeResponsesContext(t, body, false)
+	info.OriginModelName = "deepseek-v4-pro-0813"
+	info.Request = &dto.OpenAIResponsesRequest{
+		Model: "deepseek-v4-pro-0813",
+		Input: []byte(`"hello"`),
+	}
+	info.ChannelMeta.UpstreamModelName = "deepseek-v4-pro"
+	info.ChannelMeta.ChannelOtherSettings = dto.ChannelOtherSettings{DeepSeekV4OfficialCompatibility: true}
+	info.KimiK3OfficialCompatibilityActive = false
+	info.ActivateDeepSeekV4OfficialCompatibility()
+	require.True(t, info.IsDeepSeekV4OfficialCompatibility())
+	require.False(t, info.IsOfficialCompatibility())
+
+	usageValue, apiErr := (&Adaptor{}).DoResponse(c, resp, info)
+	require.Nil(t, apiErr)
+	usage := usageValue.(*dto.Usage)
+	assert.Equal(t, 1, usage.CompletionTokens)
+
+	var response dto.OpenAIResponsesResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "response", response.Object)
+	assert.Equal(t, "deepseek-v4-pro-0813", response.Model)
+	require.Len(t, response.Output, 1)
+	assert.Equal(t, "message", response.Output[0].Type)
+}

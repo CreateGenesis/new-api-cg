@@ -3,7 +3,9 @@ package deepseek
 var ModelList = []string{
 	"deepseek-chat", "deepseek-reasoner",
 	"deepseek-v4-flash", "deepseek-v4-flash-none", "deepseek-v4-flash-max",
+	"deepseek-v4-flash-0731", "deepseek-v4-flash-0731-none", "deepseek-v4-flash-0731-max",
 	"deepseek-v4-pro", "deepseek-v4-pro-none", "deepseek-v4-pro-max",
+	"deepseek-v4-pro-0813", "deepseek-v4-pro-0813-none", "deepseek-v4-pro-0813-max",
 }
 
 var ChannelName = "deepseek"

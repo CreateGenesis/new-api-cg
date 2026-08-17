@@ -77,6 +77,24 @@ func TestGetPreferredModelOwnerChannelTypesReportsZhipuForGLM53Compatibility(t *
 	require.Equal(t, constant.ChannelTypeZhipu, owners[modelName])
 }
 
+func TestGetPreferredModelOwnerChannelTypesReportsDeepSeekForV4Compatibility(t *testing.T) {
+	const modelName = "deepseek-v4-flash-0731"
+	clearPreferredOwnerTables(t)
+	insertPreferredOwnerCandidate(t, 1, modelName, "default", constant.ChannelTypeAnthropic, 0, 0, common.ChannelStatusEnabled, true)
+	settings, err := common.Marshal(dto.ChannelOtherSettings{DeepSeekV4OfficialCompatibility: true})
+	require.NoError(t, err)
+	mapping, err := common.Marshal(map[string]string{modelName: "deepseek-v4-flash"})
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&Channel{}).Where("id = ?", 1).Updates(map[string]any{
+		"settings":      string(settings),
+		"model_mapping": string(mapping),
+	}).Error)
+
+	owners, err := GetPreferredModelOwnerChannelTypes([]string{modelName}, []string{"default"})
+	require.NoError(t, err)
+	require.Equal(t, constant.ChannelTypeDeepSeek, owners[modelName])
+}
+
 func insertPreferredOwnerCandidate(
 	t *testing.T,
 	channelID int,

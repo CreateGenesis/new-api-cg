@@ -109,6 +109,21 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
+	if info.IsDeepSeekV4OfficialCompatibility() {
+		if err := relayconvert.ApplyDeepSeekV4ClaudeControlsToChat(request, aiRequest); err != nil {
+			return nil, err
+		}
+		if len(request.ResponseFormat) > 0 && common.GetJsonType(request.ResponseFormat) == "object" {
+			var responseFormat dto.ResponseFormat
+			if err := common.Unmarshal(request.ResponseFormat, &responseFormat); err != nil {
+				return nil, fmt.Errorf("invalid response_format: %w", err)
+			}
+			aiRequest.ResponseFormat = &responseFormat
+		}
+		if err := relayconvert.NormalizeDeepSeekV4ChatRequest(aiRequest); err != nil {
+			return nil, err
+		}
+	}
 	return a.ConvertOpenAIRequest(c, info, aiRequest)
 }
 

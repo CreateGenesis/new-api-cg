@@ -489,6 +489,89 @@ func TestClaudeChannelDropsKimiResponseFormatWhenCompatibilityIsDisabled(t *test
 	assert.Empty(t, converted.(*dto.ClaudeRequest).ResponseFormat)
 }
 
+func TestDeepSeekV4TNTFinalRequestThinking(t *testing.T) {
+	tests := []struct {
+		name                 string
+		compatibilityEnabled bool
+		thinking             *dto.Thinking
+		wantThinking         string
+	}{
+		{name: "default enables thinking", compatibilityEnabled: true, wantThinking: "enabled"},
+		{name: "explicit disabled survives", compatibilityEnabled: true, thinking: &dto.Thinking{Type: "disabled"}, wantThinking: "disabled"},
+		{name: "disabled compatibility injects nothing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "deepseek-v4-flash-0731",
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType:       constant.ChannelTypeAnthropic,
+					UpstreamModelName: "deepseek-v4-flash",
+					ChannelOtherSettings: dto.ChannelOtherSettings{
+						TNTTencentOpenAIConversion:      true,
+						DeepSeekV4OfficialCompatibility: tt.compatibilityEnabled,
+					},
+				},
+			}
+			info.ActivateDeepSeekV4OfficialCompatibility()
+			request := &dto.ClaudeRequest{
+				Model:    "deepseek-v4-flash",
+				Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}},
+				Thinking: tt.thinking,
+			}
+
+			converted, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, request)
+			require.NoError(t, err)
+			data, err := common.Marshal(converted)
+			require.NoError(t, err)
+			data, err = relayconvert.FinalizeTNTTencentChatRequestJSON(data)
+			require.NoError(t, err)
+			if info.IsDeepSeekV4OfficialCompatibility() {
+				data, err = relayconvert.NormalizeDeepSeekV4RequestJSON(data, types.RelayFormatOpenAI)
+				require.NoError(t, err)
+			}
+
+			thinkingType := gjson.GetBytes(data, "thinking.type")
+			if tt.wantThinking == "" {
+				assert.False(t, thinkingType.Exists())
+				return
+			}
+			assert.Equal(t, tt.wantThinking, thinkingType.String())
+		})
+	}
+}
+
+func TestDeepSeekV4ResponsesRequestConvertsToAnthropic(t *testing.T) {
+	maxOutputTokens := uint(64)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "deepseek-v4-pro-0813",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeAnthropic,
+			UpstreamModelName: "deepseek-v4-pro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				DeepSeekV4OfficialCompatibility: true,
+			},
+		},
+	}
+	info.ActivateDeepSeekV4OfficialCompatibility()
+	request := dto.OpenAIResponsesRequest{
+		Model:           "deepseek-v4-pro",
+		Input:           []byte(`"hello"`),
+		MaxOutputTokens: &maxOutputTokens,
+		Reasoning:       &dto.Reasoning{Effort: "none"},
+		Text:            []byte(`{"format":{"type":"json_object"}}`),
+	}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, request)
+	require.NoError(t, err)
+	claudeRequest := converted.(*dto.ClaudeRequest)
+	require.NotNil(t, claudeRequest.Thinking)
+	assert.Equal(t, "disabled", claudeRequest.Thinking.Type)
+	assert.Empty(t, claudeRequest.OutputConfig)
+	assert.Equal(t, "json_object", gjson.GetBytes(claudeRequest.ResponseFormat, "type").String())
+}
+
 func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 	tests := []struct {
 		name string

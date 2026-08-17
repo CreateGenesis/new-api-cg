@@ -165,6 +165,7 @@ type RelayInfo struct {
 	KimiK3MatchedStopSequence             string
 	GLM53OfficialCompatibilityActive      bool
 	GLM53MatchedStopSequence              string
+	DeepSeekV4OfficialCompatibilityActive bool
 
 	// UpstreamRequestBodySize is the byte size of the marshaled upstream request
 	// body. It is set when the body is wrapped in a BodyStorage (see
@@ -272,6 +273,34 @@ func (info *RelayInfo) ActivateGLM53OfficialCompatibility() {
 
 func (info *RelayInfo) IsGLM53OfficialCompatibility() bool {
 	return info != nil && info.GLM53OfficialCompatibilityActive
+}
+
+func (info *RelayInfo) ActivateDeepSeekV4OfficialCompatibility() {
+	if info == nil {
+		return
+	}
+	info.DeepSeekV4OfficialCompatibilityActive = false
+	if info.ChannelMeta == nil || !info.ChannelOtherSettings.DeepSeekV4OfficialCompatibility ||
+		info.ChannelOtherSettings.KimiK3OfficialCompatibility || info.ChannelOtherSettings.GLM53OfficialCompatibility {
+		return
+	}
+	if info.ChannelType != constant.ChannelTypeOpenAI && info.ChannelType != constant.ChannelTypeAnthropic && info.ChannelType != constant.ChannelTypeDeepSeek {
+		return
+	}
+	for _, modelName := range []string{info.OriginModelName, info.UpstreamModelName} {
+		if strings.HasPrefix(strings.ToLower(modelName), "deepseek-v4-") {
+			info.DeepSeekV4OfficialCompatibilityActive = true
+			return
+		}
+	}
+}
+
+func (info *RelayInfo) IsDeepSeekV4OfficialCompatibility() bool {
+	return info != nil && info.DeepSeekV4OfficialCompatibilityActive
+}
+
+func (info *RelayInfo) RequiresRequestConversion() bool {
+	return info != nil && (info.IsOfficialCompatibility() || info.IsDeepSeekV4OfficialCompatibility())
 }
 
 func (info *RelayInfo) IsOfficialCompatibility() bool {
@@ -430,6 +459,7 @@ func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
 	info.KimiK3MatchedStopSequence = ""
 	info.GLM53OfficialCompatibilityActive = false
 	info.GLM53MatchedStopSequence = ""
+	info.DeepSeekV4OfficialCompatibilityActive = false
 	info.UpstreamRequestBodySize = 0
 	info.SimulatedModelCacheInfo = nil
 	info.UsageTokenLimitAudit = nil

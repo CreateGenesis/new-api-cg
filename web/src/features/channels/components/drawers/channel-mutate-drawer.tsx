@@ -314,6 +314,7 @@ const SENSITIVE_FORM_FIELDS = [
   'tnt_tencent_openai_conversion',
   'kimi_k3_official_compatibility',
   'glm_5_3_official_compatibility',
+  'deepseek_v4_official_compatibility',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -884,6 +885,9 @@ export function ChannelMutateDrawer({
   const currentGLM53OfficialCompatibility = form.watch(
     'glm_5_3_official_compatibility'
   )
+  const currentDeepSeekV4OfficialCompatibility = form.watch(
+    'deepseek_v4_official_compatibility'
+  )
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
@@ -1230,6 +1234,8 @@ export function ChannelMutateDrawer({
     (currentType === 14 && currentTNTTencentOpenAIConversion) ||
     ([1, 14, 25].includes(currentType) && currentKimiK3OfficialCompatibility) ||
     ([1, 14].includes(currentType) && currentGLM53OfficialCompatibility) ||
+    ([1, 14, 43].includes(currentType) &&
+      currentDeepSeekV4OfficialCompatibility) ||
     currentDisableTaskPollingSleep ||
     (currentType === 43 && currentDeepSeekV4RequestSanitizationEnabled) ||
     currentProxy?.trim() ||
@@ -5459,6 +5465,36 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'Align requests with the official GLM 5.3 API without changing response formats.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
+
+                              {[1, 14, 43].includes(currentType) && (
+                                <FormField
+                                  control={form.control}
+                                  name='deepseek_v4_official_compatibility'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t(
+                                            'DeepSeek V4 Official Compatibility'
+                                          )}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Align DeepSeek V4 Chat, Responses, and Anthropic request behavior without rewriting response bodies.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />

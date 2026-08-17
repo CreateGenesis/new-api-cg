@@ -228,6 +228,52 @@ func TestChannelValidateSettingsScopesGLM53OfficialCompatibility(t *testing.T) {
 	})
 }
 
+func TestChannelValidateSettingsScopesDeepSeekV4OfficialCompatibility(t *testing.T) {
+	for _, channelType := range []int{constant.ChannelTypeOpenAI, constant.ChannelTypeAnthropic, constant.ChannelTypeDeepSeek} {
+		channel := &Channel{Type: channelType, OtherSettings: `{"deepseek_v4_official_compatibility":true}`}
+		require.NoError(t, channel.ValidateSettings(), "channel type %d", channelType)
+	}
+
+	t.Run("rejects unsupported channel type", func(t *testing.T) {
+		channel := &Channel{Type: constant.ChannelTypeGemini, OtherSettings: `{"deepseek_v4_official_compatibility":true}`}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported for OpenAI, Anthropic, and DeepSeek")
+	})
+
+	t.Run("rejects body passthrough", func(t *testing.T) {
+		setting := `{"pass_through_body_enabled":true}`
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			Setting:       &setting,
+			OtherSettings: `{"deepseek_v4_official_compatibility":true,"tnt_tencent_openai_conversion":true}`,
+		}
+		err := channel.ValidateSettings()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot both be enabled")
+	})
+
+	t.Run("rejects Kimi and GLM compatibility", func(t *testing.T) {
+		for _, conflict := range []string{"kimi_k3_official_compatibility", "glm_5_3_official_compatibility"} {
+			channel := &Channel{
+				Type:          constant.ChannelTypeAnthropic,
+				OtherSettings: fmt.Sprintf(`{"deepseek_v4_official_compatibility":true,%q:true}`, conflict),
+			}
+			err := channel.ValidateSettings()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cannot be enabled")
+		}
+	})
+
+	t.Run("allows TNT conversion", func(t *testing.T) {
+		channel := &Channel{
+			Type:          constant.ChannelTypeAnthropic,
+			OtherSettings: `{"deepseek_v4_official_compatibility":true,"tnt_tencent_openai_conversion":true}`,
+		}
+		require.NoError(t, channel.ValidateSettings())
+	})
+}
+
 func TestChannelValidateSettingsRejectsConflictingInputTokenEstimationModes(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"input_token_routing":{"enabled":true,"glm_5_2_mode":true,"kimi_k3_mode":true}}`,
