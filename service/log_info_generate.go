@@ -98,6 +98,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.UsageTokenLimitAudit != nil {
 		adminInfo["usage_token_limit"] = relayInfo.UsageTokenLimitAudit
 	}
+	if relayInfo.UsageEstimationAudit != nil {
+		adminInfo["usage_estimation"] = relayInfo.UsageEstimationAudit
+	}
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true

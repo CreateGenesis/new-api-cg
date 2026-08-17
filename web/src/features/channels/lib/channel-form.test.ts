@@ -1200,3 +1200,61 @@ describe('DeepSeek V4 official compatibility settings', () => {
     assert.equal(tntCoexistence.success, true)
   })
 })
+
+describe('usage estimation settings', () => {
+  test('loads and saves explicit model family and direction multipliers', () => {
+    const channel = testChannel(
+      '{"usage_estimation":{"enabled":true,"model_family":"deepseek","input_multiplier":1.25,"output_multiplier":1.5}}'
+    )
+    const form = transformChannelToFormDefaults(channel)
+
+    assert.equal(form.usage_estimation_enabled, true)
+    assert.equal(form.usage_estimation_model_family, 'deepseek')
+    assert.equal(form.usage_estimation_input_multiplier, 1.25)
+    assert.equal(form.usage_estimation_output_multiplier, 1.5)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'usage-estimation',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.deepEqual(settings.usage_estimation, {
+      enabled: true,
+      model_family: 'deepseek',
+      input_multiplier: 1.25,
+      output_multiplier: 1.5,
+    })
+  })
+
+  test('omits usage estimation when disabled and validates multiplier bounds', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'disabled',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.usage_estimation, undefined)
+
+    const invalid = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'invalid',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      usage_estimation_enabled: true,
+      usage_estimation_input_multiplier: 0.001,
+    })
+    assert.equal(invalid.success, false)
+  })
+})

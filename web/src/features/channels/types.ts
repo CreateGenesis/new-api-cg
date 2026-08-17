@@ -190,6 +190,12 @@ export interface ChannelOtherSettings {
   glm_5_3_official_compatibility?: boolean
   cache_usage_validation_split?: boolean
   retry_zero_output?: boolean
+  usage_estimation?: {
+    enabled?: boolean
+    model_family?: 'glm' | 'kimi' | 'deepseek'
+    input_multiplier?: number
+    output_multiplier?: number
+  }
   disable_stream?: boolean
   disable_non_stream?: boolean
   usage_token_limit?: {

@@ -227,7 +227,8 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	if claudeInfo.Usage.PromptTokens == 0 {
 		//上游出错
 	}
-	if claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done {
+	_, usageEstimationEnabled := info.UsageEstimationSettings()
+	if (claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done) && !usageEstimationEnabled {
 		if common.DebugEnabled {
 			common.SysLog("claude response usage is not complete, maybe upstream error")
 		}

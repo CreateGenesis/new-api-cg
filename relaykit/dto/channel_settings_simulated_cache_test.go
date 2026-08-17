@@ -103,6 +103,18 @@ func TestUsageTokenLimitSettingsValidateBounds(t *testing.T) {
 	require.ErrorContains(t, (UsageTokenLimitSettings{OutputTokens: -1}).Validate(), "output_tokens")
 }
 
+func TestUsageEstimationSettingsValidationAndDefaults(t *testing.T) {
+	settings := UsageEstimationSettings{Enabled: true, ModelFamily: UsageEstimationModelFamilyDeepSeek}
+	require.NoError(t, settings.Validate())
+	normalized := settings.Normalize()
+	assert.Equal(t, 1.0, normalized.InputMultiplier)
+	assert.Equal(t, 1.0, normalized.OutputMultiplier)
+
+	require.ErrorContains(t, (UsageEstimationSettings{Enabled: true, ModelFamily: "auto"}).Validate(), "model_family")
+	require.ErrorContains(t, (UsageEstimationSettings{Enabled: true, ModelFamily: UsageEstimationModelFamilyGLM, InputMultiplier: 0.001}).Validate(), "input_multiplier")
+	require.ErrorContains(t, (UsageEstimationSettings{Enabled: true, ModelFamily: UsageEstimationModelFamilyKimi, OutputMultiplier: 101}).Validate(), "output_multiplier")
+}
+
 func TestSimulatedModelCacheMultimodalSettingsRequireExplicitWeights(t *testing.T) {
 	settings := SimulatedModelCacheSettings{
 		Multimodal: &SimulatedModelCacheMultimodalSettings{Enabled: true},

@@ -329,6 +329,10 @@ const SENSITIVE_FORM_FIELDS = [
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'retry_zero_output',
+  'usage_estimation_enabled',
+  'usage_estimation_model_family',
+  'usage_estimation_input_multiplier',
+  'usage_estimation_output_multiplier',
   'disable_stream',
   'disable_non_stream',
   'usage_token_limit_input_tokens',
@@ -414,6 +418,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
     values.retry_zero_output ||
+    values.usage_estimation_enabled ||
     values.disable_stream ||
     values.disable_non_stream ||
     (values.usage_token_limit_input_tokens ?? 0) > 0 ||
@@ -915,6 +920,7 @@ export function ChannelMutateDrawer({
     'cache_usage_validation_split'
   )
   const currentRetryZeroOutput = form.watch('retry_zero_output')
+  const currentUsageEstimationEnabled = form.watch('usage_estimation_enabled')
   const currentDisableStream = form.watch('disable_stream')
   const currentDisableNonStream = form.watch('disable_non_stream')
   const currentUsageTokenLimitInputTokens = form.watch(
@@ -1279,6 +1285,7 @@ export function ChannelMutateDrawer({
   )
   const fallbackPolicyConfigured = Boolean(
     currentRetryZeroOutput ||
+    currentUsageEstimationEnabled ||
     currentDisableStream ||
     currentDisableNonStream ||
     (currentUsageTokenLimitInputTokens ?? 0) > 0 ||

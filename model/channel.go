@@ -1201,6 +1201,11 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("usage_token_limit: %w", err)
 		}
 	}
+	if channelOtherSettings.UsageEstimation != nil {
+		if err := channelOtherSettings.UsageEstimation.Validate(); err != nil {
+			return fmt.Errorf("usage_estimation: %w", err)
+		}
+	}
 	if channelOtherSettings.DisableStream && channelOtherSettings.DisableNonStream {
 		return fmt.Errorf("disable_stream and disable_non_stream cannot both be enabled")
 	}

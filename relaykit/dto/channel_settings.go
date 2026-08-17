@@ -107,6 +107,55 @@ type ChannelOtherSettings struct {
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
 	UsageTokenLimit                       *UsageTokenLimitSettings           `json:"usage_token_limit,omitempty"`
+	UsageEstimation                       *UsageEstimationSettings           `json:"usage_estimation,omitempty"`
+}
+
+type UsageEstimationModelFamily string
+
+const (
+	UsageEstimationModelFamilyGLM      UsageEstimationModelFamily = "glm"
+	UsageEstimationModelFamilyKimi     UsageEstimationModelFamily = "kimi"
+	UsageEstimationModelFamilyDeepSeek UsageEstimationModelFamily = "deepseek"
+	UsageEstimationMultiplierMin                                  = 0.01
+	UsageEstimationMultiplierMax                                  = 100.0
+)
+
+type UsageEstimationSettings struct {
+	Enabled          bool                       `json:"enabled,omitempty"`
+	ModelFamily      UsageEstimationModelFamily `json:"model_family,omitempty"`
+	InputMultiplier  float64                    `json:"input_multiplier,omitempty"`
+	OutputMultiplier float64                    `json:"output_multiplier,omitempty"`
+}
+
+func (s UsageEstimationSettings) Normalize() UsageEstimationSettings {
+	if s.InputMultiplier == 0 {
+		s.InputMultiplier = 1
+	}
+	if s.OutputMultiplier == 0 {
+		s.OutputMultiplier = 1
+	}
+	return s
+}
+
+func (s UsageEstimationSettings) Validate() error {
+	if !s.Enabled {
+		return nil
+	}
+	s = s.Normalize()
+	switch s.ModelFamily {
+	case UsageEstimationModelFamilyGLM, UsageEstimationModelFamilyKimi, UsageEstimationModelFamilyDeepSeek:
+	default:
+		return fmt.Errorf("model_family must be one of glm, kimi, deepseek")
+	}
+	if math.IsNaN(s.InputMultiplier) || math.IsInf(s.InputMultiplier, 0) ||
+		s.InputMultiplier < UsageEstimationMultiplierMin || s.InputMultiplier > UsageEstimationMultiplierMax {
+		return fmt.Errorf("input_multiplier must be between %.2f and %.0f", UsageEstimationMultiplierMin, UsageEstimationMultiplierMax)
+	}
+	if math.IsNaN(s.OutputMultiplier) || math.IsInf(s.OutputMultiplier, 0) ||
+		s.OutputMultiplier < UsageEstimationMultiplierMin || s.OutputMultiplier > UsageEstimationMultiplierMax {
+		return fmt.Errorf("output_multiplier must be between %.2f and %.0f", UsageEstimationMultiplierMin, UsageEstimationMultiplierMax)
+	}
+	return nil
 }
 
 type UsageTokenLimitSettings struct {
