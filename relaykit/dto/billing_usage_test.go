@@ -87,23 +87,3 @@ func TestBillingUsageJSONUsesProtocolNamedFields(t *testing.T) {
 	assert.Nil(t, clone.ClaudeUsage.BillingUsage)
 	assert.Nil(t, clone.GeminiUsageMetadata.BillingUsage)
 }
-
-func TestBillingUsageRecognitionRequiresMatchingSinglePayload(t *testing.T) {
-	tests := []struct {
-		name  string
-		usage *BillingUsage
-		want  bool
-	}{
-		{name: "openai", usage: NewOpenAIChatBillingUsage(&Usage{PromptTokens: 1}), want: true},
-		{name: "anthropic", usage: NewClaudeMessagesBillingUsage(&ClaudeUsage{InputTokens: 1}), want: true},
-		{name: "missing payload", usage: &BillingUsage{Semantic: BillingUsageSemanticOpenAI}},
-		{name: "conflicting semantic", usage: &BillingUsage{Source: BillingUsageSourceOAIChat, Semantic: BillingUsageSemanticAnthropic, OpenAIUsage: &Usage{PromptTokens: 1}}},
-		{name: "multiple payloads", usage: &BillingUsage{Source: BillingUsageSourceOAIChat, Semantic: BillingUsageSemanticOpenAI, OpenAIUsage: &Usage{PromptTokens: 1}, ClaudeUsage: &ClaudeUsage{InputTokens: 1}}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.usage.IsRecognized())
-		})
-	}
-}

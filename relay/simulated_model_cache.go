@@ -36,7 +36,6 @@ type simulatedModelCacheAttempt struct {
 	retryZeroOutput            bool
 	responseContentRetryPolicy operation_setting.ResponseContentRetryPolicy
 	validateUsage              bool
-	estimateUsage              bool
 }
 
 type simulatedModelCachePartialMatchTask interface {
@@ -534,16 +533,11 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 	responseContentRetryActive := info != nil && responseContentRetryPolicy.Enabled && len(responseContentRetryPolicy.Rules) > 0 &&
 		isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode)
 	validateUsage := false
-	estimateUsage := false
 	if info != nil && info.ChannelMeta != nil && isChannelOutputPolicyFormat(info.RelayFormat, info.RelayMode) {
 		limits := info.ChannelOtherSettings.UsageTokenLimit
 		validateUsage = limits != nil && (limits.InputTokens > 0 || limits.OutputTokens > 0)
-		_, estimateUsage = info.UsageEstimationSettings()
-		if estimateUsage {
-			service.EnableRelayDebugUsageEstimation(c)
-		}
 	}
-	outputPolicyActive := retryZeroOutput || responseContentRetryActive || validateUsage || estimateUsage
+	outputPolicyActive := retryZeroOutput || responseContentRetryActive || validateUsage
 	preparation, _ := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey)
 	routingPreparation, _ := preparation.(*service.SimulatedModelCacheRoutingPreparation)
 	routingActive := routingPreparation != nil && info != nil && info.ChannelMeta != nil && routingPreparation.ChannelID == info.ChannelMeta.ChannelId
@@ -561,7 +555,6 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		cacheModelName:             simulatedModelCacheModelName(info),
 		retryZeroOutput:            retryZeroOutput,
 		validateUsage:              validateUsage,
-		estimateUsage:              estimateUsage,
 		responseContentRetryPolicy: responseContentRetryPolicy,
 	}
 	if !isSimulatedModelCacheTextFormat(format) {
@@ -636,7 +629,7 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	}
 	bufferLimit := service.SimulatedModelCacheResponseBufferBytes()
 	var outputRecorder *channelOutputRecorder
-	if attempt.retryZeroOutput || attempt.validateUsage || attempt.estimateUsage || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
+	if attempt.retryZeroOutput || attempt.validateUsage || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
 		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.retryZeroOutput, attempt.validateUsage, attempt.responseContentRetryPolicy, int(bufferLimit))
 		c.Writer = outputRecorder
 	}
@@ -669,13 +662,6 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 			outputErr = recorder.outputRecorder.finish(c, info, usage)
 		}
 	}()
-	if recorder.outputRecorder != nil && attempt.estimateUsage && usage != nil {
-		var responseBody []byte
-		if !recorder.stream && !recorder.passThrough {
-			responseBody = recorder.body.Bytes()
-		}
-		recorder.outputRecorder.prepareUsageEstimationFromBody(c, info, usage, responseBody)
-	}
 
 	if usage == nil {
 		if recorder.stream {

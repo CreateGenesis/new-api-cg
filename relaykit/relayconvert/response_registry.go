@@ -12,7 +12,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	geminichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/gemini_chat"
 	oaichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_chat"
-	oairesponses "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_responses"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
@@ -396,9 +395,9 @@ func (s *ResponseStreamState) SetUsage(usage *dto.Usage) {
 	for _, state := range s.stepStates {
 		switch typed := state.(type) {
 		case *ChatToResponsesStreamState:
-			typed.Usage = oaichat.UsageForOpenAIResponses(usage)
+			typed.Usage = UsageFromChatUsage(usage)
 		case *ResponsesToChatStreamState:
-			typed.Usage = oairesponses.UsageForOpenAIChat(usage)
+			typed.Usage = usage
 		}
 	}
 }
@@ -600,19 +599,8 @@ func finalizeResponseStreamStep(c context.Context, info convmeta.Meta, spec Resp
 
 func (s *ResponseStreamState) rememberUsage(usage *dto.Usage) {
 	if s != nil && usage != nil {
-		if s.usage != nil && hasUsageTokenValues(s.usage) && !hasUsageTokenValues(usage) {
-			return
-		}
 		s.usage = usage
 	}
-}
-
-func hasUsageTokenValues(usage *dto.Usage) bool {
-	if usage == nil {
-		return false
-	}
-	return usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
-		usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.BillingUsage != nil
 }
 
 func responseStreamResults(state *ResponseStreamState, values []any, usage *dto.Usage) []ResponseResult {
@@ -945,7 +933,7 @@ func convertClaudeMessagesResponseToOAIChat(_ context.Context, _ convmeta.Meta, 
 	if err != nil {
 		return nil, nil, err
 	}
-	usage := UsageFromClaudeUsage(usageFromClaudeResponse(claudeResponse))
+	usage := usageFromClaudeResponse(claudeResponse)
 	openAIResponse := ResponseClaude2OpenAI(claudeResponse)
 	if usage != nil {
 		openAIResponse.Usage = *usage
@@ -959,7 +947,7 @@ func convertClaudeMessagesStreamResponseToOAIChat(_ context.Context, _ convmeta.
 		return nil, nil, err
 	}
 	openAIResponse := StreamResponseClaude2OpenAI(claudeResponse)
-	usage := UsageFromClaudeUsage(usageFromClaudeResponse(claudeResponse))
+	usage := usageFromClaudeResponse(claudeResponse)
 	if openAIResponse != nil && usage != nil {
 		openAIResponse.Usage = usage
 	}

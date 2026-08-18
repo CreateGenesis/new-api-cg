@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
-	claudemessages "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/claude_messages"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -37,7 +36,7 @@ func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id
 		return nil, nil, errors.New("response is nil")
 	}
 
-	usage := UsageForOpenAIResponses(&resp.Usage)
+	usage := UsageFromChatUsage(&resp.Usage)
 	out := &dto.OpenAIResponsesResponse{
 		ID:        id,
 		Object:    "response",
@@ -96,42 +95,6 @@ func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id
 	}
 
 	return out, usage, nil
-}
-
-// UsageForOpenAIResponses makes the target protocol authoritative. A Chat
-// response may carry provider billing metadata from an earlier conversion;
-// that metadata must not leak into a Responses response.
-func UsageForOpenAIResponses(src *dto.Usage) *dto.Usage {
-	originalBilling := (*dto.BillingUsage)(nil)
-	if src != nil {
-		originalBilling = src.BillingUsage
-	}
-	base := src
-	if claudeUsage := claudemessages.UsageFromClaudeBillingUsage(originalBilling); claudeUsage != nil {
-		base = claudeUsage
-	}
-	usage := UsageFromChatUsage(base)
-	if usage == nil {
-		return nil
-	}
-	if usage.PromptTokensDetails.CachedTokens == 0 && usage.InputTokensDetails != nil {
-		usage.PromptTokensDetails = *usage.InputTokensDetails
-	}
-	payload := *usage
-	payload.BillingUsage = nil
-	payload.UsageSemantic = ""
-	payload.UsageSource = ""
-	usage.BillingUsage = dto.NewOpenAIResponsesBillingUsage(&payload)
-	usage.UsageSemantic = dto.BillingUsageSemanticOpenAI
-	usage.UsageSource = dto.BillingUsageSourceOAIResponses
-	if usage.BillingUsage != nil {
-		usage.BillingUsage.Estimated = usage.Estimated
-		if originalBilling != nil {
-			usage.BillingUsage.Estimated = usage.BillingUsage.Estimated || originalBilling.Estimated
-			usage.BillingUsage.AnthropicInputCacheNormalized = originalBilling.AnthropicInputCacheNormalized
-		}
-	}
-	return usage
 }
 
 func ResponsesStatusFromChatFinishReason(finishReason string) (string, *dto.IncompleteDetails) {

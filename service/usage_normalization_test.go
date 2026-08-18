@@ -115,7 +115,7 @@ func TestNormalizeUsageForBillingProducesProtocolParity(t *testing.T) {
 				},
 			})},
 			wantMode:   UsageAccountingModeIncluded,
-			wantSource: UsageNormalizationSourceBillingUsage,
+			wantSource: UsageNormalizationSourceTotalTokens,
 			wantStatus: UsageNormalizationStatusMatched,
 		},
 		{
@@ -138,7 +138,7 @@ func TestNormalizeUsageForBillingProducesProtocolParity(t *testing.T) {
 				CachedContentTokenCount: 2432,
 			})},
 			wantMode:   UsageAccountingModeIncluded,
-			wantSource: UsageNormalizationSourceBillingUsage,
+			wantSource: UsageNormalizationSourceTotalTokens,
 			wantStatus: UsageNormalizationStatusMatched,
 		},
 	}
@@ -220,16 +220,15 @@ func TestNormalizeUsageForBillingUsesReconciliationBeforeFallback(t *testing.T) 
 	}
 }
 
-func TestNormalizeUsageForBillingExplicitProtocolOverridesContradictoryTotalTokens(t *testing.T) {
+func TestNormalizeUsageForBillingTotalTokensOverrideContradictoryMetadata(t *testing.T) {
 	tests := []struct {
-		name       string
-		usage      *dto.Usage
-		wantMode   string
-		wantSource string
-		wantInput  int
+		name      string
+		usage     *dto.Usage
+		wantMode  string
+		wantInput int
 	}{
 		{
-			name: "OpenAI semantic overrides separate equation",
+			name: "separate equation overrides OpenAI semantic",
 			usage: &dto.Usage{
 				PromptTokens:     70,
 				CompletionTokens: 20,
@@ -239,12 +238,11 @@ func TestNormalizeUsageForBillingExplicitProtocolOverridesContradictoryTotalToke
 					CachedTokens: 30,
 				},
 			},
-			wantMode:   UsageAccountingModeIncluded,
-			wantSource: UsageNormalizationSourceUsageSemantic,
-			wantInput:  40,
+			wantMode:  UsageAccountingModeSeparate,
+			wantInput: 70,
 		},
 		{
-			name: "OpenAI billing usage overrides separate equation",
+			name: "separate equation overrides OpenAI billing usage",
 			usage: &dto.Usage{BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
 				PromptTokens:     70,
 				CompletionTokens: 20,
@@ -253,12 +251,11 @@ func TestNormalizeUsageForBillingExplicitProtocolOverridesContradictoryTotalToke
 					CachedTokens: 30,
 				},
 			})},
-			wantMode:   UsageAccountingModeIncluded,
-			wantSource: UsageNormalizationSourceBillingUsage,
-			wantInput:  40,
+			wantMode:  UsageAccountingModeSeparate,
+			wantInput: 70,
 		},
 		{
-			name: "Anthropic source overrides included equation",
+			name: "included equation overrides Anthropic source",
 			usage: &dto.Usage{
 				PromptTokens:     100,
 				CompletionTokens: 20,
@@ -268,9 +265,8 @@ func TestNormalizeUsageForBillingExplicitProtocolOverridesContradictoryTotalToke
 					CachedTokens: 30,
 				},
 			},
-			wantMode:   UsageAccountingModeSeparate,
-			wantSource: UsageNormalizationSourceUsageSource,
-			wantInput:  100,
+			wantMode:  UsageAccountingModeIncluded,
+			wantInput: 70,
 		},
 	}
 
@@ -279,14 +275,10 @@ func TestNormalizeUsageForBillingExplicitProtocolOverridesContradictoryTotalToke
 			normalized := NormalizeUsageForBilling(test.usage)
 
 			assert.Equal(t, test.wantMode, normalized.Audit.Mode)
-			assert.Equal(t, test.wantSource, normalized.Audit.Source)
-			assert.Equal(t, UsageNormalizationStatusMismatch, normalized.Audit.Status)
+			assert.Equal(t, UsageNormalizationSourceTotalTokens, normalized.Audit.Source)
+			assert.Equal(t, UsageNormalizationStatusMatched, normalized.Audit.Status)
 			assert.Equal(t, test.wantInput, normalized.InputTokens.UncachedInputTokens)
-			if test.wantMode == UsageAccountingModeIncluded {
-				assert.Equal(t, 70, normalized.InputTokens.TotalInputTokens)
-			} else {
-				assert.Equal(t, 130, normalized.InputTokens.TotalInputTokens)
-			}
+			assert.Equal(t, 100, normalized.InputTokens.TotalInputTokens)
 		})
 	}
 }

@@ -132,7 +132,7 @@ func (s *ResponsesToChatStreamState) applyResponseMetadata(response *dto.OpenAIR
 		s.Created = int64(response.CreatedAt)
 	}
 	if response.Usage != nil {
-		s.Usage = UsageForOpenAIChat(response.Usage)
+		s.Usage = UsageFromResponsesUsage(response.Usage)
 	}
 }
 

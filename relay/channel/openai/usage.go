@@ -1,8 +1,6 @@
 package openai
 
 import (
-	"math"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -10,30 +8,10 @@ import (
 	"github.com/QuantumNous/new-api/service"
 )
 
-// applyUsagePostProcessing makes an OpenAI upstream response authoritative for
-// both settlement and any private billing usage forwarded to another gateway.
-// OpenAI prompt_tokens includes cached input, even when a malformed total_tokens
-// value looks like an Anthropic-style separate total.
-func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, responseBody []byte) bool {
+func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, responseBody []byte) {
 	if info == nil || usage == nil {
-		return false
+		return
 	}
-	reportedInput := usage.PromptTokens
-	if usage.InputTokens > reportedInput {
-		reportedInput = usage.InputTokens
-	}
-	if reportedInput < 0 {
-		reportedInput = 0
-	}
-	reportedOutput := usage.CompletionTokens
-	if usage.OutputTokens > reportedOutput {
-		reportedOutput = usage.OutputTokens
-	}
-	if reportedOutput < 0 {
-		reportedOutput = 0
-	}
-	totalMatches := reportedInput <= math.MaxInt-reportedOutput && usage.TotalTokens == reportedInput+reportedOutput
-	shouldRewriteResponseUsage := usage.BillingUsage != nil || !totalMatches
 
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:
@@ -71,25 +49,8 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 			}
 		}
 	}
-
-	// This adapter is receiving an OpenAI response. Do not let stale internal
-	// metadata or a provider's inconsistent total_tokens turn it into a
-	// cache-separate usage contract.
-	openAIUsage := *usage
-	openAIUsage.UsageSemantic = service.UsageSemanticOpenAI
-	openAIUsage.UsageSource = dto.BillingUsageSourceOAIChat
-	openAIUsage.BillingUsage = nil
-	normalized := service.NormalizeUsageForSemantic(&openAIUsage, service.UsageSemanticOpenAI)
-	if usage.BillingUsage != nil {
-		billing := dto.NewOpenAIChatBillingUsage(&normalized)
-		if billing != nil {
-			billing.Estimated = usage.BillingUsage.Estimated || normalized.Estimated
-			billing.AnthropicInputCacheNormalized = usage.BillingUsage.AnthropicInputCacheNormalized
-		}
-		normalized.BillingUsage = billing
-	}
+	normalized := service.NormalizeUsageForSemantic(usage, service.UsageSemanticOpenAI)
 	*usage = normalized
-	return shouldRewriteResponseUsage
 }
 
 func extractCachedTokensFromBody(body []byte) (int, bool) {

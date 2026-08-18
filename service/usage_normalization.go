@@ -134,25 +134,13 @@ func NormalizeUsageForBilling(usage *dto.Usage) BillingUsageNormalization {
 		separateMatches := reportedTotalTokens == separateTotal
 		switch {
 		case includedMatches && !separateMatches:
-			if mode == "" {
-				mode = UsageAccountingModeIncluded
-				source = UsageNormalizationSourceTotalTokens
-			}
-			if mode == UsageAccountingModeIncluded {
-				status = UsageNormalizationStatusMatched
-			} else {
-				status = UsageNormalizationStatusMismatch
-			}
+			mode = UsageAccountingModeIncluded
+			source = UsageNormalizationSourceTotalTokens
+			status = UsageNormalizationStatusMatched
 		case separateMatches && !includedMatches:
-			if mode == "" {
-				mode = UsageAccountingModeSeparate
-				source = UsageNormalizationSourceTotalTokens
-			}
-			if mode == UsageAccountingModeSeparate {
-				status = UsageNormalizationStatusMatched
-			} else {
-				status = UsageNormalizationStatusMismatch
-			}
+			mode = UsageAccountingModeSeparate
+			source = UsageNormalizationSourceTotalTokens
+			status = UsageNormalizationStatusMatched
 		case includedMatches && separateMatches:
 			// With no separately reported cache tokens both contracts are
 			// equivalent, so retain known metadata or choose the included form.

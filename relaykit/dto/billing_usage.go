@@ -12,53 +12,12 @@ const (
 )
 
 type BillingUsage struct {
-	Source                        string               `json:"source,omitempty"`
-	Semantic                      string               `json:"semantic,omitempty"`
-	Estimated                     bool                 `json:"estimated,omitempty"`
-	AnthropicInputCacheNormalized bool                 `json:"anthropic_input_cache_normalized,omitempty"`
-	OpenAIUsage                   *Usage               `json:"openai_usage,omitempty"`
-	ClaudeUsage                   *ClaudeUsage         `json:"claude_usage,omitempty"`
-	GeminiUsageMetadata           *GeminiUsageMetadata `json:"gemini_usage_metadata,omitempty"`
-}
-
-func (usage *BillingUsage) IsRecognized() bool {
-	if usage == nil {
-		return false
-	}
-	payloads := 0
-	if usage.OpenAIUsage != nil {
-		payloads++
-	}
-	if usage.ClaudeUsage != nil {
-		payloads++
-	}
-	if usage.GeminiUsageMetadata != nil {
-		payloads++
-	}
-	if payloads != 1 {
-		return false
-	}
-
-	switch {
-	case usage.OpenAIUsage != nil:
-		validSource := usage.Source == "" || usage.Source == BillingUsageSourceOAIChat || usage.Source == BillingUsageSourceOAIResponses
-		validSemantic := usage.Semantic == "" || usage.Semantic == BillingUsageSemanticOpenAI
-		return validSource && validSemantic && (usage.Source != "" || usage.Semantic != "")
-	case usage.ClaudeUsage != nil:
-		validSource := usage.Source == "" || usage.Source == BillingUsageSourceClaudeMessages
-		validSemantic := usage.Semantic == "" || usage.Semantic == BillingUsageSemanticAnthropic
-		return validSource && validSemantic && (usage.Source != "" || usage.Semantic != "")
-	case usage.GeminiUsageMetadata != nil:
-		validSource := usage.Source == "" || usage.Source == BillingUsageSourceGeminiChat
-		validSemantic := usage.Semantic == "" || usage.Semantic == BillingUsageSemanticGemini
-		return validSource && validSemantic && (usage.Source != "" || usage.Semantic != "")
-	default:
-		return false
-	}
-}
-
-func (usage *BillingUsage) HasNormalizedAnthropicInputCache() bool {
-	return usage != nil && usage.AnthropicInputCacheNormalized && usage.IsRecognized()
+	Source              string               `json:"source,omitempty"`
+	Semantic            string               `json:"semantic,omitempty"`
+	Estimated           bool                 `json:"estimated,omitempty"`
+	OpenAIUsage         *Usage               `json:"openai_usage,omitempty"`
+	ClaudeUsage         *ClaudeUsage         `json:"claude_usage,omitempty"`
+	GeminiUsageMetadata *GeminiUsageMetadata `json:"gemini_usage_metadata,omitempty"`
 }
 
 type KimiK3BillingAudit struct {

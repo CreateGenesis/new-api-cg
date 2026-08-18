@@ -184,8 +184,6 @@ type RelayInfo struct {
 	QuotaClamp *common.QuotaClamp
 	// UsageTokenLimitAudit records channel-level usage rewrites for the admin consume log.
 	UsageTokenLimitAudit *UsageTokenLimitAudit
-	// UsageEstimationAudit records channel-level missing usage repair for administrators.
-	UsageEstimationAudit *UsageEstimationAudit
 
 	// TieredBillingSnapshot captures tiered billing rules at pre-consume time.
 	// Auto-group retries refresh its group-dependent fields before each attempt
@@ -229,19 +227,6 @@ type UsageTokenLimitDirectionAudit struct {
 type UsageTokenLimitAudit struct {
 	Input  *UsageTokenLimitDirectionAudit `json:"input,omitempty"`
 	Output *UsageTokenLimitDirectionAudit `json:"output,omitempty"`
-}
-
-type UsageEstimationDirectionAudit struct {
-	Original   int     `json:"original"`
-	Base       int     `json:"base"`
-	Multiplier float64 `json:"multiplier"`
-	Final      int     `json:"final"`
-}
-
-type UsageEstimationAudit struct {
-	ModelFamily string                         `json:"model_family"`
-	Input       *UsageEstimationDirectionAudit `json:"input,omitempty"`
-	Output      *UsageEstimationDirectionAudit `json:"output,omitempty"`
 }
 
 func (info *RelayInfo) IsTNTTencentOpenAIConversion() bool {
@@ -337,14 +322,6 @@ type SimulatedModelCacheInfo struct {
 
 func (info *RelayInfo) CacheUsageValidationSplitEnabled() bool {
 	return info != nil && info.ChannelMeta != nil && (info.ChannelOtherSettings.CacheUsageValidationSplit || info.IsKimiK3OfficialCompatibility())
-}
-
-func (info *RelayInfo) UsageEstimationSettings() (dto.UsageEstimationSettings, bool) {
-	if info == nil || info.ChannelMeta == nil || info.ChannelOtherSettings.UsageEstimation == nil ||
-		!info.ChannelOtherSettings.UsageEstimation.Enabled {
-		return dto.UsageEstimationSettings{}, false
-	}
-	return info.ChannelOtherSettings.UsageEstimation.Normalize(), true
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
@@ -486,7 +463,6 @@ func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
 	info.UpstreamRequestBodySize = 0
 	info.SimulatedModelCacheInfo = nil
 	info.UsageTokenLimitAudit = nil
-	info.UsageEstimationAudit = nil
 	info.RequestConversionChain = nil
 	info.InitRequestConversionChain()
 	info.FinalRequestRelayFormat = ""
@@ -1094,7 +1070,6 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 	geminiSettings := model_setting.GetGeminiSettings()
 	options := &convmeta.Options{
 		Claude: convmeta.ClaudeOptions{
-			AnthropicInputIncludesCache:           info != nil && info.ChannelMeta != nil && info.ChannelOtherSettings.AnthropicInputIncludesCache,
 			ThinkingAdapterEnabled:                claudeSettings.ThinkingAdapterEnabled,
 			ThinkingAdapterBudgetTokensPercentage: claudeSettings.ThinkingAdapterBudgetTokensPercentage,
 			DefaultMaxTokens:                      claudeSettings.GetDefaultMaxTokens,

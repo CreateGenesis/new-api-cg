@@ -22,29 +22,15 @@
         "completion_tokens": 0,
         "total_tokens": 4,
         "usage_semantic": "openai",
-        "usage_source": "oai_chat",
+        "usage_source": "anthropic",
         "billing_usage": {
-          "source": "oai_chat",
-          "semantic": "openai",
-          "openai_usage": {
-            "prompt_tokens": 4,
-            "completion_tokens": 0,
-            "total_tokens": 4,
-            "prompt_tokens_details": {
-              "cached_tokens": 0,
-              "text_tokens": 0,
-              "audio_tokens": 0,
-              "image_tokens": 0
-            },
-            "completion_tokens_details": {
-              "text_tokens": 0,
-              "audio_tokens": 0,
-              "image_tokens": 0,
-              "reasoning_tokens": 0
-            },
+          "source": "claude_messages",
+          "semantic": "anthropic",
+          "claude_usage": {
             "input_tokens": 4,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
             "output_tokens": 0,
-            "input_tokens_details": null,
             "claude_cache_creation_5_m_tokens": 0,
             "claude_cache_creation_1_h_tokens": 0
           }
@@ -84,28 +70,7 @@
           "index": 0
         }
       ],
-      "usage": {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "prompt_tokens_details": {
-          "cached_tokens": 0,
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0
-        },
-        "completion_tokens_details": {
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0,
-          "reasoning_tokens": 0
-        },
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "input_tokens_details": null,
-        "claude_cache_creation_5_m_tokens": 0,
-        "claude_cache_creation_1_h_tokens": 0
-      }
+      "usage": null
     },
     {
       "id": "",
@@ -123,28 +88,7 @@
           "index": 0
         }
       ],
-      "usage": {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "prompt_tokens_details": {
-          "cached_tokens": 0,
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0
-        },
-        "completion_tokens_details": {
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0,
-          "reasoning_tokens": 0
-        },
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "input_tokens_details": null,
-        "claude_cache_creation_5_m_tokens": 0,
-        "claude_cache_creation_1_h_tokens": 0
-      }
+      "usage": null
     },
     {
       "id": "",
@@ -165,29 +109,15 @@
         "completion_tokens": 2,
         "total_tokens": 2,
         "usage_semantic": "openai",
-        "usage_source": "oai_chat",
+        "usage_source": "anthropic",
         "billing_usage": {
-          "source": "oai_chat",
-          "semantic": "openai",
-          "openai_usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 2,
-            "total_tokens": 2,
-            "prompt_tokens_details": {
-              "cached_tokens": 0,
-              "text_tokens": 0,
-              "audio_tokens": 0,
-              "image_tokens": 0
-            },
-            "completion_tokens_details": {
-              "text_tokens": 0,
-              "audio_tokens": 0,
-              "image_tokens": 0,
-              "reasoning_tokens": 0
-            },
+          "source": "claude_messages",
+          "semantic": "anthropic",
+          "claude_usage": {
             "input_tokens": 0,
-            "output_tokens": 0,
-            "input_tokens_details": null,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 2,
             "claude_cache_creation_5_m_tokens": 0,
             "claude_cache_creation_1_h_tokens": 0
           }
@@ -217,29 +147,15 @@
     "completion_tokens": 2,
     "total_tokens": 2,
     "usage_semantic": "openai",
-    "usage_source": "oai_chat",
+    "usage_source": "anthropic",
     "billing_usage": {
-      "source": "oai_chat",
-      "semantic": "openai",
-      "openai_usage": {
-        "prompt_tokens": 0,
-        "completion_tokens": 2,
-        "total_tokens": 2,
-        "prompt_tokens_details": {
-          "cached_tokens": 0,
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0
-        },
-        "completion_tokens_details": {
-          "text_tokens": 0,
-          "audio_tokens": 0,
-          "image_tokens": 0,
-          "reasoning_tokens": 0
-        },
+      "source": "claude_messages",
+      "semantic": "anthropic",
+      "claude_usage": {
         "input_tokens": 0,
-        "output_tokens": 0,
-        "input_tokens_details": null,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 2,
         "claude_cache_creation_5_m_tokens": 0,
         "claude_cache_creation_1_h_tokens": 0
       }

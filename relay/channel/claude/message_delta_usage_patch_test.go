@@ -126,27 +126,4 @@ func TestBuildMessageDeltaPatchUsage(t *testing.T) {
 		require.EqualValues(t, 50, usage.CacheCreation.Ephemeral5mInputTokens)
 		require.EqualValues(t, 0, usage.CacheCreation.Ephemeral1hInputTokens)
 	})
-
-	t.Run("only forwards normalized billing with compatibility enabled", func(t *testing.T) {
-		billingUsage := dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
-			InputTokens: 84, CacheReadInputTokens: 17664,
-		})
-		require.NotNil(t, billingUsage)
-		billingUsage.AnthropicInputCacheNormalized = true
-		response := &dto.ClaudeResponse{Usage: &dto.ClaudeUsage{
-			InputTokens: 84, CacheReadInputTokens: 17664, BillingUsage: billingUsage,
-		}}
-
-		disabled := buildMessageDeltaPatchUsage(response, &ClaudeResponseInfo{Usage: &dto.Usage{}})
-		assert.Nil(t, disabled.BillingUsage)
-		assert.NotContains(t, patchClaudeMessageDeltaUsageData(`{"type":"message_delta","usage":{}}`, disabled), "billing_usage")
-
-		enabled := buildMessageDeltaPatchUsage(response, &ClaudeResponseInfo{
-			Usage:                              &dto.Usage{},
-			PreserveNormalizedAnthropicBilling: true,
-		})
-		require.NotNil(t, enabled.BillingUsage)
-		assert.True(t, enabled.BillingUsage.HasNormalizedAnthropicInputCache())
-		assert.Contains(t, patchClaudeMessageDeltaUsageData(`{"type":"message_delta","usage":{}}`, enabled), `"anthropic_input_cache_normalized":true`)
-	})
 }

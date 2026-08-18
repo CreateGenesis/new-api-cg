@@ -174,9 +174,6 @@ func shouldPreserveReportedTextUsage(info *relaycommon.RelayInfo, usage *dto.Usa
 	if info == nil || info.ChannelMeta == nil || usage == nil {
 		return false
 	}
-	if _, enabled := info.UsageEstimationSettings(); enabled {
-		return true
-	}
 	if (info.ChannelOtherSettings.RetryZeroOutput || info.IsKimiK3OfficialCompatibility() || (info.IsGLM53OfficialCompatibility() && !info.IsStream)) && usage.UpstreamInputReported {
 		return true
 	}

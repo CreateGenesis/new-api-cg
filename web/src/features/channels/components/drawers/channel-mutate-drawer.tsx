@@ -312,7 +312,6 @@ const SENSITIVE_FORM_FIELDS = [
   'http2_connection_shards',
   'pass_through_body_enabled',
   'tnt_tencent_openai_conversion',
-  'anthropic_input_includes_cache',
   'kimi_k3_official_compatibility',
   'glm_5_3_official_compatibility',
   'deepseek_v4_official_compatibility',
@@ -329,10 +328,6 @@ const SENSITIVE_FORM_FIELDS = [
   'deepseek_v4_request_sanitization_enabled',
   'cache_usage_validation_split',
   'retry_zero_output',
-  'usage_estimation_enabled',
-  'usage_estimation_model_family',
-  'usage_estimation_input_multiplier',
-  'usage_estimation_output_multiplier',
   'disable_stream',
   'disable_non_stream',
   'usage_token_limit_input_tokens',
@@ -406,7 +401,6 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
     (values.type === 14 && values.tnt_tencent_openai_conversion) ||
-    (values.type === 14 && values.anthropic_input_includes_cache) ||
     ([1, 14, 25].includes(values.type) &&
       values.kimi_k3_official_compatibility) ||
     ([1, 14].includes(values.type) && values.glm_5_3_official_compatibility) ||
@@ -418,7 +412,6 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
     values.cache_usage_validation_split ||
     values.retry_zero_output ||
-    values.usage_estimation_enabled ||
     values.disable_stream ||
     values.disable_non_stream ||
     (values.usage_token_limit_input_tokens ?? 0) > 0 ||
@@ -886,9 +879,6 @@ export function ChannelMutateDrawer({
   const currentTNTTencentOpenAIConversion = form.watch(
     'tnt_tencent_openai_conversion'
   )
-  const currentAnthropicInputIncludesCache = form.watch(
-    'anthropic_input_includes_cache'
-  )
   const currentKimiK3OfficialCompatibility = form.watch(
     'kimi_k3_official_compatibility'
   )
@@ -920,7 +910,6 @@ export function ChannelMutateDrawer({
     'cache_usage_validation_split'
   )
   const currentRetryZeroOutput = form.watch('retry_zero_output')
-  const currentUsageEstimationEnabled = form.watch('usage_estimation_enabled')
   const currentDisableStream = form.watch('disable_stream')
   const currentDisableNonStream = form.watch('disable_non_stream')
   const currentUsageTokenLimitInputTokens = form.watch(
@@ -1243,7 +1232,6 @@ export function ChannelMutateDrawer({
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
     (currentType === 14 && currentTNTTencentOpenAIConversion) ||
-    (currentType === 14 && currentAnthropicInputIncludesCache) ||
     ([1, 14, 25].includes(currentType) && currentKimiK3OfficialCompatibility) ||
     ([1, 14].includes(currentType) && currentGLM53OfficialCompatibility) ||
     ([1, 14, 43].includes(currentType) &&
@@ -1285,7 +1273,6 @@ export function ChannelMutateDrawer({
   )
   const fallbackPolicyConfigured = Boolean(
     currentRetryZeroOutput ||
-    currentUsageEstimationEnabled ||
     currentDisableStream ||
     currentDisableNonStream ||
     (currentUsageTokenLimitInputTokens ?? 0) > 0 ||
@@ -5424,34 +5411,6 @@ export function ChannelMutateDrawer({
                                             'TNT Tencent-style OpenAI Conversion'
                                           )}
                                         </FormLabel>
-                                        <FormMessage />
-                                      </div>
-                                      <FormControl>
-                                        <Switch
-                                          checked={field.value}
-                                          onCheckedChange={field.onChange}
-                                        />
-                                      </FormControl>
-                                    </FormItem>
-                                  )}
-                                />
-                              )}
-
-                              {currentType === 14 && (
-                                <FormField
-                                  control={form.control}
-                                  name='anthropic_input_includes_cache'
-                                  render={({ field }) => (
-                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                                      <div className='space-y-0.5'>
-                                        <FormLabel>
-                                          {t('Anthropic Input Includes Cache')}
-                                        </FormLabel>
-                                        <FormDescription>
-                                          {t(
-                                            'Convert upstream Anthropic usage where input_tokens already includes cache tokens into separate standard counters.'
-                                          )}
-                                        </FormDescription>
                                         <FormMessage />
                                       </div>
                                       <FormControl>

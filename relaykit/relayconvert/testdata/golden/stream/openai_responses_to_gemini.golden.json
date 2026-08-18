@@ -85,14 +85,12 @@
     "prompt_tokens": 4,
     "completion_tokens": 2,
     "total_tokens": 6,
-    "usage_semantic": "openai",
-    "usage_source": "oai_chat",
     "billing_usage": {
-      "source": "oai_chat",
+      "source": "oai_responses",
       "semantic": "openai",
       "openai_usage": {
-        "prompt_tokens": 4,
-        "completion_tokens": 2,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
         "total_tokens": 6,
         "prompt_tokens_details": {
           "cached_tokens": 0,

@@ -19,11 +19,6 @@ type ClaudeResponseInfo struct {
 	ResponseText strings.Builder
 	Usage        *dto.Usage
 	Done         bool
-	// PreserveNormalizedAnthropicBilling is enabled by the host relay only
-	// when the channel explicitly opts into cache-inclusive Anthropic usage.
-	// Keeping this on the attempt state prevents private upstream billing
-	// metadata from changing the legacy path when the option is disabled.
-	PreserveNormalizedAnthropicBilling bool
 }
 
 func StopReasonClaudeToOpenAI(reason string) string {
@@ -177,30 +172,17 @@ func UsageFromClaudeAPIUsage(usage *dto.ClaudeUsage) *dto.Usage {
 		PromptTokens:     usage.InputTokens,
 		CompletionTokens: usage.OutputTokens,
 		UsageSemantic:    "anthropic",
-		UsageSource:      dto.BillingUsageSourceClaudeMessages,
-		BillingUsage:     dto.NewClaudeMessagesBillingUsage(usage),
+		UsageSource:      "anthropic",
+		BillingUsage:     dto.CloneBillingUsage(usage.BillingUsage),
 	}
-	if semanticUsage.BillingUsage != nil && usage.BillingUsage != nil {
-		semanticUsage.BillingUsage.Estimated = usage.BillingUsage.Estimated
-		semanticUsage.BillingUsage.AnthropicInputCacheNormalized = usage.BillingUsage.AnthropicInputCacheNormalized
+	if semanticUsage.BillingUsage == nil {
+		semanticUsage.BillingUsage = dto.NewClaudeMessagesBillingUsage(usage)
 	}
 	semanticUsage.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
 	semanticUsage.PromptTokensDetails.CachedCreationTokens = usage.CacheCreationInputTokens
 	semanticUsage.ClaudeCacheCreation5mTokens = usage.GetCacheCreation5mTokens()
 	semanticUsage.ClaudeCacheCreation1hTokens = usage.GetCacheCreation1hTokens()
-	return semanticUsage
-}
-
-func UsageFromClaudeBillingUsage(billing *dto.BillingUsage) *dto.Usage {
-	if billing == nil || billing.ClaudeUsage == nil {
-		return nil
-	}
-	usage := UsageFromClaudeUsage(UsageFromClaudeAPIUsage(billing.ClaudeUsage))
-	if usage != nil && usage.BillingUsage != nil {
-		usage.BillingUsage.Estimated = billing.Estimated
-		usage.BillingUsage.AnthropicInputCacheNormalized = billing.AnthropicInputCacheNormalized
-	}
-	return usage
+	return UsageFromClaudeUsage(semanticUsage)
 }
 
 func UsageFromClaudeUsage(usage *dto.Usage) *dto.Usage {
@@ -227,8 +209,7 @@ func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
 		return dto.Usage{}
 	}
 	clone := *usage
-	originalBilling := usage.BillingUsage
-	clone.BillingUsage = nil
+	clone.BillingUsage = dto.CloneBillingUsage(usage.BillingUsage)
 	clone.ClaudeCacheCreation5mTokens, clone.ClaudeCacheCreation1hTokens = sharedclaude.NormalizeCacheCreationSplit(
 		usage.PromptTokensDetails.CachedCreationTokens,
 		usage.ClaudeCacheCreation5mTokens,
@@ -243,18 +224,7 @@ func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
 	clone.InputTokens = totalInputTokens
 	clone.TotalTokens = totalInputTokens + usage.CompletionTokens
 	clone.UsageSemantic = "openai"
-	clone.UsageSource = dto.BillingUsageSourceOAIChat
-	billingPayload := clone
-	billingPayload.UsageSemantic = ""
-	billingPayload.UsageSource = ""
-	clone.BillingUsage = dto.NewOpenAIChatBillingUsage(&billingPayload)
-	if clone.BillingUsage != nil {
-		clone.BillingUsage.Estimated = usage.Estimated
-		if originalBilling != nil {
-			clone.BillingUsage.Estimated = clone.BillingUsage.Estimated || originalBilling.Estimated
-			clone.BillingUsage.AnthropicInputCacheNormalized = originalBilling.AnthropicInputCacheNormalized
-		}
-	}
+	clone.UsageSource = "anthropic"
 	return clone
 }
 
@@ -266,12 +236,6 @@ func BuildMessageDeltaPatchUsage(claudeResponse *dto.ClaudeResponse, claudeInfo 
 
 	if claudeInfo == nil || claudeInfo.Usage == nil {
 		return usage
-	}
-	if !claudeInfo.PreserveNormalizedAnthropicBilling || !usage.BillingUsage.HasNormalizedAnthropicInputCache() {
-		usage.BillingUsage = nil
-	}
-	if usage.BillingUsage == nil && claudeInfo.PreserveNormalizedAnthropicBilling && claudeInfo.Usage.BillingUsage.HasNormalizedAnthropicInputCache() {
-		usage.BillingUsage = dto.CloneBillingUsage(claudeInfo.Usage.BillingUsage)
 	}
 
 	if usage.InputTokens == 0 && claudeInfo.Usage.PromptTokens > 0 {
@@ -331,26 +295,6 @@ func claudeBillingUsageFromSemanticUsage(usage *dto.Usage) *dto.BillingUsage {
 	return dto.NewClaudeMessagesBillingUsage(claudeUsage)
 }
 
-func updateClaudeBillingUsage(apiUsage *dto.ClaudeUsage, semanticUsage *dto.Usage) *dto.BillingUsage {
-	current := dto.CloneBillingUsage(semanticUsage.BillingUsage)
-	inputCacheNormalized := current.HasNormalizedAnthropicInputCache()
-	if apiUsage != nil && apiUsage.BillingUsage.IsRecognized() {
-		incoming := dto.CloneBillingUsage(apiUsage.BillingUsage)
-		if incoming.HasNormalizedAnthropicInputCache() {
-			return incoming
-		}
-	}
-	if current != nil && current.IsRecognized() && current.ClaudeUsage == nil {
-		return current
-	}
-
-	billingUsage := claudeBillingUsageFromSemanticUsage(semanticUsage)
-	if billingUsage != nil && inputCacheNormalized {
-		billingUsage.AnthropicInputCacheNormalized = true
-	}
-	return billingUsage
-}
-
 func PatchClaudeMessageDeltaUsageData(data string, usage *dto.ClaudeUsage) string {
 	if data == "" || usage == nil {
 		return data
@@ -363,12 +307,6 @@ func PatchClaudeMessageDeltaUsageData(data string, usage *dto.ClaudeUsage) strin
 	if usage.CacheCreation != nil {
 		data = setMessageDeltaUsageInt(data, "usage.cache_creation.ephemeral_5m_input_tokens", usage.CacheCreation.Ephemeral5mInputTokens)
 		data = setMessageDeltaUsageInt(data, "usage.cache_creation.ephemeral_1h_input_tokens", usage.CacheCreation.Ephemeral1hInputTokens)
-	}
-	if usage.BillingUsage.HasNormalizedAnthropicInputCache() {
-		billingData, err := kitutil.Marshal(usage.BillingUsage)
-		if err == nil {
-			data, _ = sjson.SetRaw(data, "usage.billing_usage", string(billingData))
-		}
 	}
 
 	return data
@@ -412,11 +350,7 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 			claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Message.Usage.GetCacheCreation5mTokens()
 			claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Message.Usage.GetCacheCreation1hTokens()
 			claudeInfo.Usage.CompletionTokens = claudeResponse.Message.Usage.OutputTokens
-			if claudeInfo.PreserveNormalizedAnthropicBilling {
-				claudeInfo.Usage.BillingUsage = updateClaudeBillingUsage(claudeResponse.Message.Usage, claudeInfo.Usage)
-			} else {
-				claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
-			}
+			claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
 		}
 	} else if claudeResponse.Type == "content_block_delta" {
 		if claudeResponse.Delta != nil {
@@ -449,11 +383,7 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 				claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
 			}
 			claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
-			if claudeInfo.PreserveNormalizedAnthropicBilling {
-				claudeInfo.Usage.BillingUsage = updateClaudeBillingUsage(claudeResponse.Usage, claudeInfo.Usage)
-			} else {
-				claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
-			}
+			claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
 		}
 
 		claudeInfo.Done = true

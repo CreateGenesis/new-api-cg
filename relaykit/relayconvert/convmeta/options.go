@@ -21,10 +21,6 @@ type Options struct {
 }
 
 type ClaudeOptions struct {
-	// AnthropicInputIncludesCache converts non-standard upstream usage where
-	// input_tokens already includes cache-read and cache-creation tokens into
-	// Anthropic's separate input counters.
-	AnthropicInputIncludesCache bool
 	// ThinkingAdapterEnabled turns "-thinking"-suffixed OpenAI model names
 	// into Claude extended-thinking requests.
 	ThinkingAdapterEnabled bool

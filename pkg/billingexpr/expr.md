@@ -200,12 +200,12 @@ Different upstream APIs report input tokens differently:
 When `cache_usage_validation_split` is enabled for the selected channel, the
 gateway resolves that contract from preserved `BillingUsage` metadata,
 recognized usage source/semantic markers, and the upstream total-token equation.
-Recognized protocol metadata is authoritative. The total-token equation is used
-to infer the contract only when protocol metadata is unavailable; when the two
-contradict each other, the gateway keeps the explicit protocol contract and
-records an administrator-visible mismatch marker. If neither source is
-available, the gateway falls back to the included-cache contract. Disabled
-channels do not run this validation and keep the legacy billing and logging path.
+When the total-token equation uniquely identifies one contract, it takes
+precedence over protocol metadata. Metadata is used when the total is missing or
+cannot distinguish the contracts. If metadata is also unavailable, the gateway
+falls back to the included-cache contract. Missing or inconsistent evidence is
+recorded in an administrator-visible audit marker. Disabled channels do not run
+this validation and keep the legacy billing and logging path.
 
 The normalized `p` starts at canonical total input and means "tokens not separately priced" after subtracting sub-categories **only when the expression references them**. This is determined by walking the compiled AST to find `IdentifierNode` references — zero runtime cost after first compilation (cached).
 

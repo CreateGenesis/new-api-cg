@@ -30,7 +30,6 @@ type channelOutputRecorder struct {
 	stream               bool
 	retryZeroOutput      bool
 	validateUsage        bool
-	estimateUsage        bool
 	bufferLimit          int
 	status               int
 	statusWritten        bool
@@ -48,8 +47,6 @@ type channelOutputRecorder struct {
 	contentMatcher       *responseContentMatcher
 	policyErr            error
 	deliveryErr          error
-	usageEstimated       bool
-	usagePrepared        bool
 }
 
 func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, validateUsage bool, contentPolicy operation_setting.ResponseContentRetryPolicy, bufferLimit int) *channelOutputRecorder {
@@ -67,7 +64,6 @@ func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.Relay
 		recorder.format = info.RelayFormat
 		recorder.relayMode = info.RelayMode
 		recorder.stream = info.IsStream
-		_, recorder.estimateUsage = info.UsageEstimationSettings()
 	}
 	return recorder
 }
@@ -132,7 +128,7 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 	}
 
 	if w.streamPending.Len()+w.streamPrefix.Len()+w.streamTail.Len()+len(data) > w.bufferLimit && !w.committed {
-		if (w.retryZeroOutput && !w.effectiveOutput) || (!w.committed && (w.validateUsage || w.estimateUsage)) {
+		if (w.retryZeroOutput && !w.effectiveOutput) || (!w.committed && w.validateUsage) {
 			w.policyErr = errChannelOutputPrefixTooLarge
 			return 0, w.policyErr
 		}
@@ -186,7 +182,7 @@ func (w *channelOutputRecorder) processStreamEvents() error {
 			return nil
 		}
 		event := w.streamPending.Next(boundaryIndex + boundaryLength)
-		isTail := (w.retryZeroOutput || w.validateUsage || w.estimateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
+		isTail := (w.retryZeroOutput || w.validateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
 		observeOutput := !shouldSkipTerminalOutputObservation(w.format, event, w.effectiveOutput)
 		if err := w.observeStreamEvent(event, observeOutput); err != nil {
 			return err
@@ -258,20 +254,6 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		return nil
 	}
 
-	if w.stream && !clientGone {
-		if err := w.finishPendingStreamBytes(); err != nil {
-			if w.deliveryErr != nil {
-				w.markClientGone(c, info)
-				return nil
-			}
-			w.abortCommittedStream()
-			return channelOutputPolicyError(err)
-		}
-	}
-	if w.estimateUsage {
-		w.prepareUsageEstimation(c, info, usage, nil)
-	}
-
 	usageModified := false
 	if w.validateUsage {
 		var err error
@@ -293,7 +275,16 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		return nil
 	}
 
-	if !w.stream && !w.usagePrepared {
+	if w.stream {
+		if err := w.finishPendingStreamBytes(); err != nil {
+			if w.deliveryErr != nil {
+				w.markClientGone(c, info)
+				return nil
+			}
+			w.abortCommittedStream()
+			return channelOutputPolicyError(err)
+		}
+	} else {
 		var payload map[string]any
 		if common.Unmarshal(w.body.Bytes(), &payload) == nil {
 			w.observeUsagePresence(payload)
@@ -312,8 +303,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		return channelResponseContentMatchError()
 	}
 
-	inputUsageReported := usage != nil && (w.inputUsageObserved || usage.UpstreamInputReported || usage.EstimatedInput)
-	if w.retryZeroOutput && !streamInterrupted && !w.effectiveOutput && inputUsageReported && usage != nil && (!usage.Estimated || info != nil && info.UsageEstimationAudit != nil) {
+	inputUsageReported := usage != nil && (w.inputUsageObserved || usage.UpstreamInputReported)
+	if w.retryZeroOutput && !streamInterrupted && !w.effectiveOutput && inputUsageReported && usage != nil && !usage.Estimated {
 		normalized := service.NormalizeUsageForBilling(usage)
 		if normalized.InputTokens.TotalInputTokens <= 0 {
 			return channelZeroOutputError(errors.New("upstream returned no effective output"))
@@ -322,14 +313,14 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 
 	if w.validateUsage && !streamInterrupted {
 		var err error
-		if usage != nil && info != nil && info.ChannelOtherSettings.UsageTokenLimit != nil {
+		if usage != nil && !usage.Estimated && info != nil && info.ChannelOtherSettings.UsageTokenLimit != nil {
 			limits := info.ChannelOtherSettings.UsageTokenLimit
 			normalized := service.NormalizeUsageForBilling(usage)
-			inputReported := w.inputUsageObserved || usage.UpstreamInputReported || usage.EstimatedInput
-			outputReported := w.outputUsageObserved || usage.UpstreamOutputReported || usage.EstimatedOutput
-			if limits.InputTokens > 0 && inputReported && normalized.InputTokens.TotalInputTokens <= 0 && !usage.EstimatedInput {
+			inputReported := w.inputUsageObserved || usage.UpstreamInputReported
+			outputReported := w.outputUsageObserved || usage.UpstreamOutputReported
+			if limits.InputTokens > 0 && inputReported && normalized.InputTokens.TotalInputTokens <= 0 {
 				err = service.ErrUpstreamUsageMissingInput
-			} else if limits.OutputTokens > 0 && outputReported && normalized.OutputTokens <= 0 && !usage.EstimatedOutput {
+			} else if limits.OutputTokens > 0 && outputReported && normalized.OutputTokens <= 0 {
 				err = service.ErrUpstreamUsageMissingOutput
 			}
 		}
@@ -349,8 +340,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 
 	if !w.stream {
 		body := w.body.Bytes()
-		if usageModified || w.usageEstimated {
-			body = service.PatchUsageResponseBody(w.format, w.header.Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info), w.usageEstimated)
+		if usageModified {
+			body = service.PatchSimulatedModelCacheResponseBody(w.format, w.header.Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
 		}
 		w.header.Set("Content-Length", strconv.Itoa(len(body)))
 		if err := w.commitHeader(); err != nil {
@@ -374,9 +365,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		w.streamPrefix.Reset()
 	}
 	tail := w.streamTail.Bytes()
-	if (usageModified || w.usageEstimated) && len(tail) > 0 {
-		ensureUsage := w.usageEstimated && (w.format != types.RelayFormatOpenAI || info == nil || info.ShouldIncludeUsage)
-		tail = service.PatchUsageResponseBody(w.format, "text/event-stream", tail, usage, simulatedModelCacheResponseModel(info), ensureUsage)
+	if usageModified && len(tail) > 0 {
+		tail = service.PatchSimulatedModelCacheResponseBody(w.format, "text/event-stream", tail, usage, simulatedModelCacheResponseModel(info))
 	}
 	if err := w.writeCommitted(tail); err != nil {
 		w.markClientGone(c, info)
@@ -385,37 +375,6 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	w.streamTail.Reset()
 	w.ResponseWriter.Flush()
 	return nil
-}
-
-func (w *channelOutputRecorder) prepareUsageEstimation(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage, externalBody []byte) {
-	if w.usagePrepared || !w.estimateUsage || usage == nil {
-		return
-	}
-	if !w.stream {
-		body := w.body.Bytes()
-		if len(externalBody) > 0 {
-			body = externalBody
-		}
-		if len(body) > 0 {
-			var payload map[string]any
-			if common.Unmarshal(body, &payload) == nil {
-				w.observeUsagePresence(payload)
-				if w.observeEffectiveOutput(payload) {
-					w.effectiveOutput = true
-				}
-				observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, false)
-			}
-		}
-	}
-	w.usagePrepared = true
-	w.usageEstimated = applyChannelUsageEstimation(c, info, usage, w.outputText.String(), w.effectiveOutput)
-}
-
-func (w *channelOutputRecorder) prepareUsageEstimationFromBody(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage, body []byte) {
-	if !w.estimateUsage || w.usagePrepared {
-		return
-	}
-	w.prepareUsageEstimation(c, info, usage, body)
 }
 
 func (w *channelOutputRecorder) observeEffectiveOutput(payload map[string]any) bool {
@@ -465,8 +424,7 @@ func (w *channelOutputRecorder) finishPendingStreamBytes() error {
 	if err := w.observeStreamEvent(pending, observeOutput); err != nil {
 		return err
 	}
-	if (w.retryZeroOutput || w.validateUsage || w.estimateUsage) &&
-		(w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
+	if (w.retryZeroOutput || w.validateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
 		w.holdingStreamTail = true
 		_, _ = w.streamTail.Write(pending)
 		return nil

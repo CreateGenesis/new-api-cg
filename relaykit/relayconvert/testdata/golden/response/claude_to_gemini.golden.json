@@ -39,6 +39,8 @@
         "prompt_tokens": 15,
         "completion_tokens": 5,
         "total_tokens": 20,
+        "usage_semantic": "openai",
+        "usage_source": "anthropic",
         "prompt_tokens_details": {
           "cached_tokens": 3,
           "cached_creation_tokens": 2,

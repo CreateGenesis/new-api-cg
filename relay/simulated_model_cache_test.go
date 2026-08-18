@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -128,43 +127,6 @@ func TestSimulatedModelCacheModelNameSharesRequestedModelAcrossChannels(t *testi
 
 	assert.Equal(t, "shared-model", simulatedModelCacheModelName(first))
 	assert.Equal(t, simulatedModelCacheModelName(first), simulatedModelCacheModelName(second))
-}
-
-func TestSimulatedModelCacheEstimationRunsBeforeCacheRewrite(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	info := &relaycommon.RelayInfo{
-		RelayFormat: types.RelayFormatOpenAI,
-		Request:     &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: strings.Repeat("cache input ", 1200)}}},
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelId: 7,
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				UsageEstimation: &dto.UsageEstimationSettings{Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyGLM},
-			},
-		},
-	}
-	attempt := &simulatedModelCacheAttempt{
-		settings: dto.SimulatedModelCacheSettings{Enabled: true},
-		visible:  true,
-		partialMatch: &simulatedModelCacheTestMatchTask{result: service.SimulatedModelCachePartialMatchResult{
-			Match: service.SimulatedModelCachePartialMatch{Found: true, MatchRatio: 0.5},
-		}, ready: true},
-		estimateUsage: true,
-	}
-	recorder := beginSimulatedModelCacheRecorder(c, info, attempt)
-	require.NotNil(t, recorder)
-	_, err := c.Writer.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":0,"completion_tokens":4,"total_tokens":4}}`))
-	require.NoError(t, err)
-	usage := &dto.Usage{CompletionTokens: 4, OutputTokens: 4, TotalTokens: 4, UpstreamInputReported: true, UpstreamOutputReported: true}
-	expectedInput := service.EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyGLM, types.RelayFormatOpenAI, info.Request.GetTokenCountMeta())
-
-	require.Nil(t, finishSimulatedModelCacheRecorder(c, info, attempt, recorder, usage))
-	normalized := service.NormalizeUsageForBilling(usage)
-	assert.Equal(t, expectedInput, normalized.InputTokens.TotalInputTokens)
-	assert.Greater(t, normalized.InputTokens.CacheReadInputTokens, 0)
-	assert.Contains(t, w.Body.String(), `"cached_tokens"`)
 }
 
 func TestSimulatedModelCacheModelNameFallsBackToUpstreamModel(t *testing.T) {

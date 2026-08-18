@@ -453,36 +453,6 @@ func TestCalculateTextQuotaSummaryCacheValidationSplitIsChannelScoped(t *testing
 	assert.Equal(t, UsageNormalizationSourceTotalTokens, enabled.UsageNormalization.Audit.Source)
 }
 
-func TestCalculateTextQuotaSummaryOpenAIMetadataWinsOverSeparateTotal(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	relayInfo := &relaycommon.RelayInfo{
-		OriginModelName: "openai-cache-contract",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
-		},
-		PriceData: hosttypes.PriceData{
-			ModelRatio: 1, CompletionRatio: 1, CacheRatio: 0.1,
-			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
-		},
-		StartTime: time.Now(),
-	}
-	usage := &dto.Usage{
-		PromptTokens: 87, CompletionTokens: 16, TotalTokens: 190,
-		UsageSemantic:       UsageSemanticOpenAI,
-		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 87},
-	}
-
-	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
-
-	assert.Equal(t, UsageAccountingModeIncluded, summary.UsageNormalization.Audit.Mode)
-	assert.Equal(t, UsageNormalizationStatusMismatch, summary.UsageNormalization.Audit.Status)
-	assert.Zero(t, summary.PromptTokens)
-	assert.Equal(t, 87, summary.CacheTokens)
-	assert.Equal(t, 16, summary.CompletionTokens)
-	assert.Equal(t, 25, summary.Quota)
-}
-
 func TestUsageBillingPathForLog(t *testing.T) {
 	require.Equal(t, usageBillingPathAnthropic, usageBillingPathForLog(true, &dto.Usage{
 		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),

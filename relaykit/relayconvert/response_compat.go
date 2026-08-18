@@ -7,7 +7,6 @@ import (
 	geminichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/gemini_chat"
 	oaichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_chat"
 	oairesponses "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_responses"
-	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
 )
 
 type ClaudeResponseInfo = claudemessages.ClaudeResponseInfo
@@ -19,10 +18,6 @@ type ResponsesBufferedAccumulator = oairesponses.ResponsesBufferedAccumulator
 
 func NormalizeCacheCreationSplit(totalTokens int, tokens5m int, tokens1h int) (int, int) {
 	return oaichat.NormalizeCacheCreationSplit(totalTokens, tokens5m, tokens1h)
-}
-
-func NormalizeAnthropicInputIncludesCache(usage *dto.ClaudeUsage) bool {
-	return sharedclaude.NormalizeInputIncludesCache(usage)
 }
 
 func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info convmeta.Meta) *dto.ClaudeResponse {
@@ -49,20 +44,8 @@ func UsageFromClaudeAPIUsage(usage *dto.ClaudeUsage) *dto.Usage {
 	return claudemessages.UsageFromClaudeAPIUsage(usage)
 }
 
-func UsageFromClaudeBillingUsage(billing *dto.BillingUsage) *dto.Usage {
-	return claudemessages.UsageFromClaudeBillingUsage(billing)
-}
-
 func UsageFromClaudeUsage(usage *dto.Usage) *dto.Usage {
 	return claudemessages.UsageFromClaudeUsage(usage)
-}
-
-func UsageForOpenAIResponses(usage *dto.Usage) *dto.Usage {
-	return oaichat.UsageForOpenAIResponses(usage)
-}
-
-func UsageForOpenAIChat(usage *dto.Usage) *dto.Usage {
-	return oairesponses.UsageForOpenAIChat(usage)
 }
 
 func BuildMessageDeltaPatchUsage(claudeResponse *dto.ClaudeResponse, claudeInfo *ClaudeResponseInfo) *dto.ClaudeUsage {

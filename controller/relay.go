@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -755,11 +757,39 @@ func conservativeInputTokensForRouting(relayFormat types.RelayFormat, meta *type
 }
 
 func glm52InputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
-	return service.EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyGLM, relayFormat, meta)
+	if meta == nil {
+		return 0
+	}
+	runeCount := utf8.RuneCountInString(meta.CombineText)
+	textTokens := runeCount/8*5 + (runeCount%8*5+7)/8
+	return textTokens + inputTokenRoutingOverhead(relayFormat, meta)
 }
 
 func kimiK3InputTokensForRouting(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {
-	return service.EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyKimi, relayFormat, meta)
+	if meta == nil {
+		return 0
+	}
+
+	denseScriptCharacters := 0
+	otherCharacters := 0
+	for _, character := range meta.CombineText {
+		if unicode.In(character, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) ||
+			(character >= 0xFF00 && character <= 0xFFEF) {
+			denseScriptCharacters++
+		} else {
+			otherCharacters++
+		}
+	}
+	denseScriptTokens := denseScriptCharacters/3*2 + (denseScriptCharacters%3*2+2)/3
+	otherTokens := otherCharacters/31*10 + (otherCharacters%31*10+30)/31
+	tokens := denseScriptTokens + otherTokens + inputTokenRoutingFramingOverhead(relayFormat, meta)
+	for _, file := range meta.Files {
+		if file != nil {
+			tokens += 5001
+			break
+		}
+	}
+	return tokens
 }
 
 func inputTokenRoutingOverhead(relayFormat types.RelayFormat, meta *types.TokenCountMeta) int {

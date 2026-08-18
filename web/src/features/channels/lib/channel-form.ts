@@ -383,7 +383,6 @@ export const channelFormSchema = z
     http2_connection_shards: z.number().int().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     tnt_tencent_openai_conversion: z.boolean().optional(),
-    anthropic_input_includes_cache: z.boolean().optional(),
     kimi_k3_official_compatibility: z.boolean().optional(),
     glm_5_3_official_compatibility: z.boolean().optional(),
     deepseek_v4_official_compatibility: z.boolean().optional(),
@@ -406,16 +405,6 @@ export const channelFormSchema = z
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
     retry_zero_output: z.boolean().optional(),
-    usage_estimation_enabled: z.boolean().optional(),
-    usage_estimation_model_family: z
-      .enum(['glm', 'kimi', 'deepseek'])
-      .optional(),
-    usage_estimation_input_multiplier: z.number().min(0.01).max(100).optional(),
-    usage_estimation_output_multiplier: z
-      .number()
-      .min(0.01)
-      .max(100)
-      .optional(),
     disable_stream: z.boolean().optional(),
     disable_non_stream: z.boolean().optional(),
     usage_token_limit_input_tokens: z.number().optional(),
@@ -675,16 +664,6 @@ export const channelFormSchema = z
       const message =
         'TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.'
       addRequiredIssue(ctx, 'tnt_tencent_openai_conversion', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      data.type === 14 &&
-      data.anthropic_input_includes_cache &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'Anthropic input cache conversion cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'anthropic_input_includes_cache', message)
       addRequiredIssue(ctx, 'pass_through_body_enabled', message)
     }
     if (
@@ -964,7 +943,6 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http2_connection_shards: 1,
   pass_through_body_enabled: false,
   tnt_tencent_openai_conversion: false,
-  anthropic_input_includes_cache: false,
   kimi_k3_official_compatibility: false,
   glm_5_3_official_compatibility: false,
   deepseek_v4_official_compatibility: false,
@@ -987,10 +965,6 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
   retry_zero_output: false,
-  usage_estimation_enabled: false,
-  usage_estimation_model_family: 'glm',
-  usage_estimation_input_multiplier: 1,
-  usage_estimation_output_multiplier: 1,
   disable_stream: false,
   disable_non_stream: false,
   usage_token_limit_input_tokens: 0,
@@ -1102,16 +1076,11 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
   let tntTencentOpenAIConversion = false
-  let anthropicInputIncludesCache = false
   let kimiK3OfficialCompatibility = false
   let glm53OfficialCompatibility = false
   let deepSeekV4OfficialCompatibility = false
   let cacheUsageValidationSplit = false
   let retryZeroOutput = false
-  let usageEstimationEnabled = false
-  let usageEstimationModelFamily: 'glm' | 'kimi' | 'deepseek' = 'glm'
-  let usageEstimationInputMultiplier = 1
-  let usageEstimationOutputMultiplier = 1
   let disableStream = false
   let disableNonStream = false
   let usageTokenLimitInputTokens = 0
@@ -1165,8 +1134,6 @@ export function transformChannelToFormDefaults(
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       tntTencentOpenAIConversion =
         channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
-      anthropicInputIncludesCache =
-        channel.type === 14 && parsed.anthropic_input_includes_cache === true
       kimiK3OfficialCompatibility =
         [1, 14, 25].includes(channel.type) &&
         parsed.kimi_k3_official_compatibility === true
@@ -1178,21 +1145,6 @@ export function transformChannelToFormDefaults(
         parsed.deepseek_v4_official_compatibility === true
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
-      if (parsed.usage_estimation && typeof parsed.usage_estimation === 'object') {
-        const usageEstimation = parsed.usage_estimation as Record<string, unknown>
-        usageEstimationEnabled = usageEstimation.enabled === true
-        if (['glm', 'kimi', 'deepseek'].includes(String(usageEstimation.model_family))) {
-          usageEstimationModelFamily = usageEstimation.model_family as 'glm' | 'kimi' | 'deepseek'
-        }
-        const inputMultiplier = Number(usageEstimation.input_multiplier)
-        const outputMultiplier = Number(usageEstimation.output_multiplier)
-        if (Number.isFinite(inputMultiplier) && inputMultiplier >= 0.01 && inputMultiplier <= 100) {
-          usageEstimationInputMultiplier = inputMultiplier
-        }
-        if (Number.isFinite(outputMultiplier) && outputMultiplier >= 0.01 && outputMultiplier <= 100) {
-          usageEstimationOutputMultiplier = outputMultiplier
-        }
-      }
       disableStream = parsed.disable_stream === true
       disableNonStream = parsed.disable_non_stream === true
       if (
@@ -1483,7 +1435,6 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
-    anthropic_input_includes_cache: anthropicInputIncludesCache,
     kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
     glm_5_3_official_compatibility: glm53OfficialCompatibility,
     deepseek_v4_official_compatibility: deepSeekV4OfficialCompatibility,
@@ -1491,10 +1442,6 @@ export function transformChannelToFormDefaults(
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
     retry_zero_output: retryZeroOutput,
-    usage_estimation_enabled: usageEstimationEnabled,
-    usage_estimation_model_family: usageEstimationModelFamily,
-    usage_estimation_input_multiplier: usageEstimationInputMultiplier,
-    usage_estimation_output_multiplier: usageEstimationOutputMultiplier,
     disable_stream: disableStream,
     disable_non_stream: disableNonStream,
     usage_token_limit_input_tokens: usageTokenLimitInputTokens,
@@ -1670,11 +1617,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     } else if ('tnt_tencent_openai_conversion' in settingsObj) {
       delete settingsObj.tnt_tencent_openai_conversion
     }
-    if (formData.anthropic_input_includes_cache === true) {
-      settingsObj.anthropic_input_includes_cache = true
-    } else if ('anthropic_input_includes_cache' in settingsObj) {
-      delete settingsObj.anthropic_input_includes_cache
-    }
   } else {
     if ('allow_speed' in settingsObj) {
       delete settingsObj.allow_speed
@@ -1684,9 +1626,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
     if ('tnt_tencent_openai_conversion' in settingsObj) {
       delete settingsObj.tnt_tencent_openai_conversion
-    }
-    if ('anthropic_input_includes_cache' in settingsObj) {
-      delete settingsObj.anthropic_input_includes_cache
     }
   }
 
@@ -1739,23 +1678,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.retry_zero_output = true
   } else if ('retry_zero_output' in settingsObj) {
     delete settingsObj.retry_zero_output
-  }
-
-  if (formData.usage_estimation_enabled === true) {
-    settingsObj.usage_estimation = {
-      enabled: true,
-      model_family: formData.usage_estimation_model_family || 'glm',
-      input_multiplier: Math.min(
-        100,
-        Math.max(0.01, Number(formData.usage_estimation_input_multiplier) || 1)
-      ),
-      output_multiplier: Math.min(
-        100,
-        Math.max(0.01, Number(formData.usage_estimation_output_multiplier) || 1)
-      ),
-    }
-  } else {
-    delete settingsObj.usage_estimation
   }
 
   delete settingsObj.retry_zero_billed_output
