@@ -153,7 +153,7 @@ func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
 	assert.True(t, corrected.BillingUsage.HasNormalizedAnthropicInputCache())
 }
 
-func TestBuildClaudeUsageFromOpenAICacheReadUsesChannelOption(t *testing.T) {
+func TestBuildClaudeUsageFromOpenAICacheReadAlwaysSplitsAnthropicInput(t *testing.T) {
 	openAIUsage := &dto.Usage{
 		PromptTokens:     17748,
 		CompletionTokens: 12,
@@ -164,7 +164,7 @@ func TestBuildClaudeUsageFromOpenAICacheReadUsesChannelOption(t *testing.T) {
 	}
 
 	legacy := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{})
-	assert.Equal(t, 17748, legacy.InputTokens)
+	assert.Equal(t, 84, legacy.InputTokens)
 	assert.False(t, legacy.BillingUsage.AnthropicInputCacheNormalized)
 
 	corrected := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{

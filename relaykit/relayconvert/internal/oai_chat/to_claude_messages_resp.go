@@ -75,15 +75,14 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *d
 			compatibilityEnabled = options.Claude.AnthropicInputIncludesCache
 		}
 	}
-	inputTokens := oaiUsage.PromptTokens
-	if !compatibilityEnabled && oaiUsage.PromptTokensDetails.CacheWriteTokens > 0 {
-		// Preserve the legacy OpenAI cache-write conversion when the
-		// Anthropic cache-inclusive compatibility option is disabled.
-		inputTokens -= oaiUsage.PromptTokensDetails.CachedTokens
-		inputTokens -= cacheCreationTokens
-		if inputTokens < 0 {
-			inputTokens = 0
-		}
+	// OpenAI prompt_tokens is an inclusive total. Anthropic input_tokens is
+	// the uncached portion, so every OpenAI -> Claude conversion must split
+	// cache reads/writes out before emitting the Claude usage object. Gating
+	// this subtraction on cache-write metadata leaves cache-read-only usage
+	// inclusive and causes the next gateway hop to count it twice.
+	inputTokens := oaiUsage.PromptTokens - oaiUsage.PromptTokensDetails.CachedTokens - cacheCreationTokens
+	if inputTokens < 0 {
+		inputTokens = 0
 	}
 	usage := &dto.ClaudeUsage{
 		InputTokens:              inputTokens,
@@ -98,8 +97,11 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *d
 			Ephemeral1hInputTokens: cacheCreation1h,
 		}
 	}
-	if compatibilityEnabled {
-		sharedclaude.NormalizeInputIncludesCache(usage)
+	if compatibilityEnabled && usage.BillingUsage != nil {
+		// The numeric split above is already canonical. Keep the marker for
+		// channels that explicitly expose the compatibility metadata without
+		// subtracting the cache a second time.
+		usage.BillingUsage.AnthropicInputCacheNormalized = true
 	}
 	return usage
 }

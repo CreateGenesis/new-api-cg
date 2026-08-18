@@ -402,6 +402,146 @@ func TestConvertResponsePreservesBillingUsageAcrossChatResponsesBridge(t *testin
 	assert.Equal(t, 4, toChat.Usage.BillingUsage.OpenAIUsage.PromptTokensDetails.CachedCreationTokens)
 }
 
+func TestOfficialGatewayCascadeUsageParity(t *testing.T) {
+	const (
+		uncachedInput = 84
+		cacheRead     = 17664
+		cacheCreation = 200
+		output        = 12
+	)
+	inclusiveInput := uncachedInput + cacheRead + cacheCreation
+
+	// These helpers model official gateways: only standard protocol usage is
+	// consumed, and private billing_usage metadata is deliberately ignored.
+	officialClaudeFromOpenAI := func(usage *dto.Usage) *dto.ClaudeUsage {
+		cacheReadTokens := usage.PromptTokensDetails.CachedTokens
+		cacheCreationTokens := usage.PromptTokensDetails.CacheCreationTokensTotal()
+		inputTokens := usage.PromptTokens - cacheReadTokens - cacheCreationTokens
+		if inputTokens < 0 {
+			inputTokens = 0
+		}
+		return &dto.ClaudeUsage{
+			InputTokens:              inputTokens,
+			CacheReadInputTokens:     cacheReadTokens,
+			CacheCreationInputTokens: cacheCreationTokens,
+			OutputTokens:             usage.CompletionTokens,
+		}
+	}
+	officialOpenAIFromClaude := func(usage *dto.ClaudeUsage) *dto.Usage {
+		promptTokens := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+		return &dto.Usage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: usage.OutputTokens,
+			TotalTokens:      promptTokens + usage.OutputTokens,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens:         usage.CacheReadInputTokens,
+				CachedCreationTokens: usage.CacheCreationInputTokens,
+			},
+		}
+	}
+	assertOpenAIUsage := func(t *testing.T, usage *dto.Usage) {
+		t.Helper()
+		require.NotNil(t, usage)
+		assert.Equal(t, inclusiveInput, usage.PromptTokens)
+		assert.Equal(t, output, usage.CompletionTokens)
+		assert.Equal(t, cacheRead, usage.PromptTokensDetails.CachedTokens)
+		assert.Equal(t, cacheCreation, usage.PromptTokensDetails.CacheCreationTokensTotal())
+	}
+	assertClaudeUsage := func(t *testing.T, usage *dto.ClaudeUsage) {
+		t.Helper()
+		require.NotNil(t, usage)
+		assert.Equal(t, uncachedInput, usage.InputTokens)
+		assert.Equal(t, cacheRead, usage.CacheReadInputTokens)
+		assert.Equal(t, cacheCreation, usage.CacheCreationInputTokens)
+		assert.Equal(t, output, usage.OutputTokens)
+	}
+
+	newClaudeResponse := func() *dto.ClaudeResponse {
+		return &dto.ClaudeResponse{
+			Id: "msg_cascade", Type: "message", Role: "assistant", Model: "claude-test", StopReason: "end_turn",
+			Content: []dto.ClaudeMediaMessage{{Type: "text", Text: respPtr("ok")}},
+			Usage: &dto.ClaudeUsage{
+				InputTokens: uncachedInput, CacheReadInputTokens: cacheRead,
+				CacheCreationInputTokens: cacheCreation, OutputTokens: output,
+			},
+		}
+	}
+
+	// Client OpenAI -> official Anthropic -> official OpenAI -> official
+	// Anthropic. The first gateway receives Anthropic and returns OpenAI.
+	chatResult, err := ConvertResponse(nil, nil, types.RelayFormatOpenAI, newClaudeResponse())
+	require.NoError(t, err)
+	chat := chatResult.Value.(*dto.OpenAITextResponse)
+	assertOpenAIUsage(t, &chat.Usage)
+	claudeHop := officialClaudeFromOpenAI(&chat.Usage)
+	assertClaudeUsage(t, claudeHop)
+	chatHop := officialOpenAIFromClaude(claudeHop)
+	assertOpenAIUsage(t, chatHop)
+	assertClaudeUsage(t, officialClaudeFromOpenAI(chatHop))
+
+	// Client Anthropic -> official OpenAI -> official Anthropic -> official
+	// OpenAI. The first gateway receives OpenAI and returns Anthropic.
+	openAI := &dto.OpenAITextResponse{
+		Id: "chat_cascade", Model: "gpt-test",
+		Choices: []dto.OpenAITextResponseChoice{{Message: dto.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+		Usage: dto.Usage{
+			PromptTokens: inclusiveInput, CompletionTokens: output, TotalTokens: inclusiveInput + output,
+			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: cacheRead, CachedCreationTokens: cacheCreation},
+		},
+	}
+	claudeResult, err := ConvertResponse(nil, nil, types.RelayFormatClaude, openAI)
+	require.NoError(t, err)
+	claude := claudeResult.Value.(*dto.ClaudeResponse)
+	assertClaudeUsage(t, claude.Usage)
+	// The converted response may carry the original OpenAI billing extension;
+	// official downstream gateways must still use only these Claude fields.
+	require.NotNil(t, claude.Usage.BillingUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIChat, claude.Usage.BillingUsage.Source)
+	chatUsage := officialOpenAIFromClaude(claude.Usage)
+	assertOpenAIUsage(t, chatUsage)
+	claudeHop = officialClaudeFromOpenAI(chatUsage)
+	assertClaudeUsage(t, claudeHop)
+	assertOpenAIUsage(t, officialOpenAIFromClaude(claudeHop))
+
+	// Repeat both first-hop directions with streaming terminal usage events.
+	streamInfo := &convmeta.Values{
+		SendResponseCount: 1,
+		ClaudeConvertInfo: &convmeta.ClaudeConvertInfo{LastMessagesType: convmeta.LastMessageTypeNone},
+	}
+	streamChunk := &dto.ChatCompletionsStreamResponse{
+		Id: "chat_stream_cascade", Model: "gpt-test",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{Content: respPtr("ok")},
+			FinishReason: respPtr("stop"),
+		}},
+		Usage: &dto.Usage{
+			PromptTokens: inclusiveInput, CompletionTokens: output, TotalTokens: inclusiveInput + output,
+			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: cacheRead, CachedCreationTokens: cacheCreation},
+		},
+	}
+	streamResult, err := ConvertStreamResponse(nil, streamInfo, types.RelayFormatClaude, streamChunk)
+	require.NoError(t, err)
+	claudeEvents, ok := streamResult.Value.([]*dto.ClaudeResponse)
+	require.True(t, ok)
+	var streamClaudeUsage *dto.ClaudeUsage
+	for _, event := range claudeEvents {
+		if event != nil && event.Type == "message_delta" {
+			streamClaudeUsage = event.Usage
+		}
+	}
+	assertClaudeUsage(t, streamClaudeUsage)
+	assertOpenAIUsage(t, officialOpenAIFromClaude(streamClaudeUsage))
+
+	streamClaudeChunk := &dto.ClaudeResponse{
+		Type: "message_delta", Usage: newClaudeResponse().Usage,
+		Delta: &dto.ClaudeMediaMessage{StopReason: respPtr("end_turn")},
+	}
+	streamResult, err = ConvertStreamResponse(nil, nil, types.RelayFormatOpenAI, streamClaudeChunk)
+	require.NoError(t, err)
+	assertOpenAIUsage(t, streamResult.Usage)
+	assertClaudeUsage(t, officialClaudeFromOpenAI(streamResult.Usage))
+}
+
 func TestConvertResponseUsesBillingUsageWhenRestoringNativeTargets(t *testing.T) {
 	chat := textRegistryChatResponse()
 	chat.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
