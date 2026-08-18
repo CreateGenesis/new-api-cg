@@ -77,6 +77,9 @@ func NormalizeKimiK3ChatRequest(request *dto.GeneralOpenAIRequest) error {
 	if err := validateKimiK3ToolChoice(request.ToolChoice); err != nil {
 		return err
 	}
+	if kimiK3ToolChoiceIsNone(request.ToolChoice) {
+		request.Tools = nil
+	}
 	if err := validateKimiK3ResponseFormat(request.ResponseFormat); err != nil {
 		return err
 	}
@@ -117,7 +120,13 @@ func NormalizeKimiK3ResponsesRequest(request *dto.OpenAIResponsesRequest) error 
 	if err != nil {
 		return err
 	}
-	return NormalizeKimiK3ChatRequest(chatRequest)
+	if err := NormalizeKimiK3ChatRequest(chatRequest); err != nil {
+		return err
+	}
+	if kimiK3ToolChoiceIsNone(request.ToolChoice) {
+		request.Tools = nil
+	}
+	return nil
 }
 
 func NormalizeKimiK3ClaudeRequest(request *dto.ClaudeRequest) error {
@@ -162,6 +171,9 @@ func NormalizeKimiK3ClaudeRequest(request *dto.ClaudeRequest) error {
 	}
 	if err := validateKimiK3ClaudeToolChoice(request.ToolChoice); err != nil {
 		return err
+	}
+	if kimiK3ToolChoiceIsNone(request.ToolChoice) {
+		request.Tools = nil
 	}
 	if len(request.ResponseFormat) > 0 && len(request.OutputFormat) > 0 {
 		return fmt.Errorf("response_format and output_format cannot both be set for kimi-k3")
@@ -386,6 +398,19 @@ func validateKimiK3ClaudeToolChoice(choice any) error {
 		return fmt.Errorf("named tool_choice is incompatible with kimi-k3 reasoning")
 	default:
 		return fmt.Errorf("tool_choice must be auto, none, or any for kimi-k3")
+	}
+}
+
+func kimiK3ToolChoiceIsNone(choice any) bool {
+	switch value := choice.(type) {
+	case string:
+		return value == "none"
+	case json.RawMessage:
+		var parsed string
+		return kitutil.Unmarshal(value, &parsed) == nil && parsed == "none"
+	default:
+		parsed, err := kitutil.Any2Type[dto.ClaudeToolChoice](choice)
+		return err == nil && parsed.Type == "none"
 	}
 }
 

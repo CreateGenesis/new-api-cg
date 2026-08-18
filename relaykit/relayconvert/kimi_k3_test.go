@@ -233,6 +233,80 @@ func TestNormalizeKimiK3ResponsesRequestValidatesJSONSchema(t *testing.T) {
 	require.ErrorContains(t, NormalizeKimiK3ResponsesRequest(request), "requires name and schema")
 }
 
+func TestNormalizeKimiK3ToolChoiceNoneRemovesToolsAcrossFormats(t *testing.T) {
+	chatRequest := &dto.GeneralOpenAIRequest{
+		Model:      "kimi-k3",
+		ToolChoice: "none",
+		Tools: []dto.ToolCallRequest{{
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:       "get_weather",
+				Parameters: map[string]any{"type": "object"},
+			},
+		}},
+	}
+	require.NoError(t, NormalizeKimiK3ChatRequest(chatRequest))
+	assert.Empty(t, chatRequest.Tools)
+	assert.Equal(t, "none", chatRequest.ToolChoice)
+	claudeUpstream, err := OpenAIChatRequestToClaudeMessages(nil, nil, *chatRequest)
+	require.NoError(t, err)
+	assert.Empty(t, claudeUpstream.Tools)
+	claudeToolChoice, err := kitutil.Any2Type[dto.ClaudeToolChoice](claudeUpstream.ToolChoice)
+	require.NoError(t, err)
+	assert.Equal(t, "none", claudeToolChoice.Type)
+
+	responsesRequest := &dto.OpenAIResponsesRequest{
+		Model:      "kimi-k3",
+		Input:      []byte(`"weather"`),
+		ToolChoice: []byte(`"none"`),
+		Tools: []byte(`[{
+			"type":"function",
+			"name":"get_weather",
+			"parameters":{"type":"object"}
+		}]`),
+	}
+	require.NoError(t, NormalizeKimiK3ResponsesRequest(responsesRequest))
+	assert.Empty(t, responsesRequest.Tools)
+	assert.JSONEq(t, `"none"`, string(responsesRequest.ToolChoice))
+	tntResponsesUpstream, err := ConvertTNTTencentResponsesRequest(responsesRequest)
+	require.NoError(t, err)
+	assert.Empty(t, tntResponsesUpstream.Tools)
+	assert.Equal(t, "none", tntResponsesUpstream.ToolChoice)
+
+	claudeRequest := &dto.ClaudeRequest{
+		Model: "kimi-k3",
+		Tools: []dto.Tool{{
+			Name:        "get_weather",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+		ToolChoice: map[string]any{"type": "none"},
+	}
+	require.NoError(t, NormalizeKimiK3ClaudeRequest(claudeRequest))
+	assert.Nil(t, claudeRequest.Tools)
+	require.NotNil(t, claudeRequest.ToolChoice)
+	openAIUpstream, err := ClaudeMessagesRequestToOpenAIChat(*claudeRequest, nil)
+	require.NoError(t, err)
+	assert.Empty(t, openAIUpstream.Tools)
+	tntChatUpstream, err := ConvertTNTTencentClaudeRequest(claudeRequest)
+	require.NoError(t, err)
+	assert.Empty(t, tntChatUpstream.Tools)
+	assert.Equal(t, "none", tntChatUpstream.ToolChoice)
+}
+
+func TestNormalizeKimiK3ToolChoiceAutoPreservesTools(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "kimi-k3",
+		ToolChoice: "auto",
+		Tools: []dto.ToolCallRequest{{
+			Type:     "function",
+			Function: dto.FunctionRequest{Name: "get_weather"},
+		}},
+	}
+
+	require.NoError(t, NormalizeKimiK3ChatRequest(request))
+	assert.Len(t, request.Tools, 1)
+}
+
 func TestHideKimiK3ReasoningUsageUpdatesAllOpenAIUsageFields(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     27,
