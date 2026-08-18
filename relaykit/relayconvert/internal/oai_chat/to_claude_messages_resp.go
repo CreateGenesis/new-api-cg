@@ -43,11 +43,13 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *d
 	if billingUsage := dto.CloneBillingUsage(oaiUsage.BillingUsage); billingUsage != nil && billingUsage.ClaudeUsage != nil {
 		if billingUsage.Source == dto.BillingUsageSourceClaudeMessages || billingUsage.Semantic == dto.BillingUsageSemanticAnthropic {
 			usage := *billingUsage.ClaudeUsage
-			usage.BillingUsage = billingUsage
 			if info != nil {
-				if options := info.ConvOptions(); options != nil && options.Claude.AnthropicInputIncludesCache &&
-					!billingUsage.HasNormalizedAnthropicInputCache() {
-					sharedclaude.NormalizeInputIncludesCache(&usage)
+				if options := info.ConvOptions(); options != nil && options.Claude.AnthropicInputIncludesCache {
+					if billingUsage.HasNormalizedAnthropicInputCache() {
+						usage.BillingUsage = billingUsage
+					} else {
+						sharedclaude.NormalizeInputIncludesCache(&usage)
+					}
 				}
 			}
 			return &usage
@@ -67,8 +69,24 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *d
 		oaiUsage.ClaudeCacheCreation1hTokens,
 	)
 	cacheCreationTokens := oaiUsage.PromptTokensDetails.CacheCreationTokensTotal()
+	compatibilityEnabled := false
+	if info != nil {
+		if options := info.ConvOptions(); options != nil {
+			compatibilityEnabled = options.Claude.AnthropicInputIncludesCache
+		}
+	}
+	inputTokens := oaiUsage.PromptTokens
+	if !compatibilityEnabled && oaiUsage.PromptTokensDetails.CacheWriteTokens > 0 {
+		// Preserve the legacy OpenAI cache-write conversion when the
+		// Anthropic cache-inclusive compatibility option is disabled.
+		inputTokens -= oaiUsage.PromptTokensDetails.CachedTokens
+		inputTokens -= cacheCreationTokens
+		if inputTokens < 0 {
+			inputTokens = 0
+		}
+	}
 	usage := &dto.ClaudeUsage{
-		InputTokens:              oaiUsage.PromptTokens,
+		InputTokens:              inputTokens,
 		OutputTokens:             oaiUsage.CompletionTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokens,
@@ -80,13 +98,7 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage, info convmeta.Meta) *d
 			Ephemeral1hInputTokens: cacheCreation1h,
 		}
 	}
-	normalizeInput := oaiUsage.PromptTokensDetails.CacheWriteTokens > 0
-	if info != nil {
-		if options := info.ConvOptions(); options != nil && options.Claude.AnthropicInputIncludesCache {
-			normalizeInput = true
-		}
-	}
-	if normalizeInput {
+	if compatibilityEnabled {
 		sharedclaude.NormalizeInputIncludesCache(usage)
 	}
 	return usage

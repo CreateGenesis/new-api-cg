@@ -100,6 +100,14 @@ func normalizeAnthropicInputUsage(info *relaycommon.RelayInfo, response *dto.Cla
 	return normalized
 }
 
+func anthropicInputCacheCompatibilityEnabled(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	options := info.ConvOptions()
+	return options != nil && options.Claude.AnthropicInputIncludesCache
+}
+
 func hasAnthropicInputUsage(usage *dto.ClaudeUsage) bool {
 	if usage == nil {
 		return false
@@ -130,6 +138,7 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	claudeInfo.PreserveNormalizedAnthropicBilling = anthropicInputCacheCompatibilityEnabled(info)
 	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
 	for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
 		unfilteredResponse := filteredResponse
@@ -321,6 +330,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	claudeInfo.PreserveNormalizedAnthropicBilling = anthropicInputCacheCompatibilityEnabled(info)
 	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
 	originalTextContent := make([]string, len(claudeResponse.Content))
 	for index := range claudeResponse.Content {
@@ -348,7 +358,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.UsageSemantic = "anthropic"
-		if claudeResponse.Usage.BillingUsage.IsRecognized() {
+		if claudeInfo.PreserveNormalizedAnthropicBilling && claudeResponse.Usage.BillingUsage.HasNormalizedAnthropicInputCache() {
 			claudeInfo.Usage.BillingUsage = dto.CloneBillingUsage(claudeResponse.Usage.BillingUsage)
 		} else {
 			claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(claudeResponse.Usage)

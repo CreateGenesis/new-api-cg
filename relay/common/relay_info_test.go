@@ -68,6 +68,17 @@ func TestRelayInfoConvOptionsIncludesAnthropicUsageCompatibility(t *testing.T) {
 	assert.False(t, (&RelayInfo{}).ConvOptions().Claude.AnthropicInputIncludesCache)
 }
 
+func TestRelayInfoConvOptionsDisablesAnthropicUsageCompatibilityOnRetry(t *testing.T) {
+	info := &RelayInfo{
+		RetryIndex: 1,
+		ChannelMeta: &ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			AnthropicInputIncludesCache: true,
+		}},
+	}
+
+	assert.False(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
+}
+
 func TestRelayInfoConsumesStreamProtocolEndRequirementPerHandler(t *testing.T) {
 	info := &RelayInfo{IsStream: true}
 	info.RequireStreamProtocolEnd()

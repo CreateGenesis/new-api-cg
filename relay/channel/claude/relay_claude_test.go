@@ -102,6 +102,65 @@ func TestHandleClaudeResponseDataNormalizesAnthropicInputUsage(t *testing.T) {
 	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
 }
 
+func TestHandleClaudeResponseDataUsesLegacyBillingWhenCompatibilityDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "claude-test",
+		RelayFormat:     types.RelayFormatClaude,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "claude-test"},
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	body := []byte(`{"id":"msg_1","type":"message","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":84,"cache_read_input_tokens":17664,"output_tokens":12,"billing_usage":{"source":"oai_chat","semantic":"openai","anthropic_input_cache_normalized":true,"openai_usage":{"prompt_tokens":17748,"completion_tokens":12,"total_tokens":17760}}}}`)
+
+	apiErr := HandleClaudeResponseData(c, info, claudeInfo, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, body)
+	require.Nil(t, apiErr)
+	require.NotNil(t, claudeInfo.Usage.BillingUsage)
+	require.NotNil(t, claudeInfo.Usage.BillingUsage.ClaudeUsage)
+	assert.False(t, claudeInfo.Usage.BillingUsage.HasNormalizedAnthropicInputCache())
+	assert.Equal(t, 84, claudeInfo.Usage.BillingUsage.ClaudeUsage.InputTokens)
+	assert.Equal(t, 17664, claudeInfo.Usage.BillingUsage.ClaudeUsage.CacheReadInputTokens)
+	// Disabled compatibility preserves the upstream response body exactly.
+	assert.True(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.anthropic_input_cache_normalized").Bool())
+}
+
+func TestHandleClaudeResponseDataRetryKeepsG16TNTLegacyUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName:                  "glm-5.3",
+		RelayFormat:                      types.RelayFormatClaude,
+		RetryIndex:                       1,
+		GLM53OfficialCompatibilityActive: true,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeAnthropic,
+			UpstreamModelName: "glm-5.3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				AnthropicInputIncludesCache: true,
+				TNTTencentOpenAIConversion:  true,
+				GLM53OfficialCompatibility:  true,
+			},
+		},
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	body := []byte(`{"id":"msg_1","type":"message","model":"glm-5.3","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":17748,"cache_read_input_tokens":17664,"output_tokens":12}}`)
+
+	apiErr := HandleClaudeResponseData(c, info, claudeInfo, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, body)
+	require.Nil(t, apiErr)
+	assert.False(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
+	assert.Equal(t, int64(17748), gjson.Get(recorder.Body.String(), "usage.input_tokens").Int())
+	assert.False(t, gjson.Get(recorder.Body.String(), "usage.billing_usage").Exists())
+	require.NotNil(t, claudeInfo.Usage.BillingUsage)
+	require.NotNil(t, claudeInfo.Usage.BillingUsage.ClaudeUsage)
+	assert.Equal(t, 17748, claudeInfo.Usage.BillingUsage.ClaudeUsage.InputTokens)
+	assert.True(t, info.IsTNTTencentOpenAIConversion())
+	assert.True(t, info.IsGLM53OfficialCompatibility())
+}
+
 func TestHandleClaudeResponseDataKeepsOpenAIUsageInclusive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
