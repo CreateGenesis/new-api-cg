@@ -154,14 +154,16 @@ type RelayRetrySummary struct {
 }
 
 type relayDebugCollector struct {
-	mu            sync.Mutex
-	trace         RelayDebugTrace
-	current       *RelayDebugAttempt
-	failureCount  int
-	textLimit     int
-	captureBudget *relayDebugCaptureBudget
-	finalized     bool
-	summary       *RelayRetrySummary
+	mu                        sync.Mutex
+	trace                     RelayDebugTrace
+	current                   *RelayDebugAttempt
+	failureCount              int
+	textLimit                 int
+	captureBudget             *relayDebugCaptureBudget
+	finalized                 bool
+	summary                   *RelayRetrySummary
+	captureSuccessfulResponse bool
+	usageEstimationApplied    bool
 }
 
 type relayDebugCaptureBudget struct {
@@ -381,12 +383,33 @@ func CaptureRelayDebugHTTPResponse(c *gin.Context, resp *http.Response) {
 	exchange := &collector.current.Exchanges[len(collector.current.Exchanges)-1]
 	exchange.Response.Status = resp.StatusCode
 	exchange.Response.Headers = sanitizeRelayDebugHeaders(resp.Header)
-	shouldCaptureBody := resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !common.GetContextKeyBool(c, constant.ContextKeyIsStream)
+	shouldCaptureBody := resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
+		!common.GetContextKeyBool(c, constant.ContextKeyIsStream) || collector.captureSuccessfulResponse
 	if resp.Body != nil && shouldCaptureBody {
 		recorder := newRelayDebugBodyRecorder(collector.captureBudget, collector.textLimit)
 		exchange.Response.recorder = recorder
 		resp.Body = &relayDebugReadCloser{ReadCloser: resp.Body, recorder: recorder}
 	}
+}
+
+func EnableRelayDebugUsageEstimation(c *gin.Context) {
+	collector := relayDebugFromContext(c)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	collector.captureSuccessfulResponse = true
+	collector.mu.Unlock()
+}
+
+func MarkRelayDebugUsageEstimation(c *gin.Context) {
+	collector := relayDebugFromContext(c)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	collector.usageEstimationApplied = true
+	collector.mu.Unlock()
 }
 
 func CompleteRelayDebugAttempt(c *gin.Context, relayErr *types.NewAPIError) {
@@ -406,8 +429,10 @@ func CompleteRelayDebugAttempt(c *gin.Context, relayErr *types.NewAPIError) {
 		attempt.Succeeded = true
 		if collector.failureCount > 0 {
 			collector.trace.Outcome = "recovered"
-			for index := range attempt.Exchanges {
-				attempt.Exchanges[index].Response.Body = nil
+			if !collector.usageEstimationApplied {
+				for index := range attempt.Exchanges {
+					attempt.Exchanges[index].Response.Body = nil
+				}
 			}
 		} else {
 			collector.trace.Outcome = "success"
@@ -519,8 +544,10 @@ func AppendRelayDebugAdminInfo(c *gin.Context, other map[string]interface{}) {
 		} else {
 			collector.trace.Outcome = "success"
 		}
-		for index := range attempt.Exchanges {
-			attempt.Exchanges[index].Response.Body = nil
+		if !collector.usageEstimationApplied {
+			for index := range attempt.Exchanges {
+				attempt.Exchanges[index].Response.Body = nil
+			}
 		}
 		collector.current = nil
 	}
@@ -543,7 +570,7 @@ func finalizeRelayDebug(c *gin.Context, collector *relayDebugCollector) *RelayRe
 	if collector.finalized {
 		return collector.summary
 	}
-	if collector.failureCount == 0 {
+	if collector.failureCount == 0 && !collector.usageEstimationApplied {
 		collector.finalized = true
 		return nil
 	}

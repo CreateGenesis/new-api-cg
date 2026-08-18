@@ -28,6 +28,13 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../../../lib'
@@ -49,6 +56,10 @@ export function ChannelFallbackPolicyFields(
   const disableNonStream = useWatch({
     control: props.control,
     name: 'disable_non_stream',
+  })
+  const usageEstimationEnabled = useWatch({
+    control: props.control,
+    name: 'usage_estimation_enabled',
   })
 
   return (
@@ -211,6 +222,117 @@ export function ChannelFallbackPolicyFields(
             </FormItem>
           )}
         />
+      </div>
+
+      <div className='divide-border space-y-0 divide-y border-y'>
+        <FormField
+          control={props.control}
+          name='usage_estimation_enabled'
+          render={({ field }) => (
+            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+              <div className='space-y-0.5'>
+                <FormLabel className='text-sm'>
+                  {t('Estimate missing usage tokens')}
+                </FormLabel>
+                <FormDescription>
+                  {t(
+                    'Estimate zero or missing input and output usage from the selected model family.'
+                  )}
+                </FormDescription>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value === true}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+            </FormItem>
+          )}
+        />
+
+        {usageEstimationEnabled && (
+          <div className='grid gap-4 px-4 py-3 sm:grid-cols-3'>
+            <FormField
+              control={props.control}
+              name='usage_estimation_model_family'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Usage estimation model family')}</FormLabel>
+                  <Select
+                    value={field.value ?? 'glm'}
+                    onValueChange={field.onChange}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value='glm'>GLM</SelectItem>
+                      <SelectItem value='kimi'>Kimi</SelectItem>
+                      <SelectItem value='deepseek'>DeepSeek</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={props.control}
+              name='usage_estimation_input_multiplier'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Input estimation multiplier')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0.01}
+                      max={100}
+                      step={0.01}
+                      value={field.value ?? 1}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
+                      onChange={(event) => field.onChange(Number(event.target.value))}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Allowed range: 0.01 to 100.')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={props.control}
+              name='usage_estimation_output_multiplier'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Output estimation multiplier')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0.01}
+                      max={100}
+                      step={0.01}
+                      value={field.value ?? 1}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
+                      onChange={(event) => field.onChange(Number(event.target.value))}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Allowed range: 0.01 to 100.')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+        )}
       </div>
     </fieldset>
   )

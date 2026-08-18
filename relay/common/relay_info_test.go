@@ -59,6 +59,26 @@ func TestRelayInfoCacheUsageValidationSplitEnabledIsChannelScoped(t *testing.T) 
 	}).CacheUsageValidationSplitEnabled())
 }
 
+func TestRelayInfoConvOptionsIncludesAnthropicUsageCompatibility(t *testing.T) {
+	info := &RelayInfo{ChannelMeta: &ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+		AnthropicInputIncludesCache: true,
+	}}}
+
+	assert.True(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
+	assert.False(t, (&RelayInfo{}).ConvOptions().Claude.AnthropicInputIncludesCache)
+}
+
+func TestRelayInfoConvOptionsKeepsAnthropicUsageCompatibilityOnRetry(t *testing.T) {
+	info := &RelayInfo{
+		RetryIndex: 1,
+		ChannelMeta: &ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			AnthropicInputIncludesCache: true,
+		}},
+	}
+
+	assert.True(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
+}
+
 func TestRelayInfoConsumesStreamProtocolEndRequirementPerHandler(t *testing.T) {
 	info := &RelayInfo{IsStream: true}
 	info.RequireStreamProtocolEnd()

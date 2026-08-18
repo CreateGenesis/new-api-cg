@@ -63,6 +63,46 @@ func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
 	return *mapped
 }
 
+func claudeBillingUsage(usage *dto.ClaudeUsage) *dto.BillingUsage {
+	if usage == nil {
+		return nil
+	}
+	billing := dto.NewClaudeMessagesBillingUsage(usage)
+	if billing != nil && usage.BillingUsage != nil {
+		billing.Estimated = usage.BillingUsage.Estimated
+		billing.AnthropicInputCacheNormalized = usage.BillingUsage.AnthropicInputCacheNormalized
+	}
+	return billing
+}
+
+func claudeBillingUsageFromSemanticUsage(usage *dto.Usage) *dto.BillingUsage {
+	if usage == nil {
+		return nil
+	}
+	claudeUsage := buildMessageDeltaPatchUsage(nil, &ClaudeResponseInfo{Usage: usage})
+	return claudeBillingUsage(claudeUsage)
+}
+
+func setClaudeResponseBillingUsage(response *dto.ClaudeResponse) {
+	if response == nil {
+		return
+	}
+	if response.Usage != nil {
+		normalized := response.Usage.BillingUsage != nil && response.Usage.BillingUsage.AnthropicInputCacheNormalized
+		response.Usage.BillingUsage = claudeBillingUsage(response.Usage)
+		if response.Usage.BillingUsage != nil {
+			response.Usage.BillingUsage.AnthropicInputCacheNormalized = normalized
+		}
+	}
+	if response.Message != nil && response.Message.Usage != nil {
+		normalized := response.Message.Usage.BillingUsage != nil && response.Message.Usage.BillingUsage.AnthropicInputCacheNormalized
+		response.Message.Usage.BillingUsage = claudeBillingUsage(response.Message.Usage)
+		if response.Message.Usage.BillingUsage != nil {
+			response.Message.Usage.BillingUsage.AnthropicInputCacheNormalized = normalized
+		}
+	}
+}
+
 func buildMessageDeltaPatchUsage(claudeResponse *dto.ClaudeResponse, claudeInfo *ClaudeResponseInfo) *dto.ClaudeUsage {
 	return relayconvert.BuildMessageDeltaPatchUsage(claudeResponse, claudeInfo)
 }
@@ -79,6 +119,45 @@ func shouldSkipClaudeMessageDeltaUsagePatch(info *relaycommon.RelayInfo) bool {
 
 func patchClaudeMessageDeltaUsageData(data string, usage *dto.ClaudeUsage) string {
 	return relayconvert.PatchClaudeMessageDeltaUsageData(data, usage)
+}
+
+func normalizeAnthropicInputUsage(info *relaycommon.RelayInfo, response *dto.ClaudeResponse) bool {
+	if info == nil || response == nil {
+		return false
+	}
+	options := info.ConvOptions()
+	if options == nil || !options.Claude.AnthropicInputIncludesCache {
+		return false
+	}
+
+	normalized := false
+	if response.Message != nil && hasAnthropicInputUsage(response.Message.Usage) {
+		normalized = relayconvert.NormalizeAnthropicInputIncludesCache(response.Message.Usage) || normalized
+	}
+	if hasAnthropicInputUsage(response.Usage) {
+		normalized = relayconvert.NormalizeAnthropicInputIncludesCache(response.Usage) || normalized
+	}
+	return normalized
+}
+
+func anthropicInputCacheCompatibilityEnabled(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	options := info.ConvOptions()
+	return options != nil && options.Claude.AnthropicInputIncludesCache
+}
+
+func hasAnthropicInputUsage(usage *dto.ClaudeUsage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.InputTokens != 0 || usage.CacheReadInputTokens != 0 || usage.CacheCreationInputTokens != 0 ||
+		usage.ClaudeCacheCreation5mTokens != 0 || usage.ClaudeCacheCreation1hTokens != 0 {
+		return true
+	}
+	return usage.CacheCreation != nil &&
+		(usage.CacheCreation.Ephemeral5mInputTokens != 0 || usage.CacheCreation.Ephemeral1hInputTokens != 0)
 }
 
 func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *dto.ChatCompletionsStreamResponse, claudeInfo *ClaudeResponseInfo) bool {
@@ -99,6 +178,11 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	claudeInfo.PreserveNormalizedAnthropicBilling = anthropicInputCacheCompatibilityEnabled(info)
+	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
+	if usageNormalized {
+		setClaudeResponseBillingUsage(&claudeResponse)
+	}
 	for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
 		unfilteredResponse := filteredResponse
 		filteredResponse = thinkingFilter.Filter(unfilteredResponse)
@@ -107,7 +191,7 @@ func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			continue
 		}
 		eventData := data
-		if stopFilter != nil || thinkingFilter != nil {
+		if usageNormalized || stopFilter != nil || thinkingFilter != nil {
 			encoded, marshalErr := common.Marshal(filteredResponse)
 			if marshalErr != nil {
 				return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
@@ -195,14 +279,14 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	if claudeInfo.Usage.PromptTokens == 0 {
 		//上游出错
 	}
-	if claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done {
+	_, usageEstimationEnabled := info.UsageEstimationSettings()
+	if (claudeInfo.Usage.PromptTokens == 0 || claudeInfo.Usage.CompletionTokens == 0) && !usageEstimationEnabled {
 		if common.DebugEnabled {
 			common.SysLog("claude response usage is not complete, maybe upstream error")
 		}
 		// 只补缺失字段，不整份覆盖——保留 message_start 已拿到的 cache 字段
 		fallback := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		if claudeInfo.Usage.CompletionTokens == 0 ||
-			(!claudeInfo.Done && fallback.CompletionTokens > claudeInfo.Usage.CompletionTokens) {
+		if claudeInfo.Usage.CompletionTokens == 0 {
 			claudeInfo.Usage.CompletionTokens = fallback.CompletionTokens
 		}
 		if claudeInfo.Usage.PromptTokens == 0 {
@@ -215,7 +299,7 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		claudeInfo.Usage.UsageSemantic = "anthropic"
 	}
 	if claudeInfo.Usage != nil && claudeInfo.Usage.BillingUsage == nil {
-		claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(buildMessageDeltaPatchUsage(nil, claudeInfo))
+		claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
 	}
 	if claudeInfo.Usage != nil && claudeInfo.Usage.Estimated && claudeInfo.Usage.BillingUsage != nil {
 		claudeInfo.Usage.BillingUsage.Estimated = true
@@ -224,9 +308,16 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	if info.RelayFormat == types.RelayFormatClaude {
 		//
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		if info.ShouldIncludeUsage {
+		if claudeInfo.Usage != nil {
 			openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
-			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, openAIUsage)
+			claudeInfo.Usage = &openAIUsage
+		}
+		if info.ShouldIncludeUsage {
+			usage := dto.Usage{}
+			if claudeInfo.Usage != nil {
+				usage = *claudeInfo.Usage
+			}
+			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, usage)
 			err := helper.ObjectData(c, response)
 			if err != nil {
 				common.SysLog("send final response failed: " + err.Error())
@@ -272,6 +363,10 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		return nil, streamRetryErr
 	}
 	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
+		if info.RelayFormat == types.RelayFormatOpenAI && claudeInfo.Usage != nil {
+			openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+			return &openAIUsage, nil
+		}
 		return claudeInfo.Usage, nil
 	}
 
@@ -287,6 +382,11 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
+	}
+	claudeInfo.PreserveNormalizedAnthropicBilling = anthropicInputCacheCompatibilityEnabled(info)
+	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
+	if usageNormalized {
+		setClaudeResponseBillingUsage(&claudeResponse)
 	}
 	originalTextContent := make([]string, len(claudeResponse.Content))
 	for index := range claudeResponse.Content {
@@ -314,7 +414,10 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
 		claudeInfo.Usage.UsageSemantic = "anthropic"
-		claudeInfo.Usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(claudeResponse.Usage)
+		claudeInfo.Usage.BillingUsage = claudeBillingUsage(claudeResponse.Usage)
+		if !claudeInfo.PreserveNormalizedAnthropicBilling && claudeInfo.Usage.BillingUsage != nil {
+			claudeInfo.Usage.BillingUsage.AnthropicInputCacheNormalized = false
+		}
 		claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Usage.CacheReadInputTokens
 		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
@@ -325,13 +428,15 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	case types.RelayFormatOpenAI:
 		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
 		openaiResponse.Model = info.DownstreamModelName(openaiResponse.Model)
-		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+		if claudeInfo.Usage != nil {
+			openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+		}
 		responseData, err = common.Marshal(openaiResponse)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		if info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.GetUpstreamModelName() {
+		if usageNormalized || info.IsKimiK3OfficialCompatibility() || claudeResponse.Model != info.GetUpstreamModelName() {
 			responseData, err = common.Marshal(claudeResponse)
 			if err != nil {
 				return types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -384,6 +489,13 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
 		return nil, handleErr
+	}
+	if info.RelayFormat == types.RelayFormatOpenAI {
+		if claudeInfo.Usage == nil {
+			return nil, nil
+		}
+		openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+		return &openAIUsage, nil
 	}
 	return claudeInfo.Usage, nil
 }

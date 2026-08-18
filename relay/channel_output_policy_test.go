@@ -85,6 +85,151 @@ func TestChannelOutputRecorderDoesNotRetryEmptyStreamWithoutInputUsage(t *testin
 	assert.Contains(t, response.Body.String(), "[DONE]")
 }
 
+func TestUsageEstimationRepairsG16AnthropicUsageWithoutChangingCacheTotal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatClaude,
+		Request:     &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}},
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			AnthropicInputIncludesCache: true,
+			UsageEstimation: &dto.UsageEstimationSettings{
+				Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyGLM, OutputMultiplier: 2,
+			},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+	body := `{"type":"message","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":84,"cache_read_input_tokens":17664,"cache_creation_input_tokens":0,"output_tokens":0}}`
+	_, err := recorder.WriteString(body)
+	require.NoError(t, err)
+	usage := &dto.Usage{
+		PromptTokens: 84, InputTokens: 84, UsageSemantic: service.UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 17664},
+		BillingUsage:        dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 84, CacheReadInputTokens: 17664}),
+	}
+
+	require.Nil(t, recorder.finish(c, info, usage))
+	normalized := service.NormalizeUsageForBilling(usage)
+	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
+	assert.Greater(t, normalized.OutputTokens, 0)
+	assert.Contains(t, response.Body.String(), `"input_tokens":84`)
+	assert.Contains(t, response.Body.String(), `"cache_read_input_tokens":17664`)
+	assert.NotContains(t, response.Body.String(), `"output_tokens":0`)
+	assert.NotNil(t, info.UsageEstimationAudit)
+}
+
+func TestUsageEstimationRepairsTNTUsageWithG16AndTNTEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:             types.RelayFormatClaude,
+		FinalRequestRelayFormat: types.RelayFormatOpenAI,
+		Request:                 &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}},
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			AnthropicInputIncludesCache: true,
+			TNTTencentOpenAIConversion:  true,
+			UsageEstimation: &dto.UsageEstimationSettings{
+				Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyKimi, OutputMultiplier: 1.5,
+			},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+	_, err := recorder.WriteString(`{"type":"message","content":[{"type":"text","text":"TNT ok"}],"usage":{"input_tokens":84,"cache_read_input_tokens":17664,"output_tokens":0}}`)
+	require.NoError(t, err)
+	openAIBilling := dto.NewOpenAIChatBillingUsage(&dto.Usage{PromptTokens: 17748, InputTokens: 17748, TotalTokens: 17748})
+	usage := &dto.Usage{
+		PromptTokens: 84, InputTokens: 84, UsageSemantic: service.UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 17664},
+		BillingUsage:        openAIBilling,
+	}
+
+	require.Nil(t, recorder.finish(c, info, usage))
+	normalized := service.NormalizeUsageForBilling(usage)
+	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
+	assert.Greater(t, normalized.OutputTokens, 0)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Greater(t, usage.BillingUsage.OpenAIUsage.CompletionTokens, 0)
+	assert.Contains(t, response.Body.String(), `"input_tokens":84`)
+	assert.Contains(t, response.Body.String(), `"cache_read_input_tokens":17664`)
+	assert.NotNil(t, info.UsageEstimationAudit)
+}
+
+func TestUsageEstimationRepairsStreamingTNTG16Usage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:             types.RelayFormatClaude,
+		FinalRequestRelayFormat: types.RelayFormatOpenAI,
+		IsStream:                true,
+		ShouldIncludeUsage:      true,
+		Request:                 &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}},
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			AnthropicInputIncludesCache: true,
+			TNTTencentOpenAIConversion:  true,
+			UsageEstimation: &dto.UsageEstimationSettings{
+				Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyKimi,
+			},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":84,\"cache_read_input_tokens\":17664}}}\n\n")
+	require.NoError(t, err)
+	_, err = recorder.WriteString("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"TNT stream\"}}\n\n")
+	require.NoError(t, err)
+	_, err = recorder.WriteString("data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":84,\"cache_read_input_tokens\":17664,\"output_tokens\":0}}\n\n")
+	require.NoError(t, err)
+	_, err = recorder.WriteString("data: [DONE]\n\n")
+	require.NoError(t, err)
+
+	usage := &dto.Usage{
+		PromptTokens: 84, InputTokens: 84, UsageSemantic: service.UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 17664},
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens: 84, CacheReadInputTokens: 17664,
+		}),
+	}
+	require.Nil(t, recorder.finish(c, info, usage))
+	normalized := service.NormalizeUsageForBilling(usage)
+	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
+	assert.Greater(t, normalized.OutputTokens, 0)
+	assert.Contains(t, response.Body.String(), `"input_tokens":84`)
+	assert.Contains(t, response.Body.String(), `"cache_read_input_tokens":17664`)
+	assert.NotContains(t, response.Body.String(), `"output_tokens":0`)
+	assert.NotNil(t, info.UsageEstimationAudit)
+}
+
+func TestUsageEstimationPreservesErrorFinishReason(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		Request:            &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}},
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			UsageEstimation: &dto.UsageEstimationSettings{Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyGLM},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, true, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+	_, err := recorder.WriteString(`{"id":"x","choices":[{"message":{"reasoning_content":"head"},"finish_reason":"error"}],"usage":{"prompt_tokens":0,"completion_tokens":26973,"total_tokens":26973}}`)
+	require.NoError(t, err)
+	usage := &dto.Usage{CompletionTokens: 26973, OutputTokens: 26973, TotalTokens: 26973, UpstreamInputReported: true, UpstreamOutputReported: true}
+
+	require.Nil(t, recorder.finish(c, info, usage))
+	assert.Contains(t, response.Body.String(), `"finish_reason":"error"`)
+	assert.Greater(t, usage.PromptTokens, 0)
+	assert.Equal(t, 26973, usage.CompletionTokens)
+}
+
 func TestChannelOutputRecorderDoesNotRetryEmptyNonStreamWithInputUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()

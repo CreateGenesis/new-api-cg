@@ -33,6 +33,10 @@ func ClaudeToResponsesHandler(c *gin.Context, resp *http.Response, info *relayco
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return nil, types.WithClaudeError(*claudeError, resp.StatusCode)
 	}
+	usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
+	if usageNormalized {
+		setClaudeResponseBillingUsage(&claudeResponse)
+	}
 	relayconvert.ApplyStopToClaudeResponse(&claudeResponse, relayconvert.StopSequencesFromRequest(info.Request))
 	if info.KimiK3HideThinking {
 		relayconvert.HideKimiK3ClaudeThinking(&claudeResponse)
@@ -46,12 +50,17 @@ func ClaudeToResponsesHandler(c *gin.Context, resp *http.Response, info *relayco
 		return nil, types.NewOpenAIError(fmt.Errorf("expected OpenAI responses response, got %T", converted.Value), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	response.Model = info.DownstreamModelName(response.Model)
+	outputUsage := converted.Usage
+	if outputUsage == nil {
+		outputUsage = response.Usage
+	}
+	response.Usage = outputUsage
 	data, err := openaiadapter.MarshalKimiK3ResponsesResponse(info, response)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
 	service.IOCopyBytesGracefully(c, resp, data)
-	return converted.Usage, nil
+	return outputUsage, nil
 }
 
 func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
@@ -84,6 +93,10 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 			streamErr = types.WithClaudeError(*claudeError, resp.StatusCode)
 			sr.Stop(streamErr)
 			return
+		}
+		usageNormalized := normalizeAnthropicInputUsage(info, &claudeResponse)
+		if usageNormalized {
+			setClaudeResponseBillingUsage(&claudeResponse)
 		}
 		for _, filteredResponse := range stopFilter.Filter(&claudeResponse) {
 			filteredResponse = thinkingFilter.Filter(filteredResponse)
@@ -135,6 +148,10 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 	if info.StreamStatus != nil && info.StreamStatus.IsClientGone() {
 		return state.Usage(), nil
 	}
+	outputUsage := state.Usage()
+	if outputUsage != nil {
+		state.SetUsage(outputUsage)
+	}
 	finalResults, err := relayconvert.FinalizeStreamResponse(c, info, state)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -161,5 +178,5 @@ func ClaudeToResponsesStreamHandler(c *gin.Context, resp *http.Response, info *r
 	if info.StreamStatus != nil && !info.StreamStatus.Snapshot().ProtocolEndReceived && strings.TrimSpace(state.UsageText()) != "" {
 		info.StreamStatus.MarkProtocolEnd("converted_response_completed")
 	}
-	return state.Usage(), nil
+	return outputUsage, nil
 }

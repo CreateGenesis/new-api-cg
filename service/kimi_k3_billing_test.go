@@ -82,3 +82,20 @@ func TestPrepareKimiK3OfficialBillingExcludesPseudoDisabledReasoningTokens(t *te
 	assert.Equal(t, 63, usage.CompletionTokens)
 	assert.Equal(t, 51, usage.CompletionTokenDetails.ReasoningTokens)
 }
+
+func TestPrepareKimiK3OfficialBillingKeepsOpenAICacheIncluded(t *testing.T) {
+	info := kimiK3BillingRelayInfo(constant.ChannelTypeOpenAI)
+	usage := &dto.Usage{
+		PromptTokens: 87, CompletionTokens: 16, TotalTokens: 190,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 87},
+	}
+	usage.BillingUsage = dto.NewOpenAIChatBillingUsage(usage)
+
+	prepared := prepareKimiK3OfficialBilling(info, usage)
+	normalized := NormalizeUsageForBilling(prepared)
+
+	assert.Zero(t, normalized.InputTokens.UncachedInputTokens)
+	assert.Equal(t, 87, normalized.InputTokens.CacheReadInputTokens)
+	assert.Equal(t, 16, normalized.OutputTokens)
+	assert.Equal(t, UsageAccountingModeIncluded, normalized.Audit.Mode)
+}

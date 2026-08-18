@@ -65,20 +65,24 @@ func cleanupLegacySimulatedModelCacheReplayFiles() {
 }
 
 func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage, responseModel ...string) []byte {
+	return PatchUsageResponseBody(format, contentType, body, usage, simulatedModelCacheResponseModel(format, responseModel...), false)
+}
+
+func PatchUsageResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage, responseModel string, ensureUsage bool) []byte {
 	if len(body) == 0 || usage == nil {
 		return body
 	}
 	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		return patchSimulatedModelCacheSSEBody(format, body, usage, responseModel...)
+		return patchSimulatedModelCacheSSEBody(format, body, usage, responseModel, ensureUsage)
 	}
-	patched, ok := patchSimulatedModelCacheJSONBody(format, body, usage, responseModel...)
+	patched, ok := patchSimulatedModelCacheJSONBody(format, body, usage, responseModel, ensureUsage, false)
 	if !ok {
 		return body
 	}
 	return patched
 }
 
-func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel ...string) []byte {
+func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel string, ensureUsage bool) []byte {
 	lines := strings.SplitAfter(string(body), "\n")
 	for i, line := range lines {
 		prefixLen := len(line) - len(strings.TrimLeft(line, " \t"))
@@ -90,7 +94,7 @@ func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usag
 		if data == "" || data == "[DONE]" {
 			continue
 		}
-		patched, ok := patchSimulatedModelCacheJSONBody(format, []byte(data), usage, responseModel...)
+		patched, ok := patchSimulatedModelCacheJSONBody(format, []byte(data), usage, responseModel, ensureUsage, true)
 		if !ok {
 			continue
 		}
@@ -107,13 +111,13 @@ func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usag
 	return []byte(strings.Join(lines, ""))
 }
 
-func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel ...string) ([]byte, bool) {
+func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel string, ensureUsage bool, stream bool) ([]byte, bool) {
 	var payload map[string]any
 	if common.Unmarshal(body, &payload) != nil {
 		return nil, false
 	}
 	patched := false
-	if model := simulatedModelCacheResponseModel(format, responseModel...); model != "" {
+	if model := simulatedModelCacheResponseModel(format, responseModel); model != "" {
 		if _, ok := payload["model"]; ok {
 			payload["model"] = model
 			patched = true
@@ -126,13 +130,23 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 		}
 	}
 	if responseMap, ok := payload["response"].(map[string]any); ok {
-		if usageMap, ok := responseMap["usage"].(map[string]any); ok {
+		usageMap, hasUsage := responseMap["usage"].(map[string]any)
+		if !hasUsage && ensureUsage && shouldEnsurePatchedUsage(format, payload, stream) {
+			usageMap = map[string]any{}
+			responseMap["usage"] = usageMap
+		}
+		if usageMap != nil {
 			patchOpenAIStyleUsageMap(usageMap, usage)
 			patched = true
 		}
 	}
 	if usageAny, ok := payload["usage"]; ok {
-		if usageMap, ok := usageAny.(map[string]any); ok {
+		usageMap, isMap := usageAny.(map[string]any)
+		if !isMap && ensureUsage && shouldEnsurePatchedUsage(format, payload, stream) {
+			usageMap = map[string]any{}
+			payload["usage"] = usageMap
+		}
+		if usageMap != nil {
 			switch format {
 			case types.RelayFormatClaude:
 				patchClaudeStyleUsageMap(usageMap, usage)
@@ -142,11 +156,29 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 			patched = true
 		}
 	}
+	if _, exists := payload["usage"]; !exists && ensureUsage && format != types.RelayFormatGemini &&
+		shouldEnsurePatchedUsage(format, payload, stream) {
+		usageMap := map[string]any{}
+		payload["usage"] = usageMap
+		if format == types.RelayFormatClaude {
+			patchClaudeStyleUsageMap(usageMap, usage)
+		} else {
+			patchOpenAIStyleUsageMap(usageMap, usage)
+		}
+		patched = true
+	}
 	if metadataAny, ok := payload["usageMetadata"]; ok {
 		if metadata, ok := metadataAny.(map[string]any); ok {
 			patchGeminiUsageMetadataMap(metadata, usage)
 			patched = true
 		}
+	}
+	if _, exists := payload["usageMetadata"]; !exists && ensureUsage && format == types.RelayFormatGemini &&
+		shouldEnsurePatchedUsage(format, payload, stream) {
+		metadata := map[string]any{}
+		patchGeminiUsageMetadataMap(metadata, usage)
+		payload["usageMetadata"] = metadata
+		patched = true
 	}
 	if !patched {
 		return nil, false
@@ -156,6 +188,33 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 		return nil, false
 	}
 	return out, true
+}
+
+func shouldEnsurePatchedUsage(format types.RelayFormat, payload map[string]any, stream bool) bool {
+	if !stream {
+		return true
+	}
+	eventType, _ := payload["type"].(string)
+	switch format {
+	case types.RelayFormatClaude:
+		return eventType == "message_delta"
+	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
+		return eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed"
+	case types.RelayFormatGemini:
+		_, hasCandidates := payload["candidates"]
+		return hasCandidates
+	case types.RelayFormatOpenAI:
+		choices, _ := payload["choices"].([]any)
+		for _, value := range choices {
+			choice, _ := value.(map[string]any)
+			if reason, _ := choice["finish_reason"].(string); reason != "" {
+				return true
+			}
+		}
+		return len(choices) == 0
+	default:
+		return false
+	}
 }
 
 func simulatedModelCacheResponseModel(format types.RelayFormat, responseModel ...string) string {

@@ -119,7 +119,7 @@ func TestResponseOpenAI2ClaudePreservesReasoningAsThinkingBlock(t *testing.T) {
 }
 
 func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
-	usage := buildClaudeUsageFromOpenAIUsage(&dto.Usage{
+	openAIUsage := &dto.Usage{
 		PromptTokens:     3619,
 		CompletionTokens: 36,
 		TotalTokens:      3655,
@@ -127,7 +127,9 @@ func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
 			CachedTokens:     2921,
 			CacheWriteTokens: 3616,
 		},
-	})
+	}
+
+	usage := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{})
 
 	require.NotNil(t, usage)
 	// Claude semantics reports input_tokens excluding cache read/write; the
@@ -139,7 +141,79 @@ func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
 	require.NotNil(t, usage.BillingUsage)
 	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
 	assert.Equal(t, dto.BillingUsageSemanticOpenAI, usage.BillingUsage.Semantic)
+	assert.False(t, usage.BillingUsage.AnthropicInputCacheNormalized)
 	assert.Equal(t, 3616, usage.BillingUsage.OpenAIUsage.PromptTokensDetails.CacheWriteTokens)
+
+	corrected := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{
+		Options: &convmeta.Options{Claude: convmeta.ClaudeOptions{AnthropicInputIncludesCache: true}},
+	})
+	assert.Equal(t, 0, corrected.InputTokens)
+	assert.Equal(t, 2921, corrected.CacheReadInputTokens)
+	assert.Equal(t, 3616, corrected.CacheCreationInputTokens)
+	assert.True(t, corrected.BillingUsage.HasNormalizedAnthropicInputCache())
+}
+
+func TestBuildClaudeUsageFromOpenAICacheReadAlwaysSplitsAnthropicInput(t *testing.T) {
+	openAIUsage := &dto.Usage{
+		PromptTokens:     17748,
+		CompletionTokens: 12,
+		TotalTokens:      17760,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 17664,
+		},
+	}
+
+	legacy := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{})
+	assert.Equal(t, 84, legacy.InputTokens)
+	assert.False(t, legacy.BillingUsage.AnthropicInputCacheNormalized)
+
+	corrected := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{
+		Options: &convmeta.Options{Claude: convmeta.ClaudeOptions{AnthropicInputIncludesCache: true}},
+	})
+	assert.Equal(t, 84, corrected.InputTokens)
+	assert.Equal(t, 17664, corrected.CacheReadInputTokens)
+	require.NotNil(t, corrected.BillingUsage.OpenAIUsage)
+	assert.Equal(t, 17748, corrected.BillingUsage.OpenAIUsage.PromptTokens)
+	assert.True(t, corrected.BillingUsage.HasNormalizedAnthropicInputCache())
+}
+
+func TestBuildClaudeUsageFromNestedAnthropicBillingHonorsChannelOption(t *testing.T) {
+	openAIUsage := &dto.Usage{
+		PromptTokens:     17748,
+		CompletionTokens: 12,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 17664,
+		},
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:          17748,
+			CacheReadInputTokens: 17664,
+			OutputTokens:         12,
+		}),
+	}
+
+	legacy := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{})
+	assert.Equal(t, 17748, legacy.InputTokens)
+
+	corrected := buildClaudeUsageFromOpenAIUsage(openAIUsage, &convmeta.Values{
+		Options: &convmeta.Options{Claude: convmeta.ClaudeOptions{AnthropicInputIncludesCache: true}},
+	})
+	assert.Equal(t, 84, corrected.InputTokens)
+	assert.Equal(t, 17664, corrected.CacheReadInputTokens)
+	assert.True(t, corrected.BillingUsage.HasNormalizedAnthropicInputCache())
+
+	marked := dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+		InputTokens:          84,
+		CacheReadInputTokens: 17664,
+		OutputTokens:         12,
+	})
+	marked.AnthropicInputCacheNormalized = true
+	markedInput := *openAIUsage
+	markedInput.BillingUsage = marked
+	preserved := buildClaudeUsageFromOpenAIUsage(&markedInput, &convmeta.Values{
+		Options: &convmeta.Options{Claude: convmeta.ClaudeOptions{AnthropicInputIncludesCache: true}},
+	})
+	assert.Equal(t, 84, preserved.InputTokens)
+	assert.Equal(t, 17664, preserved.CacheReadInputTokens)
 }
 
 func TestStreamResponseOpenAI2ClaudeClosesTextThinkingAndToolBlocks(t *testing.T) {

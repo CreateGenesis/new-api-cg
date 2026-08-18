@@ -890,6 +890,76 @@ describe('TNT Tencent-style OpenAI conversion settings', () => {
   })
 })
 
+describe('Anthropic input cache usage conversion settings', () => {
+  test('loads and saves the setting for Anthropic channels', () => {
+    const channel = testChannel(
+      '{"anthropic_input_includes_cache":true,"tnt_tencent_openai_conversion":true}'
+    )
+    channel.type = 14
+
+    const form = transformChannelToFormDefaults(channel)
+    assert.equal(form.anthropic_input_includes_cache, true)
+    assert.equal(form.tnt_tencent_openai_conversion, true)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'anthropic-cache',
+      key: 'sk-test',
+      models: 'claude-test',
+      group: ['default'],
+      status: 1,
+      type: 14,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.anthropic_input_includes_cache, true)
+    assert.equal(settings.tnt_tencent_openai_conversion, true)
+  })
+
+  test('removes the setting after changing to another channel type', () => {
+    const channel = testChannel(
+      '{"anthropic_input_includes_cache":true,"retry_zero_output":true}'
+    )
+    channel.type = 14
+    const form = transformChannelToFormDefaults(channel)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'other',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.anthropic_input_includes_cache, undefined)
+    assert.equal(settings.retry_zero_output, true)
+  })
+
+  test('rejects request body passthrough', () => {
+    const parsed = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'anthropic-cache',
+      key: 'sk-test',
+      models: 'claude-test',
+      group: ['default'],
+      status: 1,
+      type: 14,
+      pass_through_body_enabled: true,
+      anthropic_input_includes_cache: true,
+    })
+
+    assert.equal(parsed.success, false)
+    if (!parsed.success) {
+      const paths = new Set(
+        parsed.error.issues.map((issue) => issue.path.join('.'))
+      )
+      assert.ok(paths.has('pass_through_body_enabled'))
+      assert.ok(paths.has('anthropic_input_includes_cache'))
+    }
+  })
+})
+
 describe('Kimi K3 official compatibility settings', () => {
   test('loads and saves the setting for supported channel types', () => {
     for (const type of [1, 14, 25]) {
@@ -1128,5 +1198,63 @@ describe('DeepSeek V4 official compatibility settings', () => {
       deepseek_v4_official_compatibility: true,
     })
     assert.equal(tntCoexistence.success, true)
+  })
+})
+
+describe('usage estimation settings', () => {
+  test('loads and saves explicit model family and direction multipliers', () => {
+    const channel = testChannel(
+      '{"usage_estimation":{"enabled":true,"model_family":"deepseek","input_multiplier":1.25,"output_multiplier":1.5}}'
+    )
+    const form = transformChannelToFormDefaults(channel)
+
+    assert.equal(form.usage_estimation_enabled, true)
+    assert.equal(form.usage_estimation_model_family, 'deepseek')
+    assert.equal(form.usage_estimation_input_multiplier, 1.25)
+    assert.equal(form.usage_estimation_output_multiplier, 1.5)
+
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      name: 'usage-estimation',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.deepEqual(settings.usage_estimation, {
+      enabled: true,
+      model_family: 'deepseek',
+      input_multiplier: 1.25,
+      output_multiplier: 1.5,
+    })
+  })
+
+  test('omits usage estimation when disabled and validates multiplier bounds', () => {
+    const payload = transformFormDataToCreatePayload({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'disabled',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    assert.equal(settings.usage_estimation, undefined)
+
+    const invalid = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'invalid',
+      key: 'sk-test',
+      models: 'test-model',
+      group: ['default'],
+      status: 1,
+      type: 1,
+      usage_estimation_enabled: true,
+      usage_estimation_input_multiplier: 0.001,
+    })
+    assert.equal(invalid.success, false)
   })
 })

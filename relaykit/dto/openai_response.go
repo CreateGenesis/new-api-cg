@@ -229,6 +229,8 @@ type Usage struct {
 	UsageSource            string        `json:"usage_source,omitempty"`
 	BillingUsage           *BillingUsage `json:"billing_usage,omitempty"`
 	Estimated              bool          `json:"-"`
+	EstimatedInput         bool          `json:"-"`
+	EstimatedOutput        bool          `json:"-"`
 	UpstreamInputReported  bool          `json:"-"`
 	UpstreamOutputReported bool          `json:"-"`
 

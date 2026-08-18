@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	claudemessages "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/claude_messages"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -63,7 +64,7 @@ func ResponsesResponseToChatCompletionsResponse(resp *dto.OpenAIResponsesRespons
 	text := ExtractOutputTextFromResponses(resp)
 	reasoning := ExtractReasoningTextFromResponses(resp)
 
-	usage := UsageFromResponsesUsage(resp.Usage)
+	usage := UsageForOpenAIChat(resp.Usage)
 
 	created := resp.CreatedAt
 
@@ -126,6 +127,41 @@ func ResponsesResponseToChatCompletionsResponse(resp *dto.OpenAIResponsesRespons
 	}
 
 	return out, usage, nil
+}
+
+// UsageForOpenAIChat makes the target protocol authoritative when a Responses
+// response is converted to Chat Completions.
+func UsageForOpenAIChat(src *dto.Usage) *dto.Usage {
+	originalBilling := (*dto.BillingUsage)(nil)
+	if src != nil {
+		originalBilling = src.BillingUsage
+	}
+	base := src
+	if claudeUsage := claudemessages.UsageFromClaudeBillingUsage(originalBilling); claudeUsage != nil {
+		base = claudeUsage
+	}
+	usage := UsageFromResponsesUsage(base)
+	if usage == nil {
+		return nil
+	}
+	if usage.PromptTokensDetails.CachedTokens == 0 && usage.InputTokensDetails != nil {
+		usage.PromptTokensDetails = *usage.InputTokensDetails
+	}
+	payload := *usage
+	payload.BillingUsage = nil
+	payload.UsageSemantic = ""
+	payload.UsageSource = ""
+	usage.BillingUsage = dto.NewOpenAIChatBillingUsage(&payload)
+	usage.UsageSemantic = dto.BillingUsageSemanticOpenAI
+	usage.UsageSource = dto.BillingUsageSourceOAIChat
+	if usage.BillingUsage != nil {
+		usage.BillingUsage.Estimated = usage.Estimated
+		if originalBilling != nil {
+			usage.BillingUsage.Estimated = usage.BillingUsage.Estimated || originalBilling.Estimated
+			usage.BillingUsage.AnthropicInputCacheNormalized = originalBilling.AnthropicInputCacheNormalized
+		}
+	}
+	return usage
 }
 
 func UsageFromResponsesUsage(src *dto.Usage) *dto.Usage {
