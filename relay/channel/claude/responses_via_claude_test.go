@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func newKimiK3ClaudeResponsesContext(t *testing.T, body string, stream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
@@ -78,8 +79,10 @@ func TestClaudeToResponsesHandlerRestoresKimiK3MetadataModelAndUsage(t *testing.
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
 	require.NotNil(t, usage.BillingUsage)
-	require.NotNil(t, usage.BillingUsage.ClaudeUsage)
-	assert.Equal(t, 3, usage.BillingUsage.ClaudeUsage.CacheReadInputTokens)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIResponses, usage.BillingUsage.Source)
+	assert.Equal(t, 3, usage.BillingUsage.OpenAIUsage.PromptTokensDetails.CachedTokens)
+	assert.Nil(t, usage.BillingUsage.ClaudeUsage)
 
 	var got struct {
 		Model           string            `json:"model"`
@@ -96,6 +99,9 @@ func TestClaudeToResponsesHandlerRestoresKimiK3MetadataModelAndUsage(t *testing.
 	assert.Equal(t, "high", got.Reasoning.Effort)
 	require.NotNil(t, got.Usage)
 	assert.Equal(t, 1, got.Usage.OutputTokens)
+	assert.Equal(t, "oai_responses", gjson.Get(recorder.Body.String(), "usage.billing_usage.source").String())
+	assert.True(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.openai_usage").Exists())
+	assert.False(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.claude_usage").Exists())
 }
 
 func TestClaudeToResponsesStreamHandlerRestoresKimiK3MetadataAndTerminalUsage(t *testing.T) {
@@ -118,6 +124,10 @@ func TestClaudeToResponsesStreamHandlerRestoresKimiK3MetadataAndTerminalUsage(t 
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
 	assert.Equal(t, 1, usage.CompletionTokens)
+	require.NotNil(t, usage.BillingUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIResponses, usage.BillingUsage.Source)
+	assert.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Nil(t, usage.BillingUsage.ClaudeUsage)
 
 	got := recorder.Body.String()
 	assert.Contains(t, got, `"type":"response.output_text.delta"`)

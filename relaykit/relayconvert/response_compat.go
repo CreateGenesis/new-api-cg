@@ -49,8 +49,20 @@ func UsageFromClaudeAPIUsage(usage *dto.ClaudeUsage) *dto.Usage {
 	return claudemessages.UsageFromClaudeAPIUsage(usage)
 }
 
+func UsageFromClaudeBillingUsage(billing *dto.BillingUsage) *dto.Usage {
+	return claudemessages.UsageFromClaudeBillingUsage(billing)
+}
+
 func UsageFromClaudeUsage(usage *dto.Usage) *dto.Usage {
 	return claudemessages.UsageFromClaudeUsage(usage)
+}
+
+func UsageForOpenAIResponses(usage *dto.Usage) *dto.Usage {
+	return oaichat.UsageForOpenAIResponses(usage)
+}
+
+func UsageForOpenAIChat(usage *dto.Usage) *dto.Usage {
+	return oairesponses.UsageForOpenAIChat(usage)
 }
 
 func BuildMessageDeltaPatchUsage(claudeResponse *dto.ClaudeResponse, claudeInfo *ClaudeResponseInfo) *dto.ClaudeUsage {

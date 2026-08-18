@@ -81,7 +81,9 @@ func ChatCompletionsStreamChunkToResponsesEvents(chunk *dto.ChatCompletionsStrea
 		state.Created = chunk.Created
 	}
 	if chunk.Usage != nil {
-		state.Usage = UsageFromChatUsage(chunk.Usage)
+		incoming := *chunk.Usage
+		mergeOpenAIUsage(&incoming, state.Usage)
+		state.Usage = UsageForOpenAIResponses(&incoming)
 	}
 
 	events := make([]ChatToResponsesStreamEvent, 0)
@@ -112,6 +114,40 @@ func ChatCompletionsStreamChunkToResponsesEvents(chunk *dto.ChatCompletionsStrea
 		}
 	}
 	return events, nil
+}
+
+func mergeOpenAIUsage(incoming *dto.Usage, previous *dto.Usage) {
+	if incoming == nil || previous == nil {
+		return
+	}
+	if incoming.PromptTokens == 0 {
+		incoming.PromptTokens = previous.PromptTokens
+	}
+	if incoming.InputTokens == 0 {
+		incoming.InputTokens = previous.InputTokens
+	}
+	if incoming.CompletionTokens == 0 {
+		incoming.CompletionTokens = previous.CompletionTokens
+	}
+	if incoming.OutputTokens == 0 {
+		incoming.OutputTokens = previous.OutputTokens
+	}
+	if incoming.TotalTokens == 0 {
+		incoming.TotalTokens = previous.TotalTokens
+	}
+	if incoming.PromptTokensDetails.CachedTokens == 0 {
+		incoming.PromptTokensDetails.CachedTokens = previous.PromptTokensDetails.CachedTokens
+	}
+	if incoming.PromptTokensDetails.CachedCreationTokens == 0 {
+		incoming.PromptTokensDetails.CachedCreationTokens = previous.PromptTokensDetails.CachedCreationTokens
+	}
+	if incoming.PromptTokensDetails.CacheWriteTokens == 0 {
+		incoming.PromptTokensDetails.CacheWriteTokens = previous.PromptTokensDetails.CacheWriteTokens
+	}
+	if incoming.InputTokensDetails == nil && previous.InputTokensDetails != nil {
+		details := *previous.InputTokensDetails
+		incoming.InputTokensDetails = &details
+	}
 }
 
 func FinalizeChatCompletionsStreamToResponses(state *ChatToResponsesStreamState) []ChatToResponsesStreamEvent {

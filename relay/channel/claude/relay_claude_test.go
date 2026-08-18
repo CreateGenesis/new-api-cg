@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,7 +97,8 @@ func TestHandleClaudeResponseDataNormalizesAnthropicInputUsage(t *testing.T) {
 	require.NotNil(t, claudeInfo.Usage.BillingUsage)
 	require.NotNil(t, claudeInfo.Usage.BillingUsage.ClaudeUsage)
 	assert.Equal(t, 84, claudeInfo.Usage.BillingUsage.ClaudeUsage.InputTokens)
-	normalized := service.NormalizeUsageForBilling(claudeInfo.Usage)
+	openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+	normalized := service.NormalizeUsageForBilling(&openAIUsage)
 	assert.Equal(t, 84, normalized.InputTokens.UncachedInputTokens)
 	assert.Equal(t, 17664, normalized.InputTokens.CacheReadInputTokens)
 	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
@@ -126,7 +128,7 @@ func TestHandleClaudeResponseDataUsesLegacyBillingWhenCompatibilityDisabled(t *t
 	assert.True(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.anthropic_input_cache_normalized").Bool())
 }
 
-func TestHandleClaudeResponseDataRetryKeepsG16TNTLegacyUsage(t *testing.T) {
+func TestHandleClaudeResponseDataRetryAppliesG16TNTUsageCompatibility(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -151,12 +153,12 @@ func TestHandleClaudeResponseDataRetryKeepsG16TNTLegacyUsage(t *testing.T) {
 
 	apiErr := HandleClaudeResponseData(c, info, claudeInfo, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, body)
 	require.Nil(t, apiErr)
-	assert.False(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
-	assert.Equal(t, int64(17748), gjson.Get(recorder.Body.String(), "usage.input_tokens").Int())
-	assert.False(t, gjson.Get(recorder.Body.String(), "usage.billing_usage").Exists())
+	assert.True(t, info.ConvOptions().Claude.AnthropicInputIncludesCache)
+	assert.Equal(t, int64(84), gjson.Get(recorder.Body.String(), "usage.input_tokens").Int())
+	assert.True(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.anthropic_input_cache_normalized").Bool())
 	require.NotNil(t, claudeInfo.Usage.BillingUsage)
 	require.NotNil(t, claudeInfo.Usage.BillingUsage.ClaudeUsage)
-	assert.Equal(t, 17748, claudeInfo.Usage.BillingUsage.ClaudeUsage.InputTokens)
+	assert.Equal(t, 84, claudeInfo.Usage.BillingUsage.ClaudeUsage.InputTokens)
 	assert.True(t, info.IsTNTTencentOpenAIConversion())
 	assert.True(t, info.IsGLM53OfficialCompatibility())
 }
@@ -178,10 +180,75 @@ func TestHandleClaudeResponseDataKeepsOpenAIUsageInclusive(t *testing.T) {
 	}
 	body := []byte(`{"id":"msg_1","type":"message","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":17748,"cache_read_input_tokens":17664,"cache_creation_input_tokens":0,"output_tokens":12}}`)
 
-	apiErr := HandleClaudeResponseData(c, info, &ClaudeResponseInfo{Usage: &dto.Usage{}}, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, body)
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	apiErr := HandleClaudeResponseData(c, info, claudeInfo, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, body)
 	require.Nil(t, apiErr)
 	assert.Equal(t, int64(17748), gjson.Get(recorder.Body.String(), "usage.prompt_tokens").Int())
 	assert.Equal(t, int64(17664), gjson.Get(recorder.Body.String(), "usage.prompt_tokens_details.cached_tokens").Int())
+	assert.Equal(t, "oai_chat", gjson.Get(recorder.Body.String(), "usage.billing_usage.source").String())
+	assert.Equal(t, "openai", gjson.Get(recorder.Body.String(), "usage.billing_usage.semantic").String())
+	assert.True(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.openai_usage").Exists())
+	assert.False(t, gjson.Get(recorder.Body.String(), "usage.billing_usage.claude_usage").Exists())
+	openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+	normalized := service.NormalizeUsageForBilling(&openAIUsage)
+	assert.Equal(t, service.UsageSemanticOpenAI, normalized.UsageSemantic)
+	assert.Equal(t, 84, normalized.InputTokens.UncachedInputTokens)
+	assert.Equal(t, 17664, normalized.InputTokens.CacheReadInputTokens)
+	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
+}
+
+func TestClaudeHandlerReturnsOpenAIBillingForOpenAIEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "claude-test",
+		RelayFormat:     types.RelayFormatOpenAI,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "claude-test",
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":17748,"cache_read_input_tokens":17664,"output_tokens":12}}`)),
+	}
+
+	usage, apiErr := ClaudeHandler(c, resp, info)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BillingUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIChat, usage.BillingUsage.Source)
+	assert.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	assert.Nil(t, usage.BillingUsage.ClaudeUsage)
+}
+
+func TestHandleStreamFinalResponseReturnsOpenAIBillingForOpenAIEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "claude-test"},
+	}
+	claudeInfo := &ClaudeResponseInfo{
+		ResponseId: "msg_1",
+		Created:    1,
+		Usage: &dto.Usage{
+			PromptTokens: 84, CompletionTokens: 12,
+			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 17664},
+			UsageSemantic:       service.UsageSemanticAnthropic,
+		},
+	}
+
+	HandleStreamFinalResponse(c, info, claudeInfo)
+	require.NotNil(t, claudeInfo.Usage)
+	require.NotNil(t, claudeInfo.Usage.BillingUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIChat, claudeInfo.Usage.BillingUsage.Source)
+	assert.NotNil(t, claudeInfo.Usage.BillingUsage.OpenAIUsage)
+	assert.Nil(t, claudeInfo.Usage.BillingUsage.ClaudeUsage)
 }
 
 func TestHandleStreamResponseDataNormalizesAndMarksPatchedUsage(t *testing.T) {
@@ -983,9 +1050,13 @@ func TestBuildOpenAIStyleUsageFromClaudeUsage(t *testing.T) {
 	if openAIUsage.UsageSemantic != "openai" {
 		t.Fatalf("UsageSemantic = %s, want openai", openAIUsage.UsageSemantic)
 	}
-	if openAIUsage.UsageSource != "anthropic" {
-		t.Fatalf("UsageSource = %s, want anthropic", openAIUsage.UsageSource)
+	if openAIUsage.UsageSource != dto.BillingUsageSourceOAIChat {
+		t.Fatalf("UsageSource = %s, want %s", openAIUsage.UsageSource, dto.BillingUsageSourceOAIChat)
 	}
+	require.NotNil(t, openAIUsage.BillingUsage)
+	assert.Equal(t, dto.BillingUsageSourceOAIChat, openAIUsage.BillingUsage.Source)
+	assert.NotNil(t, openAIUsage.BillingUsage.OpenAIUsage)
+	assert.Nil(t, openAIUsage.BillingUsage.ClaudeUsage)
 }
 
 func TestBuildOpenAIStyleUsageFromClaudeUsagePreservesCacheCreationRemainder(t *testing.T) {

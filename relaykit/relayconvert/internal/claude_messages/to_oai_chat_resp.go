@@ -177,17 +177,30 @@ func UsageFromClaudeAPIUsage(usage *dto.ClaudeUsage) *dto.Usage {
 		PromptTokens:     usage.InputTokens,
 		CompletionTokens: usage.OutputTokens,
 		UsageSemantic:    "anthropic",
-		UsageSource:      "anthropic",
-		BillingUsage:     dto.CloneBillingUsage(usage.BillingUsage),
+		UsageSource:      dto.BillingUsageSourceClaudeMessages,
+		BillingUsage:     dto.NewClaudeMessagesBillingUsage(usage),
 	}
-	if semanticUsage.BillingUsage == nil {
-		semanticUsage.BillingUsage = dto.NewClaudeMessagesBillingUsage(usage)
+	if semanticUsage.BillingUsage != nil && usage.BillingUsage != nil {
+		semanticUsage.BillingUsage.Estimated = usage.BillingUsage.Estimated
+		semanticUsage.BillingUsage.AnthropicInputCacheNormalized = usage.BillingUsage.AnthropicInputCacheNormalized
 	}
 	semanticUsage.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
 	semanticUsage.PromptTokensDetails.CachedCreationTokens = usage.CacheCreationInputTokens
 	semanticUsage.ClaudeCacheCreation5mTokens = usage.GetCacheCreation5mTokens()
 	semanticUsage.ClaudeCacheCreation1hTokens = usage.GetCacheCreation1hTokens()
-	return UsageFromClaudeUsage(semanticUsage)
+	return semanticUsage
+}
+
+func UsageFromClaudeBillingUsage(billing *dto.BillingUsage) *dto.Usage {
+	if billing == nil || billing.ClaudeUsage == nil {
+		return nil
+	}
+	usage := UsageFromClaudeUsage(UsageFromClaudeAPIUsage(billing.ClaudeUsage))
+	if usage != nil && usage.BillingUsage != nil {
+		usage.BillingUsage.Estimated = billing.Estimated
+		usage.BillingUsage.AnthropicInputCacheNormalized = billing.AnthropicInputCacheNormalized
+	}
+	return usage
 }
 
 func UsageFromClaudeUsage(usage *dto.Usage) *dto.Usage {
@@ -214,7 +227,8 @@ func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
 		return dto.Usage{}
 	}
 	clone := *usage
-	clone.BillingUsage = dto.CloneBillingUsage(usage.BillingUsage)
+	originalBilling := usage.BillingUsage
+	clone.BillingUsage = nil
 	clone.ClaudeCacheCreation5mTokens, clone.ClaudeCacheCreation1hTokens = sharedclaude.NormalizeCacheCreationSplit(
 		usage.PromptTokensDetails.CachedCreationTokens,
 		usage.ClaudeCacheCreation5mTokens,
@@ -229,7 +243,18 @@ func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
 	clone.InputTokens = totalInputTokens
 	clone.TotalTokens = totalInputTokens + usage.CompletionTokens
 	clone.UsageSemantic = "openai"
-	clone.UsageSource = "anthropic"
+	clone.UsageSource = dto.BillingUsageSourceOAIChat
+	billingPayload := clone
+	billingPayload.UsageSemantic = ""
+	billingPayload.UsageSource = ""
+	clone.BillingUsage = dto.NewOpenAIChatBillingUsage(&billingPayload)
+	if clone.BillingUsage != nil {
+		clone.BillingUsage.Estimated = usage.Estimated
+		if originalBilling != nil {
+			clone.BillingUsage.Estimated = clone.BillingUsage.Estimated || originalBilling.Estimated
+			clone.BillingUsage.AnthropicInputCacheNormalized = originalBilling.AnthropicInputCacheNormalized
+		}
+	}
 	return clone
 }
 
