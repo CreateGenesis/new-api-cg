@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -294,13 +295,8 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	if !w.stream && !w.usagePrepared {
-		var payload map[string]any
-		if common.Unmarshal(w.body.Bytes(), &payload) == nil {
-			w.observeUsagePresence(payload)
-			if w.observeEffectiveOutput(payload) {
-				w.effectiveOutput = true
-			}
-			observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, false)
+		if err := w.observeNonStreamBody(w.body.Bytes()); err != nil {
+			return channelOutputPolicyError(err)
 		}
 	}
 	streamInterrupted := false
@@ -420,6 +416,69 @@ func (w *channelOutputRecorder) prepareUsageEstimationFromBody(c *gin.Context, i
 
 func (w *channelOutputRecorder) observeEffectiveOutput(payload map[string]any) bool {
 	return observeChannelOutputPayload(w.format, w.relayMode, payload, &w.outputText)
+}
+
+func (w *channelOutputRecorder) observeNonStreamBody(body []byte) error {
+	var payload map[string]any
+	if common.Unmarshal(body, &payload) == nil {
+		w.observeUsagePresence(payload)
+		if w.observeEffectiveOutput(payload) {
+			w.effectiveOutput = true
+		}
+		observeVisibleResponsePayload(w.format, w.relayMode, payload, w.contentMatcher, false)
+		return nil
+	}
+	// A few upstreams return SSE even for a non-stream request. Inspect each
+	// complete event so an error envelope is still eligible for content retry.
+	for _, event := range splitSimulatedModelCacheSSEChunks(body) {
+		if err := w.observeStreamEvent(event, true); err != nil {
+			if errors.Is(err, errResponseContentMatched) {
+				w.policyErr = err
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *channelOutputRecorder) observeResponseError(c *gin.Context, err *types.NewAPIError) {
+	// Buffered adaptors can consume an upstream error event before writing it.
+	if w == nil || !responseContentRetryEligibleError(c, err) || w.committed || w.policyErr != nil || w.contentMatcher == nil {
+		return
+	}
+	w.contentMatcher.append(err.Error())
+	if w.contentMatcher.finish() {
+		w.policyErr = errResponseContentMatched
+	}
+}
+
+func responseContentRetryEligibleError(c *gin.Context, err *types.NewAPIError) bool {
+	if err == nil || types.IsSkipRetryError(err) {
+		return false
+	}
+
+	code := err.StatusCode
+	if code >= http.StatusOK && code < http.StatusMultipleChoices {
+		return true
+	}
+	if code < http.StatusContinue || code > 599 {
+		return false
+	}
+	if operation_setting.IsAlwaysSkipRetryCode(err.GetErrorCode()) || operation_setting.IsAlwaysSkipRetryStatusCode(code) {
+		return true
+	}
+
+	ranges := operation_setting.AutomaticRetryStatusCodeRanges
+	if c != nil {
+		if settings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting); ok &&
+			settings.StatusCodeRetry != nil && settings.StatusCodeRetry.Enabled {
+			normalized := settings.StatusCodeRetry.Normalize()
+			if channelRanges, parseErr := operation_setting.ParseHTTPStatusCodeRanges(normalized.StatusCodes); parseErr == nil {
+				ranges = channelRanges
+			}
+		}
+	}
+	return !operation_setting.ShouldRetryByStatusCodeRanges(ranges, code)
 }
 
 func (w *channelOutputRecorder) observeUsagePresence(payload map[string]any) {

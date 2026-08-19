@@ -292,7 +292,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
-		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newAPIError); policyErr != nil {
 			return policyErr
 		}
 		// reset status code 重置状态码

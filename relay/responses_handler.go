@@ -192,7 +192,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
-		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newAPIError); policyErr != nil {
 			return policyErr
 		}
 		// reset status code 重置状态码
@@ -204,7 +204,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	isAudioResponse := strings.HasPrefix(info.OriginModelName, "gpt-4o-audio")
 	if recorder != nil {
 		if isAudioResponse {
-			restoreSimulatedModelCacheRecorder(c, recorder)
+			restoreSimulatedModelCacheRecorder(c, recorder, nil)
 			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
 		} else {
 			if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usageDto); policyErr != nil {

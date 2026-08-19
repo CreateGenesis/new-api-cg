@@ -843,7 +843,7 @@ func simulatedModelCacheModelName(info *relaycommon.RelayInfo) string {
 	return strings.TrimSpace(info.UpstreamModelName)
 }
 
-func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModelCacheRecorder) *types.NewAPIError {
+func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModelCacheRecorder, responseErr *types.NewAPIError) *types.NewAPIError {
 	if recorder != nil {
 		if recorder.attempt != nil && recorder.attempt.partialMatch != nil {
 			recorder.attempt.partialMatch.Cancel()
@@ -855,6 +855,7 @@ func restoreSimulatedModelCacheRecorder(c *gin.Context, recorder *simulatedModel
 		recorder.releaseResponseReservation()
 		c.Writer = recorder.ResponseWriter
 		if recorder.outputRecorder != nil {
+			recorder.outputRecorder.observeResponseError(c, responseErr)
 			recorder.outputRecorder.abort(c)
 			if recorder.outputRecorder.policyErr != nil {
 				return channelOutputPolicyError(recorder.outputRecorder.policyErr)

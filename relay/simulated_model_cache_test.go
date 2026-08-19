@@ -870,7 +870,7 @@ func TestRestoreSimulatedModelCacheRecorderReleasesBufferedTailOnUpstreamError(t
 	_, err := c.Writer.Write([]byte(original))
 	require.NoError(t, err)
 	assert.Empty(t, w.Body.String())
-	restoreSimulatedModelCacheRecorder(c, recorder)
+	restoreSimulatedModelCacheRecorder(c, recorder, nil)
 
 	assert.Equal(t, original, w.Body.String())
 }

@@ -202,7 +202,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
-		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, openaiErr); policyErr != nil {
 			return policyErr
 		}
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)

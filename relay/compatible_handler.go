@@ -283,7 +283,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
-		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder); policyErr != nil {
+		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newApiErr); policyErr != nil {
 			return policyErr
 		}
 		// reset status code 重置状态码
@@ -295,7 +295,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 	if recorder != nil {
 		if containAudioTokens {
-			restoreSimulatedModelCacheRecorder(c, recorder)
+			restoreSimulatedModelCacheRecorder(c, recorder, nil)
 			flushSimulatedModelCacheRecorder(recorder, recorder.body.Bytes())
 		} else {
 			if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage.(*dto.Usage)); policyErr != nil {

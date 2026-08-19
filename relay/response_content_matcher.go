@@ -100,6 +100,9 @@ func observeVisibleResponsePayload(format types.RelayFormat, relayMode int, payl
 	if matcher == nil || matcher.resolved || matcher.matched {
 		return
 	}
+	if observeResponseError(payload, matcher) {
+		return
+	}
 	switch format {
 	case types.RelayFormatOpenAI:
 		observeVisibleOpenAI(payload, relayMode, matcher)
@@ -110,6 +113,52 @@ func observeVisibleResponsePayload(format types.RelayFormat, relayMode int, payl
 	case types.RelayFormatGemini:
 		observeVisibleGemini(payload, matcher)
 	}
+}
+
+func observeResponseError(payload map[string]any, matcher *responseContentMatcher) bool {
+	if errorValue, ok := payload["error"]; ok && errorValue != nil {
+		if appendResponseErrorText(errorValue, matcher) {
+			return true
+		}
+		return appendResponseErrorText(payload, matcher)
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if errorValue, exists := response["error"]; exists && errorValue != nil {
+			if appendResponseErrorText(errorValue, matcher) {
+				return true
+			}
+			return appendResponseErrorText(response, matcher)
+		}
+	}
+	eventType, _ := payload["type"].(string)
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	if eventType == "error" || strings.HasSuffix(eventType, "_error") || strings.HasSuffix(eventType, ".error") ||
+		strings.HasSuffix(eventType, "_failed") || strings.HasSuffix(eventType, ".failed") {
+		return appendResponseErrorText(payload, matcher)
+	}
+	return false
+}
+
+func appendResponseErrorText(value any, matcher *responseContentMatcher) bool {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return false
+		}
+		matcher.append(typed)
+		return true
+	case map[string]any:
+		for _, key := range []string{"message", "msg", "error_message", "error_msg", "detail"} {
+			if text, ok := typed[key].(string); ok && strings.TrimSpace(text) != "" {
+				matcher.append(text)
+				return true
+			}
+		}
+		if nested, ok := typed["error"]; ok && nested != nil {
+			return appendResponseErrorText(nested, matcher)
+		}
+	}
+	return false
 }
 
 func observeVisibleOpenAI(payload map[string]any, relayMode int, matcher *responseContentMatcher) {
