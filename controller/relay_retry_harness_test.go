@@ -507,7 +507,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	attempts = nil
 	responseContentStream = true
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1", "channel-2"}, contentAttempts)
+	assert.Equal(t, []string{"channel-1", "channel-1", "channel-1", "channel-1", "channel-2"}, contentAttempts)
 	assert.Equal(t, http.StatusOK, contentRecorder.Code)
 	assert.Contains(t, contentRecorder.Body.String(), "response content fallback ok")
 	assert.NotContains(t, contentRecorder.Body.String(), "内容已过滤")
@@ -535,7 +535,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	responseContentFallback = false
 	responseContentStream = false
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1", "channel-2"}, contentStreamAttempts)
+	assert.Equal(t, []string{"channel-1", "channel-1", "channel-1", "channel-1", "channel-2"}, contentStreamAttempts)
 	assert.Equal(t, http.StatusOK, contentStreamRecorder.Code)
 	assert.Contains(t, contentStreamRecorder.Body.String(), "response content stream fallback ok")
 	assert.NotContains(t, contentStreamRecorder.Body.String(), "内容已过滤")

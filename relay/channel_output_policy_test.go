@@ -230,7 +230,7 @@ func TestUsageEstimationPreservesErrorFinishReason(t *testing.T) {
 	assert.Equal(t, 26973, usage.CompletionTokens)
 }
 
-func TestChannelOutputRecorderDoesNotRetryEmptyNonStreamWithInputUsage(t *testing.T) {
+func TestChannelOutputRecorderRetriesEmptyNonStreamWithInputUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -247,11 +247,13 @@ func TestChannelOutputRecorderDoesNotRetryEmptyNonStreamWithInputUsage(t *testin
 	require.NoError(t, err)
 	assert.Empty(t, response.Body.String())
 
-	require.Nil(t, recorder.finish(ctx, info, &dto.Usage{PromptTokens: 5, TotalTokens: 5}))
-	assert.Contains(t, response.Body.String(), `"prompt_tokens":5`)
+	policyErr := recorder.finish(ctx, info, &dto.Usage{PromptTokens: 5, TotalTokens: 5})
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Empty(t, response.Body.String())
 }
 
-func TestChannelOutputRecorderDoesNotRetryEmptyContentWithNonzeroInputUsage(t *testing.T) {
+func TestChannelOutputRecorderRetriesEmptyContentWithNonzeroInputUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -268,12 +270,14 @@ func TestChannelOutputRecorderDoesNotRetryEmptyContentWithNonzeroInputUsage(t *t
 	require.NoError(t, err)
 	usage := &dto.Usage{PromptTokens: 5, CompletionTokens: 12, TotalTokens: 17}
 
-	require.Nil(t, recorder.finish(ctx, info, usage))
+	policyErr := recorder.finish(ctx, info, usage)
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
 	assert.Equal(t, 12, usage.CompletionTokens)
-	assert.Contains(t, response.Body.String(), `"prompt_tokens":5`)
+	assert.Empty(t, response.Body.String())
 }
 
-func TestKimiK3HiddenReasoningOnlyResponseDoesNotRetryWithNonzeroInputUsage(t *testing.T) {
+func TestKimiK3HiddenReasoningOnlyResponseRetriesWithNonzeroInputUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -298,8 +302,10 @@ func TestKimiK3HiddenReasoningOnlyResponseDoesNotRetryWithNonzeroInputUsage(t *t
 	require.NoError(t, err)
 	usage := &dto.Usage{PromptTokens: 5, CompletionTokens: 12, TotalTokens: 17}
 
-	require.Nil(t, recorder.finish(ctx, info, usage))
-	assert.Contains(t, response.Body.String(), `"prompt_tokens":5`)
+	policyErr := recorder.finish(ctx, info, usage)
+	require.NotNil(t, policyErr)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Empty(t, response.Body.String())
 }
 
 func TestChannelOutputRecorderRetriesEmptyOutputWithExplicitZeroInputUsage(t *testing.T) {

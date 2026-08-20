@@ -309,11 +309,9 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	inputUsageReported := usage != nil && (w.inputUsageObserved || usage.UpstreamInputReported || usage.EstimatedInput)
+	// A reported input does not make an empty response valid; retry every completed attempt with no effective output.
 	if w.retryZeroOutput && !streamInterrupted && !w.effectiveOutput && inputUsageReported && usage != nil && (!usage.Estimated || info != nil && info.UsageEstimationAudit != nil) {
-		normalized := service.NormalizeUsageForBilling(usage)
-		if normalized.InputTokens.TotalInputTokens <= 0 {
-			return channelZeroOutputError(errors.New("upstream returned no effective output"))
-		}
+		return channelZeroOutputError(errors.New("upstream returned no effective output"))
 	}
 
 	if w.validateUsage && !streamInterrupted {

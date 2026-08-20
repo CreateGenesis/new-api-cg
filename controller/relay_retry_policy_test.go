@@ -125,18 +125,22 @@ func TestZeroOutputRetriesOnlyAcrossChannels(t *testing.T) {
 	assert.False(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
 }
 
-func TestResponseContentMatchRetriesOnlyAcrossChannels(t *testing.T) {
+func TestResponseContentMatchFollowsChannelRetryPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("503")
+	require.NoError(t, err)
+	policy := relayRetryPolicy{retryTimes: 1, statusCodeRanges: ranges, channelOverride: true}
 	matchedErr := types.NewErrorWithStatusCode(
 		errors.New("matched configured response content"),
 		types.ErrorCodeChannelResponseContentMatch,
 		http.StatusServiceUnavailable,
 	)
+	ctx.Set("layered_relay_retry", true)
 
-	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, matchedErr, policy, 0))
+	assert.True(t, shouldRetrySameChannelWithPolicy(ctx, matchedErr, policy, 0))
+	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, matchedErr, policy, 1))
 	assert.True(t, shouldRetryWithPolicy(ctx, matchedErr, policy, 0))
 
 	ctx.Set("specific_channel_id", 1)

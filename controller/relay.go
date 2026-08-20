@@ -916,9 +916,6 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelZeroOutput && allowSpecificChannelRetry {
 		return relayRetryEvaluation{reason: "zero_output"}
 	}
-	if openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseContentMatch && allowSpecificChannelRetry {
-		return relayRetryEvaluation{reason: "response_content_match"}
-	}
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelStreamError {
 		if allowSpecificChannelRetry {
 			return relayRetryEvaluation{reason: "stream_error"}
@@ -937,7 +934,10 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 		}
 		return relayRetryEvaluation{retry: true, reason: "response_body_timeout"}
 	}
-	if types.IsChannelError(openaiErr) {
+	// Response-content fallback is a retryable upstream response, not an
+	// admission/transport failure. Let its status code use the normal retry
+	// policy, including a configured channel-local override.
+	if types.IsChannelError(openaiErr) && openaiErr.GetErrorCode() != types.ErrorCodeChannelResponseContentMatch {
 		if allowSpecificChannelRetry && c.GetBool("layered_relay_retry") {
 			return relayRetryEvaluation{retry: openaiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded, reason: "channel_error"}
 		}
