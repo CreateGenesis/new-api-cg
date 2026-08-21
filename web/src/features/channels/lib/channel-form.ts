@@ -54,33 +54,39 @@ const SUPPORTED_PROXY_PROTOCOLS = new Set([
 ])
 
 function isOptionalProxyURL(value: string | undefined): boolean {
-  const trimmedValue = value?.trim() || ''
-  if (!trimmedValue) return true
+  const values = (value || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (values.length > MAX_PROXY_URLS) return false
+  return values.every((trimmedValue) => {
+    const schemeSeparatorIndex = trimmedValue.indexOf('://')
+    if (schemeSeparatorIndex <= 0) return false
 
-  const schemeSeparatorIndex = trimmedValue.indexOf('://')
-  if (schemeSeparatorIndex <= 0) return false
+    const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
+    const suffixIndex = authorityAndSuffix.search(/[/?#]/)
+    if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
+      return false
+    }
 
-  const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
-  const suffixIndex = authorityAndSuffix.search(/[/?#]/)
-  if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
-    return false
-  }
-
-  try {
-    const parsedURL = new URL(trimmedValue)
-    return (
-      SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
-      Boolean(parsedURL.hostname) &&
-      parsedURL.port !== '0'
-    )
-  } catch {
-    return false
-  }
+    try {
+      const parsedURL = new URL(trimmedValue)
+      return (
+        SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
+        Boolean(parsedURL.hostname) &&
+        parsedURL.port !== '0'
+      )
+    } catch {
+      return false
+    }
+  })
 }
 
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
+export const MAX_PROXY_URLS = 16
 
 export function normalizeHttpProtocol(
   value: string | undefined | null

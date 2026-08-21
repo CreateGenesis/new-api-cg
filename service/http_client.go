@@ -36,8 +36,8 @@ type proxyHTTPClientCache struct {
 }
 
 type proxyURLConfig struct {
-	parsedURL *url.URL
-	cacheKey  string
+	parsedURLs []*url.URL
+	cacheKey   string
 }
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
@@ -140,46 +140,59 @@ func GetSSRFProtectedHTTPClient() *http.Client {
 	return ssrfProtectedHTTPClient
 }
 
-func newProxyURLConfig(parsedURL *url.URL) *proxyURLConfig {
+func newProxyURLConfig(parsedURLs []*url.URL) *proxyURLConfig {
+	cacheKeyParts := make([]string, 0, len(parsedURLs))
+	for _, parsedURL := range parsedURLs {
+		cacheKeyParts = append(cacheKeyParts, parsedURL.String())
+	}
 	return &proxyURLConfig{
-		parsedURL: parsedURL,
-		cacheKey:  parsedURL.String(),
+		parsedURLs: parsedURLs,
+		cacheKey:   strings.Join(cacheKeyParts, "\x01"),
 	}
 }
 
-func warnLegacyProxyURLOnce(config *proxyURLConfig) {
-	if _, loaded := legacyProxyURLWarnings.LoadOrStore(config.cacheKey, struct{}{}); loaded {
+func warnLegacyProxyURLOnce(parsedURL *url.URL) {
+	if _, loaded := legacyProxyURLWarnings.LoadOrStore(parsedURL.String(), struct{}{}); loaded {
 		return
 	}
 	logger.LogWarn(
 		context.Background(),
 		fmt.Sprintf(
 			"legacy proxy URL suffix ignored at runtime: scheme=%s host=%s; update the channel proxy setting",
-			config.parsedURL.Scheme,
-			config.parsedURL.Host,
+			parsedURL.Scheme,
+			parsedURL.Host,
 		),
 	)
 }
 
+func warnLegacyProxyURLs(rawProxyURLs string) {
+	for _, rawProxyURL := range strings.Split(strings.ReplaceAll(rawProxyURLs, "\r\n", "\n"), "\n") {
+		parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(rawProxyURL)
+		if err == nil && parsedURL != nil && legacySuffixStripped {
+			warnLegacyProxyURLOnce(parsedURL)
+		}
+	}
+}
+
 // NormalizeProxyURL validates a proxy URL using runtime-compatible rules and returns its canonical cache key.
 func NormalizeProxyURL(rawProxyURL string) (string, error) {
-	parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(rawProxyURL)
+	parsedURLs, legacySuffixStripped, err := common.ParseProxyURLsRuntime(rawProxyURL)
 	if err != nil {
 		return "", err
 	}
-	if parsedURL == nil {
+	if len(parsedURLs) == 0 {
 		return "", nil
 	}
-	config := newProxyURLConfig(parsedURL)
+	config := newProxyURLConfig(parsedURLs)
 	if legacySuffixStripped {
-		warnLegacyProxyURLOnce(config)
+		warnLegacyProxyURLs(rawProxyURL)
 	}
 	return config.cacheKey, nil
 }
 
 // ValidateProxyURL validates a channel proxy URL without connecting to it.
 func ValidateProxyURL(rawProxyURL string) error {
-	_, err := common.ParseProxyURLStrict(rawProxyURL)
+	_, err := common.ParseProxyURLsStrict(rawProxyURL)
 	return err
 }
 
@@ -370,6 +383,21 @@ func newProxyHTTPClient(proxyURL *url.URL, fallbackToDirect bool) (*http.Client,
 	return newHTTPClientFromPolicy(defaultHTTPTransportPolicy(), proxyURL, fallbackToDirect, nil)
 }
 
+func newProxyPoolHTTPClient(policy HTTPTransportPolicy, proxyURLs []*url.URL, fallbackToDirect bool) (*http.Client, error) {
+	transports := make([]http.RoundTripper, 0, len(proxyURLs))
+	for _, proxyURL := range proxyURLs {
+		client, err := newHTTPClientFromPolicy(policy, proxyURL, fallbackToDirect, nil)
+		if err != nil {
+			for _, transport := range transports {
+				closeIdleConnections(transport)
+			}
+			return nil, err
+		}
+		transports = append(transports, client.Transport)
+	}
+	return newRelayHTTPClient(newLeastConnectionsRoundTripper(transports)), nil
+}
+
 // GetHttpClientWithProxy returns the default client or a cached proxy-enabled client.
 func GetHttpClientWithProxy(rawProxyURL string) (*http.Client, error) {
 	return GetHttpClientWithProxyFallback(rawProxyURL, false)
@@ -389,7 +417,6 @@ func GetHttpClientWithProxySettings(rawProxyURL string, settings dto.ChannelSett
 	policy := NormalizeHTTPTransportPolicy(settings)
 	fallbackToDirect := settings.ProxyFallbackDirect
 	trimmedProxyURL := strings.TrimSpace(rawProxyURL)
-
 	if trimmedProxyURL == "" {
 		return getOrCreateDirectClient(policy)
 	}
@@ -398,16 +425,22 @@ func GetHttpClientWithProxySettings(rawProxyURL string, settings dto.ChannelSett
 		return client, nil
 	}
 
-	parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(trimmedProxyURL)
+	parsedURLs, legacySuffixStripped, err := common.ParseProxyURLsRuntime(trimmedProxyURL)
 	if err != nil {
 		return nil, err
 	}
-	config := newProxyURLConfig(parsedURL)
+	if len(parsedURLs) == 0 {
+		return getOrCreateDirectClient(policy)
+	}
+	config := newProxyURLConfig(parsedURLs)
 	if legacySuffixStripped {
-		warnLegacyProxyURLOnce(config)
+		warnLegacyProxyURLs(trimmedProxyURL)
 	}
 	return proxyClients.getOrCreate(trimmedProxyURL, config, policy, fallbackToDirect, func() (*http.Client, error) {
-		return newHTTPClientFromPolicy(policy, config.parsedURL, fallbackToDirect, nil)
+		if len(config.parsedURLs) == 1 {
+			return newHTTPClientFromPolicy(policy, config.parsedURLs[0], fallbackToDirect, nil)
+		}
+		return newProxyPoolHTTPClient(policy, config.parsedURLs, fallbackToDirect)
 	})
 }
 
@@ -432,13 +465,13 @@ func getOrCreateDirectClient(policy HTTPTransportPolicy) (*http.Client, error) {
 // InvalidateProxyClient removes every cached policy variant for one proxy and
 // closes their idle connections (including all HTTP/2 shards).
 func InvalidateProxyClient(rawProxyURL string) {
-	parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(rawProxyURL)
-	if err != nil || parsedURL == nil {
+	parsedURLs, legacySuffixStripped, err := common.ParseProxyURLsRuntime(rawProxyURL)
+	if err != nil || len(parsedURLs) == 0 {
 		return
 	}
-	config := newProxyURLConfig(parsedURL)
+	config := newProxyURLConfig(parsedURLs)
 	if legacySuffixStripped {
-		warnLegacyProxyURLOnce(config)
+		warnLegacyProxyURLs(rawProxyURL)
 	}
 	for _, client := range proxyClients.removeProxy(config.cacheKey) {
 		client.CloseIdleConnections()

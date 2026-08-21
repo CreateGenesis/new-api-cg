@@ -1154,7 +1154,7 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
-	if _, err := common.ParseProxyURLStrict(channelParams.Proxy); err != nil {
+	if _, err := common.ParseProxyURLsStrict(channelParams.Proxy); err != nil {
 		return fmt.Errorf("invalid channel proxy: %w", err)
 	}
 	if err := operation_setting.ValidateChannelHeaderRewrite(channelParams.HeaderRewrite); err != nil {

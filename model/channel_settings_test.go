@@ -42,6 +42,26 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestChannelValidateSettingsAcceptsMultipleProxyAddresses(t *testing.T) {
+	channel := &Channel{}
+	channel.SetSetting(dto.ChannelSettings{
+		Proxy: "socks5://proxy-a:1080\nsocks5h://proxy-b:1080",
+	})
+
+	require.NoError(t, channel.ValidateSettings())
+}
+
+func TestChannelValidateSettingsRejectsInvalidProxyAddressInList(t *testing.T) {
+	channel := &Channel{}
+	channel.SetSetting(dto.ChannelSettings{
+		Proxy: "socks5://proxy-a:1080\nftp://proxy-b:21",
+	})
+
+	err := channel.ValidateSettings()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid channel proxy")
+}
+
 func TestChannelValidateSettingsAcceptsStatusCodeRetryDefaults(t *testing.T) {
 	channel := &Channel{
 		OtherSettings: `{"status_code_retry":{"enabled":true}}`,

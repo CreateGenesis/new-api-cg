@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const MaxProxyURLs = 16
+
 // ParseProxyURLStrict validates and normalizes a proxy URL for persistence.
 func ParseProxyURLStrict(rawProxyURL string) (*url.URL, error) {
 	parsedURL, _, err := parseProxyURL(rawProxyURL, false)
@@ -18,6 +20,51 @@ func ParseProxyURLStrict(rawProxyURL string) (*url.URL, error) {
 // The boolean result reports whether a legacy path, query, or fragment was removed.
 func ParseProxyURLRuntime(rawProxyURL string) (*url.URL, bool, error) {
 	return parseProxyURL(rawProxyURL, true)
+}
+
+// ParseProxyURLsStrict validates each non-empty line as a proxy URL.
+// A newline-separated value keeps the existing channel setting compatible
+// while allowing a channel to maintain a small proxy pool.
+func ParseProxyURLsStrict(rawProxyURLs string) ([]*url.URL, error) {
+	proxyURLs, _, err := parseProxyURLs(rawProxyURLs, false)
+	return proxyURLs, err
+}
+
+// ParseProxyURLsRuntime validates and normalizes a newline-separated proxy
+// list for runtime use. The boolean reports whether a legacy suffix was
+// stripped from any entry.
+func ParseProxyURLsRuntime(rawProxyURLs string) ([]*url.URL, bool, error) {
+	return parseProxyURLs(rawProxyURLs, true)
+}
+
+func parseProxyURLs(rawProxyURLs string, allowLegacySuffix bool) ([]*url.URL, bool, error) {
+	lines := strings.Split(strings.ReplaceAll(rawProxyURLs, "\r\n", "\n"), "\n")
+	proxyURLs := make([]*url.URL, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	legacySuffixStripped := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parsedURL, legacySuffix, err := parseProxyURL(line, allowLegacySuffix)
+		if err != nil {
+			return nil, false, err
+		}
+		if parsedURL == nil {
+			continue
+		}
+		if _, exists := seen[parsedURL.String()]; exists {
+			legacySuffixStripped = legacySuffixStripped || legacySuffix
+			continue
+		}
+		seen[parsedURL.String()] = struct{}{}
+		proxyURLs = append(proxyURLs, parsedURL)
+		legacySuffixStripped = legacySuffixStripped || legacySuffix
+	}
+	if len(proxyURLs) > MaxProxyURLs {
+		return nil, false, fmt.Errorf("proxy list must contain at most %d entries", MaxProxyURLs)
+	}
+	return proxyURLs, legacySuffixStripped, nil
 }
 
 func parseProxyURL(rawProxyURL string, allowLegacySuffix bool) (*url.URL, bool, error) {

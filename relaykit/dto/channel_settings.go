@@ -12,8 +12,10 @@ import (
 )
 
 type ChannelSettings struct {
-	ForceFormat            bool                          `json:"force_format,omitempty"`
-	ThinkingToContent      bool                          `json:"thinking_to_content,omitempty"`
+	ForceFormat       bool `json:"force_format,omitempty"`
+	ThinkingToContent bool `json:"thinking_to_content,omitempty"`
+	// Proxy accepts one proxy URL per line. Requests use the candidate with
+	// the fewest active response bodies; a single URL remains fully compatible.
 	Proxy                  string                        `json:"proxy"`
 	ProxyFallbackDirect    bool                          `json:"proxy_fallback_direct,omitempty"`
 	PassThroughBodyEnabled bool                          `json:"pass_through_body_enabled,omitempty"`

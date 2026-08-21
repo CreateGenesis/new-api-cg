@@ -5612,9 +5612,10 @@ export function ChannelMutateDrawer({
                                 name='proxy'
                                 render={({ field }) => (
                                   <FormItem>
-                                    <FormLabel>{t('Proxy Address')}</FormLabel>
+                                    <FormLabel>{t('Proxy Addresses')}</FormLabel>
                                     <FormControl>
-                                      <Input
+                                      <Textarea
+                                        rows={3}
                                         placeholder={t(
                                           'socks5://user:pass@host:port'
                                         )}
@@ -5623,7 +5624,7 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(
-                                        'Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)'
+                                        'Supports HTTP, HTTPS, SOCKS5, and SOCKS5H. Enter one URL per line; requests prefer the proxy with the fewest active connections.'
                                       )}
                                     </FormDescription>
                                     <FormMessage />

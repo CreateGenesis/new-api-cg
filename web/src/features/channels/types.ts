@@ -156,6 +156,7 @@ export type Channel = z.infer<typeof channelSchema>
 export interface ChannelSettings {
   force_format?: boolean
   thinking_to_content?: boolean
+  /** One proxy URL per line; requests prefer the least-active proxy. */
   proxy?: string
   proxy_fallback_direct?: boolean
   pass_through_body_enabled?: boolean
