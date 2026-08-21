@@ -5508,7 +5508,7 @@ export function ChannelMutateDrawer({
                                             </FormLabel>
                                             <FormDescription>
                                               {t(
-                                                'If an upstream error contains any of these keywords (case insensitive), the channel will be disabled automatically.'
+                                                'Disable Moonshot keys when 5-hour or weekly quota errors are reported; automatically restore them after the quota window resets.'
                                               )}
                                             </FormDescription>
                                             <FormMessage />
@@ -5533,7 +5533,9 @@ export function ChannelMutateDrawer({
                                               {t('Auto Disabled')}
                                             </FormLabel>
                                             <FormDescription>
-                                              {t('Passive recovery only')}
+                                              {t(
+                                                'Optionally disable keys when Moonshot reports that a subscription is required; this state does not recover automatically.'
+                                              )}
                                             </FormDescription>
                                             <FormMessage />
                                           </div>
