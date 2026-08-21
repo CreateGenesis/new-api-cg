@@ -68,6 +68,7 @@ func clearChannelInfo(channel *model.Channel) {
 	if channel.ChannelInfo.IsMultiKey {
 		channel.ChannelInfo.MultiKeyDisabledReason = nil
 		channel.ChannelInfo.MultiKeyDisabledTime = nil
+		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = nil
 	}
 }
 
@@ -1614,6 +1615,8 @@ type KeyStatus struct {
 	Reason       string `json:"reason,omitempty"`
 	KeyPreview   string `json:"key_preview"` // retained for compatibility; never contains the complete key
 	MaskedKey    string `json:"masked_key"`
+	RecoveryTime int64  `json:"recovery_time"`
+	QuotaWindow  string `json:"quota_window,omitempty"`
 }
 
 // GetMultiKeyChannelKey returns one complete key from a multi-key channel (root only).
@@ -1695,6 +1698,12 @@ func ManageMultiKeys(c *gin.Context) {
 			"id":     channel.Id,
 		})
 	}
+	if request.Action == "get_key_status" {
+		service.RecoverMoonshotQuotaKeys()
+		if refreshed, refreshErr := model.GetChannelById(request.ChannelId, true); refreshErr == nil {
+			channel = refreshed
+		}
+	}
 
 	lock := model.GetChannelPollingLock(channel.Id)
 	lock.Lock()
@@ -1723,6 +1732,8 @@ func ManageMultiKeys(c *gin.Context) {
 			status := 1 // default enabled
 			var disabledTime int64
 			var reason string
+			var recoveryTime int64
+			var quotaWindow string
 
 			if channel.ChannelInfo.MultiKeyStatusList != nil {
 				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
@@ -1747,6 +1758,15 @@ func ManageMultiKeys(c *gin.Context) {
 				if channel.ChannelInfo.MultiKeyDisabledReason != nil {
 					reason = channel.ChannelInfo.MultiKeyDisabledReason[i]
 				}
+				if quota := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; quota.MonthlyNoSubscription {
+					quotaWindow = "monthly_no_subscription"
+				} else if quota := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; quota.WeeklyUntil > 0 {
+					quotaWindow = "weekly"
+					recoveryTime = quota.WeeklyUntil
+				} else if quota := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; quota.FiveHourUntil > 0 {
+					quotaWindow = "five_hour"
+					recoveryTime = quota.FiveHourUntil
+				}
 			}
 
 			maskedKey := model.MaskTokenKey(key)
@@ -1763,6 +1783,8 @@ func ManageMultiKeys(c *gin.Context) {
 				Reason:       reason,
 				KeyPreview:   keyPreview,
 				MaskedKey:    maskedKey,
+				RecoveryTime: recoveryTime,
+				QuotaWindow:  quotaWindow,
 			})
 		}
 
@@ -1846,6 +1868,9 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		channel.ChannelInfo.MultiKeyStatusList[keyIndex] = 2 // disabled
+		channel.ChannelInfo.MultiKeyDisabledReason[keyIndex] = "Manually disabled"
+		channel.ChannelInfo.MultiKeyDisabledTime[keyIndex] = common.GetTimestamp()
+		delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, keyIndex)
 
 		err = channel.Update()
 		if err != nil {
@@ -1888,6 +1913,12 @@ func ManageMultiKeys(c *gin.Context) {
 		if channel.ChannelInfo.MultiKeyDisabledReason != nil {
 			delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
 		}
+		if channel.ChannelInfo.MultiKeyMoonshotQuotaStatus != nil {
+			delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, keyIndex)
+		}
+		if channel.Status == common.ChannelStatusAutoDisabled && model.HasEnabledMultiKeyForChannel(channel) {
+			channel.Status = common.ChannelStatusEnabled
+		}
 
 		err = channel.Update()
 		if err != nil {
@@ -1912,6 +1943,10 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
 		channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
 		channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
+		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = make(map[int]model.MoonshotQuotaStatus)
+		if channel.Status == common.ChannelStatusAutoDisabled {
+			channel.Status = common.ChannelStatusEnabled
+		}
 
 		err = channel.Update()
 		if err != nil {
@@ -1948,6 +1983,9 @@ func ManageMultiKeys(c *gin.Context) {
 			// 只禁用当前启用的密钥
 			if status == 1 {
 				channel.ChannelInfo.MultiKeyStatusList[i] = 2 // disabled
+				channel.ChannelInfo.MultiKeyDisabledReason[i] = "Manually disabled"
+				channel.ChannelInfo.MultiKeyDisabledTime[i] = common.GetTimestamp()
+				delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, i)
 				disabledCount++
 			}
 		}
@@ -1996,6 +2034,7 @@ func ManageMultiKeys(c *gin.Context) {
 		var newStatusList = make(map[int]int)
 		var newDisabledTime = make(map[int]int64)
 		var newDisabledReason = make(map[int]string)
+		var newQuotaStatus = make(map[int]model.MoonshotQuotaStatus)
 
 		newIndex := 0
 		for i, key := range keys {
@@ -2022,6 +2061,9 @@ func ManageMultiKeys(c *gin.Context) {
 					newDisabledReason[newIndex] = r
 				}
 			}
+			if quota, exists := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; exists {
+				newQuotaStatus[newIndex] = quota
+			}
 			newIndex++
 		}
 
@@ -2039,6 +2081,7 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = newStatusList
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = newQuotaStatus
 
 		err = channel.Update()
 		if err != nil {
@@ -2060,6 +2103,7 @@ func ManageMultiKeys(c *gin.Context) {
 		var newStatusList = make(map[int]int)
 		var newDisabledTime = make(map[int]int64)
 		var newDisabledReason = make(map[int]string)
+		var newQuotaStatus = make(map[int]model.MoonshotQuotaStatus)
 
 		newIndex := 0
 		for i, key := range keys {
@@ -2088,6 +2132,9 @@ func ManageMultiKeys(c *gin.Context) {
 							newDisabledReason[newIndex] = r
 						}
 					}
+					if quota, exists := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; exists {
+						newQuotaStatus[newIndex] = quota
+					}
 				}
 				newIndex++
 			}
@@ -2107,6 +2154,7 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = newStatusList
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = newQuotaStatus
 
 		err = channel.Update()
 		if err != nil {

@@ -288,6 +288,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var lastStreamDataSent bool
+	var payloadSent bool
+	var upstreamStreamError *types.NewAPIError
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	jsonFenceFilter := newTNTJSONFenceStreamFilter(info)
 	var stopFilter *relayconvert.ChatStreamStopFilter
@@ -311,12 +313,34 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				sr.Error(err)
 			}
 			lastStreamDataSent = true
+			payloadSent = true
 		}
 		var sanitizeErr error
 		data, sanitizeErr = sanitizeTNTStreamData(info, jsonFenceFilter, data)
 		if sanitizeErr != nil {
 			sr.Error(sanitizeErr)
 			return
+		}
+		var errorResponse dto.OpenAITextResponse
+		if err := common.UnmarshalJsonStr(data, &errorResponse); err == nil {
+			if openAIError := errorResponse.GetOpenAIError(); openAIError != nil &&
+				(openAIError.Type != "" || openAIError.Message != "" || openAIError.Code != nil) {
+				message := strings.TrimSpace(openAIError.Message)
+				if message == "" {
+					message = "upstream stream returned an error event"
+				}
+				upstreamStreamError = types.NewErrorWithStatusCode(
+					fmt.Errorf("%s", message),
+					types.ErrorCodeChannelStreamError,
+					http.StatusBadGateway,
+				)
+				upstreamStreamError.SetUpstreamResponse(resp.StatusCode, data)
+				if !payloadSent {
+					sr.Stop(upstreamStreamError)
+					return
+				}
+				sr.Error(upstreamStreamError)
+			}
 		}
 		if stopFilter != nil {
 			var chunk dto.ChatCompletionsStreamResponse
@@ -376,10 +400,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					return
 				}
 				lastStreamDataSent = true
+				payloadSent = true
 			}
 		}
 	})
 	if streamRetryErr != nil {
+		if upstreamStreamError != nil {
+			return nil, upstreamStreamError
+		}
 		return nil, streamRetryErr
 	}
 

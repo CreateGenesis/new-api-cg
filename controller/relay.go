@@ -918,7 +918,10 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 	}
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelStreamError {
 		if allowSpecificChannelRetry {
-			return relayRetryEvaluation{reason: "stream_error"}
+			// A stream error is returned only before any upstream payload was
+			// committed, so a configured channel override can safely replay the
+			// request on the same channel before cross-channel fallback.
+			return relayRetryEvaluation{retry: policy.channelOverride, reason: "stream_error"}
 		}
 		return relayRetryEvaluation{retry: true, reason: "stream_error"}
 	}
@@ -1022,6 +1025,9 @@ func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) bool {
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
+	if service.HandleMoonshotQuotaError(channelError, err) {
+		return
+	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {

@@ -55,7 +55,7 @@ const SUPPORTED_PROXY_PROTOCOLS = new Set([
 
 function isOptionalProxyURL(value: string | undefined): boolean {
   const values = (value || '')
-    .replace(/\r\n/g, '\n')
+    .replaceAll('\r\n', '\n')
     .split('\n')
     .map((item) => item.trim())
     .filter(Boolean)
@@ -393,6 +393,8 @@ export const channelFormSchema = z
     kimi_k3_official_compatibility: z.boolean().optional(),
     glm_5_3_official_compatibility: z.boolean().optional(),
     deepseek_v4_official_compatibility: z.boolean().optional(),
+    moonshot_quota_auto_disable_enabled: z.boolean().optional(),
+    moonshot_monthly_no_subscription_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -974,6 +976,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   kimi_k3_official_compatibility: false,
   glm_5_3_official_compatibility: false,
   deepseek_v4_official_compatibility: false,
+  moonshot_quota_auto_disable_enabled: false,
+  moonshot_monthly_no_subscription_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -1152,6 +1156,8 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let deepSeekV4RequestSanitizationEnabled = false
+  let moonshotQuotaAutoDisableEnabled = false
+  let moonshotMonthlyNoSubscriptionEnabled = false
   let advancedCustom = ''
 
   if (channel.settings) {
@@ -1182,6 +1188,16 @@ export function transformChannelToFormDefaults(
       deepSeekV4OfficialCompatibility =
         [1, 14, 43].includes(channel.type) &&
         parsed.deepseek_v4_official_compatibility === true
+      if (
+        parsed.moonshot_quota_auto_disable &&
+        typeof parsed.moonshot_quota_auto_disable === 'object'
+      ) {
+        moonshotQuotaAutoDisableEnabled =
+          parsed.moonshot_quota_auto_disable.enabled === true
+        moonshotMonthlyNoSubscriptionEnabled =
+          parsed.moonshot_quota_auto_disable.monthly_no_subscription_enabled ===
+          true
+      }
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
       if (parsed.usage_estimation && typeof parsed.usage_estimation === 'object') {
@@ -1435,7 +1451,9 @@ export function transformChannelToFormDefaults(
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
     other: channel.other || '',
-    multi_key_mode: 'single',
+    multi_key_mode: channel.channel_info.is_multi_key
+      ? 'multi_to_single'
+      : 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
     multi_key_affinity_ttl_seconds:
       channel.channel_info.multi_key_affinity_ttl_seconds || 3600,
@@ -1493,6 +1511,9 @@ export function transformChannelToFormDefaults(
     kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
     glm_5_3_official_compatibility: glm53OfficialCompatibility,
     deepseek_v4_official_compatibility: deepSeekV4OfficialCompatibility,
+    moonshot_quota_auto_disable_enabled: moonshotQuotaAutoDisableEnabled,
+    moonshot_monthly_no_subscription_enabled:
+      moonshotMonthlyNoSubscriptionEnabled,
     deepseek_v4_request_sanitization_enabled:
       deepSeekV4RequestSanitizationEnabled,
     cache_usage_validation_split: cacheUsageValidationSplit,
@@ -1703,6 +1724,21 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.kimi_k3_official_compatibility = true
   } else if ('kimi_k3_official_compatibility' in settingsObj) {
     delete settingsObj.kimi_k3_official_compatibility
+  }
+
+  if (
+    formData.type === 25 &&
+    formData.multi_key_mode === 'multi_to_single' &&
+    (formData.moonshot_quota_auto_disable_enabled === true ||
+      formData.moonshot_monthly_no_subscription_enabled === true)
+  ) {
+    settingsObj.moonshot_quota_auto_disable = {
+      enabled: formData.moonshot_quota_auto_disable_enabled === true,
+      monthly_no_subscription_enabled:
+        formData.moonshot_monthly_no_subscription_enabled === true,
+    }
+  } else if ('moonshot_quota_auto_disable' in settingsObj) {
+    delete settingsObj.moonshot_quota_auto_disable
   }
 
   if (

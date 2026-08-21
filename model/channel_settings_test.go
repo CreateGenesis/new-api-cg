@@ -138,6 +138,16 @@ func TestChannelValidateSettingsEnforcesRequestModePolicyExclusivity(t *testing.
 	assert.Contains(t, err.Error(), "cannot both be enabled")
 }
 
+func TestChannelValidateSettingsScopesMoonshotQuotaAutoDisable(t *testing.T) {
+	moonshot := &Channel{Type: constant.ChannelTypeMoonshot, OtherSettings: `{"moonshot_quota_auto_disable":{"enabled":true}}`}
+	require.NoError(t, moonshot.ValidateSettings())
+
+	nonMoonshot := &Channel{Type: constant.ChannelTypeOpenAI, OtherSettings: `{"moonshot_quota_auto_disable":{"enabled":true}}`}
+	err := nonMoonshot.ValidateSettings()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only supported for Moonshot")
+}
+
 func TestChannelValidateSettingsScopesTNTTencentConversion(t *testing.T) {
 	t.Run("accepts Anthropic channel", func(t *testing.T) {
 		channel := &Channel{

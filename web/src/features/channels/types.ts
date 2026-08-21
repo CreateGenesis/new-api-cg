@@ -28,6 +28,16 @@ export const channelInfoSchema = z.object({
   multi_key_status_list: z.record(z.string(), z.number()).optional(),
   multi_key_disabled_reason: z.record(z.string(), z.string()).optional(),
   multi_key_disabled_time: z.record(z.string(), z.number()).optional(),
+  multi_key_moonshot_quota_status: z
+    .record(
+      z.string(),
+      z.object({
+        five_hour_until: z.number().optional(),
+        weekly_until: z.number().optional(),
+        monthly_no_subscription: z.boolean().optional(),
+      })
+    )
+    .optional(),
   multi_key_polling_index: z.number().default(0),
   multi_key_affinity_ttl_seconds: z.number().default(3600),
   multi_key_least_requests_window_seconds: z.number().default(60),
@@ -360,6 +370,8 @@ export interface KeyStatus {
   reason?: string
   key_preview?: string
   masked_key: string
+  recovery_time?: number
+  quota_window?: string
 }
 
 export type MultiKeyConfirmAction = {

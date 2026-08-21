@@ -22,6 +22,18 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(moonshotQuotaRecoveryHandler{})
+}
+
+type moonshotQuotaRecoveryHandler struct{}
+
+func (moonshotQuotaRecoveryHandler) Type() string            { return model.SystemTaskTypeMoonshotQuotaRecovery }
+func (moonshotQuotaRecoveryHandler) Enabled() bool           { return true }
+func (moonshotQuotaRecoveryHandler) Interval() time.Duration { return time.Minute }
+func (moonshotQuotaRecoveryHandler) NewPayload() any         { return nil }
+func (moonshotQuotaRecoveryHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	service.RecoverMoonshotQuotaKeys()
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, nil, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

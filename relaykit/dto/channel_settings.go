@@ -110,6 +110,15 @@ type ChannelOtherSettings struct {
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
 	UsageTokenLimit                       *UsageTokenLimitSettings           `json:"usage_token_limit,omitempty"`
 	UsageEstimation                       *UsageEstimationSettings           `json:"usage_estimation,omitempty"`
+	MoonshotQuotaAutoDisable              *MoonshotQuotaAutoDisableSettings  `json:"moonshot_quota_auto_disable,omitempty"`
+}
+
+// MoonshotQuotaAutoDisableSettings controls quota-window handling for
+// multi-key Moonshot channels. Monthly subscription detection is deliberately
+// separate because it has no automatic recovery window.
+type MoonshotQuotaAutoDisableSettings struct {
+	Enabled                      bool `json:"enabled,omitempty"`
+	MonthlyNoSubscriptionEnabled bool `json:"monthly_no_subscription_enabled,omitempty"`
 }
 
 type UsageEstimationModelFamily string

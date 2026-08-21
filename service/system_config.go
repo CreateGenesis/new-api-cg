@@ -726,6 +726,7 @@ func importSystemConfigChannels(tx *gorm.DB, imported []SystemConfigChannel) err
 		updated.ChannelInfo.MultiKeyStatusList = current.ChannelInfo.MultiKeyStatusList
 		updated.ChannelInfo.MultiKeyDisabledReason = current.ChannelInfo.MultiKeyDisabledReason
 		updated.ChannelInfo.MultiKeyDisabledTime = current.ChannelInfo.MultiKeyDisabledTime
+		updated.ChannelInfo.MultiKeyMoonshotQuotaStatus = current.ChannelInfo.MultiKeyMoonshotQuotaStatus
 		updated.ChannelInfo.MultiKeyPollingIndex = current.ChannelInfo.MultiKeyPollingIndex
 		if current.Key == "" {
 			updated.Status = common.ChannelStatusManuallyDisabled

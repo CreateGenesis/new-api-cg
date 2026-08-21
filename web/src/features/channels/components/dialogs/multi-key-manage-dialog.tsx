@@ -806,6 +806,29 @@ export function MultiKeyManageDialog({
                     cell: (key) => formatKeyTimestamp(key.disabled_time),
                   },
                   {
+                    id: 'quota-window',
+                    header: t('Window:'),
+                    className: 'w-40',
+                    cell: (key) => {
+                      if (!key.quota_window) return '-'
+                      if (key.quota_window === 'monthly_no_subscription') {
+                        return `${t('Monthly')} (${t('Manual Disabled')})`
+                      }
+                      return t(
+                        key.quota_window === 'weekly'
+                          ? 'Weekly'
+                          : '5-Hour Window'
+                      )
+                    },
+                  },
+                  {
+                    id: 'recovery-time',
+                    header: t('Reset at:'),
+                    className: 'w-44',
+                    cellClassName: 'text-muted-foreground text-sm',
+                    cell: (key) => formatKeyTimestamp(key.recovery_time),
+                  },
+                  {
                     id: 'actions',
                     header: t('Actions'),
                     className: 'text-right',

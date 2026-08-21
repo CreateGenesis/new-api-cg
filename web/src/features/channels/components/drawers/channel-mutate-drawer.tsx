@@ -5493,6 +5493,62 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
+                              {currentType === 25 &&
+                                multiKeyMode === 'multi_to_single' && (
+                                  <>
+                                    <FormField
+                                      control={form.control}
+                                      name='moonshot_quota_auto_disable_enabled'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel>
+                                              {t('5-Hour Window')} /{' '}
+                                              {t('Weekly')} {t('Auto Disabled')}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t(
+                                                'If an upstream error contains any of these keywords (case insensitive), the channel will be disabled automatically.'
+                                              )}
+                                            </FormDescription>
+                                            <FormMessage />
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value === true}
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+                                    <FormField
+                                      control={form.control}
+                                      name='moonshot_monthly_no_subscription_enabled'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel>
+                                              {t('Monthly')}{' '}
+                                              {t('Auto Disabled')}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t('Passive recovery only')}
+                                            </FormDescription>
+                                            <FormMessage />
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value === true}
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+                                  </>
+                                )}
+
                               {[1, 14].includes(currentType) && (
                                 <FormField
                                   control={form.control}

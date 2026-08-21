@@ -68,18 +68,25 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey                            bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize                          int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList                    map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason                map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime                  map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex                  int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyAffinityTTLSeconds            int                   `json:"multi_key_affinity_ttl_seconds,omitempty"`
-	MultiKeyLeastRequestsWindowSeconds    int                   `json:"multi_key_least_requests_window_seconds"`
-	MultiKeyCacheAffinityThresholdPercent *int                  `json:"multi_key_cache_affinity_threshold_percent,omitempty"`
-	MultiKeyMode                          constant.MultiKeyMode `json:"multi_key_mode"`
-	ChannelOverloadProtection             OverloadProtection    `json:"channel_overload_protection"`
-	MultiKeyOverloadProtection            OverloadProtection    `json:"multi_key_overload_protection"`
+	IsMultiKey                            bool                        `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize                          int                         `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList                    map[int]int                 `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason                map[int]string              `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime                  map[int]int64               `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyMoonshotQuotaStatus           map[int]MoonshotQuotaStatus `json:"multi_key_moonshot_quota_status,omitempty"`
+	MultiKeyPollingIndex                  int                         `json:"multi_key_polling_index"` // 多Key模式下轮询的key索引
+	MultiKeyAffinityTTLSeconds            int                         `json:"multi_key_affinity_ttl_seconds,omitempty"`
+	MultiKeyLeastRequestsWindowSeconds    int                         `json:"multi_key_least_requests_window_seconds"`
+	MultiKeyCacheAffinityThresholdPercent *int                        `json:"multi_key_cache_affinity_threshold_percent,omitempty"`
+	MultiKeyMode                          constant.MultiKeyMode       `json:"multi_key_mode"`
+	ChannelOverloadProtection             OverloadProtection          `json:"channel_overload_protection"`
+	MultiKeyOverloadProtection            OverloadProtection          `json:"multi_key_overload_protection"`
+}
+
+type MoonshotQuotaStatus struct {
+	FiveHourUntil         int64 `json:"five_hour_until,omitempty"`
+	WeeklyUntil           int64 `json:"weekly_until,omitempty"`
+	MonthlyNoSubscription bool  `json:"monthly_no_subscription,omitempty"`
 }
 
 type OverloadProtection struct {
@@ -770,6 +777,13 @@ func (channel *Channel) Update() error {
 				}
 			}
 		}
+		if channel.ChannelInfo.MultiKeyMoonshotQuotaStatus != nil {
+			for idx := range channel.ChannelInfo.MultiKeyMoonshotQuotaStatus {
+				if idx >= channel.ChannelInfo.MultiKeySize {
+					delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, idx)
+				}
+			}
+		}
 	}
 	var err error
 	err = DB.Model(channel).Updates(channel).Error
@@ -912,6 +926,13 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 	return false
 }
 
+func HasEnabledMultiKeyForChannel(channel *Channel) bool {
+	if channel == nil {
+		return false
+	}
+	return hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList)
+}
+
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
@@ -985,6 +1006,147 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		}
 	}
 	return true
+}
+
+// UpdateMoonshotQuotaKey records a quota-window failure for one multi-key
+// Moonshot key and marks that key as automatically disabled. It intentionally
+// updates the database and the in-memory channel object together so a retry
+// cannot select the same exhausted key from a stale cache.
+func UpdateMoonshotQuotaKey(channelId, keyIndex int, reason string, quotaStatus MoonshotQuotaStatus) error {
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	channel, err := GetChannelById(channelId, true)
+	if err != nil {
+		return err
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		return errors.New("channel is not multi-key")
+	}
+	keys := channel.GetKeys()
+	if keyIndex < 0 || keyIndex >= len(keys) {
+		return fmt.Errorf("multi-key index %d is out of range", keyIndex)
+	}
+
+	lock := GetChannelPollingLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+	// Reload after taking the per-channel lock so manual key operations cannot
+	// be overwritten by a stale snapshot read before the lock was acquired.
+	channel, err = GetChannelById(channelId, true)
+	if err != nil {
+		return err
+	}
+
+	if channel.ChannelInfo.MultiKeyStatusList == nil {
+		channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
+	}
+	if channel.ChannelInfo.MultiKeyDisabledReason == nil {
+		channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
+	}
+	if channel.ChannelInfo.MultiKeyDisabledTime == nil {
+		channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
+	}
+	if channel.ChannelInfo.MultiKeyMoonshotQuotaStatus == nil {
+		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = make(map[int]MoonshotQuotaStatus)
+	}
+	if channel.ChannelInfo.MultiKeyStatusList[keyIndex] == common.ChannelStatusManuallyDisabled {
+		return nil
+	}
+	beforeStatus := channel.Status
+	channel.ChannelInfo.MultiKeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
+	channel.ChannelInfo.MultiKeyDisabledReason[keyIndex] = reason
+	channel.ChannelInfo.MultiKeyDisabledTime[keyIndex] = common.GetTimestamp()
+	channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[keyIndex] = quotaStatus
+	if !hasEnabledMultiKey(keys, channel.ChannelInfo.MultiKeyStatusList) {
+		channel.Status = common.ChannelStatusAutoDisabled
+		info := channel.GetOtherInfo()
+		info["status_reason"] = "All keys are disabled"
+		info["status_time"] = common.GetTimestamp()
+		channel.SetOtherInfo(info)
+	}
+	if err := channel.SaveWithoutKey(); err != nil {
+		return err
+	}
+	if beforeStatus != channel.Status {
+		if err := UpdateAbilityStatus(channel.Id, channel.Status == common.ChannelStatusEnabled); err != nil {
+			common.SysLog(fmt.Sprintf("failed to update Moonshot quota ability status: channel_id=%d, error=%v", channel.Id, err))
+		}
+		InitChannelCache()
+	} else {
+		CacheUpdateChannel(channel)
+	}
+	return nil
+}
+
+// RecoverMoonshotQuotaKeys re-enables automatically disabled keys whose
+// five-hour and weekly windows have both elapsed. Manual disables and the
+// monthly-no-subscription state are never changed here.
+func RecoverMoonshotQuotaKeys(now int64) (int, error) {
+	var channels []*Channel
+	if err := DB.Where("type = ?", constant.ChannelTypeMoonshot).Find(&channels).Error; err != nil {
+		return 0, err
+	}
+	recovered := 0
+	cacheRefresh := false
+	for _, channel := range channels {
+		if !channel.ChannelInfo.IsMultiKey || len(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus) == 0 {
+			continue
+		}
+		lock := GetChannelPollingLock(channel.Id)
+		lock.Lock()
+		changed := false
+		for index, quota := range channel.ChannelInfo.MultiKeyMoonshotQuotaStatus {
+			if channel.ChannelInfo.MultiKeyStatusList == nil || channel.ChannelInfo.MultiKeyStatusList[index] != common.ChannelStatusAutoDisabled {
+				continue
+			}
+			if quota.MonthlyNoSubscription {
+				continue
+			}
+			if quota.FiveHourUntil > 0 && quota.FiveHourUntil <= now {
+				quota.FiveHourUntil = 0
+			}
+			if quota.WeeklyUntil > 0 && quota.WeeklyUntil <= now {
+				quota.WeeklyUntil = 0
+			}
+			if quota.FiveHourUntil > 0 || quota.WeeklyUntil > 0 {
+				channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[index] = quota
+				if quota.WeeklyUntil > 0 {
+					channel.ChannelInfo.MultiKeyDisabledReason[index] = "Moonshot weekly quota exhausted"
+				} else {
+					channel.ChannelInfo.MultiKeyDisabledReason[index] = "Moonshot 5-hour quota exhausted"
+				}
+				continue
+			}
+			delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, index)
+			delete(channel.ChannelInfo.MultiKeyStatusList, index)
+			delete(channel.ChannelInfo.MultiKeyDisabledReason, index)
+			delete(channel.ChannelInfo.MultiKeyDisabledTime, index)
+			recovered++
+			changed = true
+		}
+		if changed {
+			if channel.Status == common.ChannelStatusAutoDisabled && hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList) {
+				channel.Status = common.ChannelStatusEnabled
+			}
+			if err := channel.SaveWithoutKey(); err != nil {
+				lock.Unlock()
+				return recovered, err
+			}
+			if channel.Status == common.ChannelStatusEnabled {
+				if err := UpdateAbilityStatus(channel.Id, true); err != nil {
+					common.SysLog(fmt.Sprintf("failed to restore Moonshot quota ability status: channel_id=%d, error=%v", channel.Id, err))
+				}
+			}
+			CacheUpdateChannel(channel)
+			cacheRefresh = true
+		}
+		lock.Unlock()
+	}
+	if cacheRefresh {
+		InitChannelCache()
+	}
+	return recovered, nil
 }
 
 func EnableChannelByTag(tag string) error {
@@ -1205,6 +1367,9 @@ func (channel *Channel) ValidateSettings() error {
 		if err := channelOtherSettings.UsageEstimation.Validate(); err != nil {
 			return fmt.Errorf("usage_estimation: %w", err)
 		}
+	}
+	if channelOtherSettings.MoonshotQuotaAutoDisable != nil && channel.Type != constant.ChannelTypeMoonshot {
+		return fmt.Errorf("moonshot_quota_auto_disable is only supported for Moonshot channels")
 	}
 	if channelOtherSettings.DisableStream && channelOtherSettings.DisableNonStream {
 		return fmt.Errorf("disable_stream and disable_non_stream cannot both be enabled")

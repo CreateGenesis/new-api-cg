@@ -466,8 +466,8 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	streamAttempts := append([]string(nil), attempts...)
 	streamFallback = false
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1", "channel-2"}, streamAttempts)
-	assert.Equal(t, []string{"1", "2"}, streamCtx.GetStringSlice("use_channel"))
+	assert.Equal(t, []string{"channel-1", "channel-1", "channel-1", "channel-1", "channel-2"}, streamAttempts)
+	assert.Equal(t, []string{"1", "1", "1", "1", "2"}, streamCtx.GetStringSlice("use_channel"))
 	assert.Contains(t, streamRecorder.Body.String(), "stream fallback ok")
 	assert.NotContains(t, streamRecorder.Body.String(), "first stream failed")
 	var streamConsumeLogCount int64
@@ -665,10 +665,10 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	sseToJSONFallback = false
 	attempts = nil
 	attemptsMu.Unlock()
-	assert.Equal(t, []string{"channel-1"}, sseToJSONAttempts)
+	assert.Equal(t, []string{"channel-1", "channel-2"}, sseToJSONAttempts)
 	assert.Equal(t, http.StatusOK, sseToJSONRecorder.Code)
-	assert.Contains(t, sseToJSONRecorder.Body.String(), "sse-first-attempt")
-	assert.NotContains(t, sseToJSONRecorder.Body.String(), "sse to json fallback ok")
+	assert.Contains(t, sseToJSONRecorder.Body.String(), "sse to json fallback ok")
+	assert.NotContains(t, sseToJSONRecorder.Body.String(), "sse-first-attempt")
 
 	channels[0].OtherSettings = `{"disable_non_stream":true}`
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channels[0].Id).Update("settings", channels[0].OtherSettings).Error)
