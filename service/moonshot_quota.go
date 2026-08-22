@@ -10,6 +10,7 @@ the Free Software Foundation, either version 3 of the License, or
 package service
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -37,9 +38,11 @@ const (
 )
 
 type MoonshotQuotaClassification struct {
-	Window MoonshotQuotaWindow
-	Until  int64
-	Reason string
+	Window        MoonshotQuotaWindow
+	Until         int64
+	Reason        string
+	FiveHourUntil int64
+	WeeklyUntil   int64
 }
 
 var (
@@ -48,6 +51,10 @@ var (
 	moonshotMonthlyPattern           = regexp.MustCompile(`(?i)(monthly|month|月额度|每月|月)`)
 	moonshotSubscriptionPattern      = regexp.MustCompile(`(?i)(subscription|subscribe|subscribing|订阅|套餐)`)
 	moonshotNeedsSubscriptionPattern = regexp.MustCompile(`(?i)(not\s+subscribed|no\s+subscription|without\s+subscription|subscription\s+required|requires?\s+subscription|active\s+subscription\s+required|需要订阅|未订阅|没有订阅|需订阅)`)
+	moonshotBillingCyclePattern      = regexp.MustCompile(`(?i)(\bbilling\s+cycle\b|\bnext\s+cycle\b)`)
+	moonshotUsageLimitPattern        = regexp.MustCompile(`(?i)(\b(?:reached|exceeded|hit)\s+(?:your\s+)?usage\s+limit\b|\busage\s+limit\b)`)
+	moonshotPlanActionPattern        = regexp.MustCompile(`(?i)(\bpurchase\s+extra\s+usage\b|\bextra\s+usage\b|\bupgrade\s+(?:your\s+)?plan\b)`)
+	moonshotAccessTerminatedPattern  = regexp.MustCompile(`(?i)\baccess_terminated_error\b`)
 )
 
 // ClassifyMoonshotQuotaError only uses the response returned by Moonshot.
@@ -61,19 +68,29 @@ func ClassifyMoonshotQuotaError(err *types.NewAPIError, now time.Time) *Moonshot
 	if response == "" {
 		return nil
 	}
-	resetAt, resetIn := moonshotResetValues(response)
-	if moonshotMonthlyPattern.MatchString(response) && moonshotSubscriptionPattern.MatchString(response) && moonshotNeedsSubscriptionPattern.MatchString(response) {
+	explicitMonthlySubscriptionError := moonshotMonthlyPattern.MatchString(response) && moonshotSubscriptionPattern.MatchString(response) && moonshotNeedsSubscriptionPattern.MatchString(response)
+	if explicitMonthlySubscriptionError {
 		return &MoonshotQuotaClassification{Window: MoonshotQuotaWindowMonthlyNoSubscription, Reason: moonshotMonthlyReason}
 	}
 	if moonshotWeeklyPattern.MatchString(response) {
+		resetAt, resetIn := moonshotResetValues(response)
 		until := moonshotQuotaUntil(resetAt, resetIn, now, 7*24*time.Hour)
-		return &MoonshotQuotaClassification{Window: MoonshotQuotaWindowWeekly, Until: until, Reason: moonshotWeeklyReason}
+		return &MoonshotQuotaClassification{Window: MoonshotQuotaWindowWeekly, Until: until, Reason: moonshotWeeklyReason, WeeklyUntil: until}
 	}
 	if moonshotFiveHourPattern.MatchString(response) {
+		resetAt, resetIn := moonshotResetValues(response)
 		until := moonshotQuotaUntil(resetAt, resetIn, now, 5*time.Hour)
-		return &MoonshotQuotaClassification{Window: MoonshotQuotaWindowFiveHour, Until: until, Reason: moonshotFiveHourReason}
+		return &MoonshotQuotaClassification{Window: MoonshotQuotaWindowFiveHour, Until: until, Reason: moonshotFiveHourReason, FiveHourUntil: until}
 	}
 	return nil
+}
+
+func isMoonshotUsageLookupError(err *types.NewAPIError) bool {
+	if err == nil || err.GetUpstreamStatusCode() < http.StatusBadRequest || err.GetUpstreamStatusCode() >= http.StatusInternalServerError {
+		return false
+	}
+	response := strings.TrimSpace(err.GetUpstreamResponse())
+	return moonshotBillingCyclePattern.MatchString(response) && moonshotUsageLimitPattern.MatchString(response) && (moonshotAccessTerminatedPattern.MatchString(response) || moonshotPlanActionPattern.MatchString(response))
 }
 
 func moonshotQuotaUntil(resetAt, resetIn int64, now time.Time, fallback time.Duration) int64 {
@@ -91,6 +108,10 @@ func moonshotResetValues(response string) (int64, int64) {
 	if common.Unmarshal([]byte(response), &payload) != nil {
 		return 0, 0
 	}
+	return moonshotResetValuesFromMap(payload)
+}
+
+func moonshotResetValuesFromMap(payload map[string]any) (int64, int64) {
 	var resetAt, resetIn int64
 	var visit func(map[string]any)
 	visit = func(values map[string]any) {
@@ -153,24 +174,42 @@ func moonshotInteger(value any) int64 {
 }
 
 // HandleMoonshotQuotaError returns true when the error was recognized as a
-// Moonshot quota/subscription response. A recognized monthly response is
-// intentionally swallowed when its optional switch is off, preventing the
-// generic channel auto-ban from turning this risky detector into an implicit
-// mandatory feature.
+// Moonshot quota/subscription response. The context-aware variant is used by
+// relay handling so a billing-cycle termination can query /usages before
+// selecting the five-hour or weekly key state.
 func HandleMoonshotQuotaError(channelError types.ChannelError, err *types.NewAPIError) bool {
+	return HandleMoonshotQuotaErrorWithContext(context.Background(), channelError, err)
+}
+
+func HandleMoonshotQuotaErrorWithContext(ctx context.Context, channelError types.ChannelError, err *types.NewAPIError) bool {
 	if channelError.ChannelType != constant.ChannelTypeMoonshot || !channelError.IsMultiKey || !channelError.AutoBan {
 		return false
 	}
 	classification := ClassifyMoonshotQuotaError(err, time.Now())
-	if classification == nil {
-		return false
-	}
 	channel, loadErr := model.GetChannelById(channelError.ChannelId, true)
 	if loadErr != nil {
 		return false
 	}
 	settings := channel.GetOtherSettings().MoonshotQuotaAutoDisable
 	if settings == nil {
+		return false
+	}
+	if isMoonshotUsageLookupError(err) {
+		if !settings.Enabled {
+			return false
+		}
+		var usageErr error
+		classification, usageErr = classifyMoonshotUsageForChannel(ctx, channel, channelError.UsingKey, time.Now())
+		if usageErr != nil {
+			common.SysLog("failed to query Moonshot usage after access termination: " + usageErr.Error())
+			return true
+		}
+		if classification == nil {
+			common.SysLog("Moonshot usage response did not identify an exhausted five-hour or weekly window")
+			return true
+		}
+	}
+	if classification == nil {
 		return false
 	}
 	if classification.Window == MoonshotQuotaWindowMonthlyNoSubscription {
@@ -195,11 +234,21 @@ func HandleMoonshotQuotaError(channelError types.ChannelError, err *types.NewAPI
 	if existing := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[keyIndex]; existing != (model.MoonshotQuotaStatus{}) {
 		quotaStatus = existing
 	}
+	if classification.FiveHourUntil > quotaStatus.FiveHourUntil {
+		quotaStatus.FiveHourUntil = classification.FiveHourUntil
+	}
+	if classification.WeeklyUntil > quotaStatus.WeeklyUntil {
+		quotaStatus.WeeklyUntil = classification.WeeklyUntil
+	}
 	switch classification.Window {
 	case MoonshotQuotaWindowFiveHour:
-		quotaStatus.FiveHourUntil = classification.Until
+		if classification.FiveHourUntil == 0 {
+			quotaStatus.FiveHourUntil = classification.Until
+		}
 	case MoonshotQuotaWindowWeekly:
-		quotaStatus.WeeklyUntil = classification.Until
+		if classification.WeeklyUntil == 0 {
+			quotaStatus.WeeklyUntil = classification.Until
+		}
 	case MoonshotQuotaWindowMonthlyNoSubscription:
 		quotaStatus.MonthlyNoSubscription = true
 	}

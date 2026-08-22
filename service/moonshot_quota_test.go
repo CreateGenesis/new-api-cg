@@ -36,6 +36,8 @@ func TestClassifyMoonshotQuotaError(t *testing.T) {
 			require.Equal(t, tt.window, classified.Window)
 			if tt.until != 0 {
 				require.Equal(t, tt.until, classified.Until)
+			} else if tt.window == MoonshotQuotaWindowMonthlyNoSubscription {
+				require.Zero(t, classified.Until)
 			}
 		})
 	}

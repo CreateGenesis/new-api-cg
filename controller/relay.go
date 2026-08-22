@@ -1025,7 +1025,7 @@ func waitBeforeRelayRetry(c *gin.Context, delay time.Duration) bool {
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
-	if service.HandleMoonshotQuotaError(channelError, err) {
+	if service.HandleMoonshotQuotaErrorWithContext(c.Request.Context(), channelError, err) {
 		return
 	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
