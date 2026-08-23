@@ -230,6 +230,73 @@ func TestUsageEstimationPreservesErrorFinishReason(t *testing.T) {
 	assert.Equal(t, 26973, usage.CompletionTokens)
 }
 
+func TestUsageEstimationRetriesZeroOutputWithoutEffectiveText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			UsageEstimation: &dto.UsageEstimationSettings{
+				Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyKimi,
+			},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+
+	_, err := recorder.WriteString(`{"choices":[{"message":{"content":""}}],"usage":{"prompt_tokens":33,"completion_tokens":0,"total_tokens":33}}`)
+	require.NoError(t, err)
+
+	usage := &dto.Usage{
+		PromptTokens: 33, TotalTokens: 33,
+		UpstreamInputReported: true, UpstreamOutputReported: true,
+	}
+	policyErr := recorder.finish(c, info, usage)
+	require.NotNil(t, policyErr)
+	assert.Equal(t, http.StatusServiceUnavailable, policyErr.StatusCode)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Empty(t, response.Body.String())
+}
+
+func TestUsageEstimationBuffersZeroOutputStreamBeforeRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		IsStream:           true,
+		ShouldIncludeUsage: true,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			UsageEstimation: &dto.UsageEstimationSettings{
+				Enabled: true, ModelFamily: dto.UsageEstimationModelFamilyKimi,
+			},
+		}},
+	}
+	recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+	c.Writer = recorder
+
+	_, err := recorder.WriteString("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+	require.NoError(t, err)
+	_, err = recorder.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":33,\"completion_tokens\":0,\"total_tokens\":33}}\n\ndata: [DONE]\n\n")
+	require.NoError(t, err)
+
+	usage := &dto.Usage{
+		PromptTokens: 33, TotalTokens: 33,
+		UpstreamInputReported: true, UpstreamOutputReported: true,
+	}
+	policyErr := recorder.finish(c, info, usage)
+	require.NotNil(t, policyErr)
+	assert.Equal(t, http.StatusServiceUnavailable, policyErr.StatusCode)
+	assert.Equal(t, types.ErrorCodeChannelZeroOutput, policyErr.GetErrorCode())
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Empty(t, response.Body.String())
+}
+
 func TestChannelOutputRecorderRetriesEmptyNonStreamWithInputUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	response := httptest.NewRecorder()

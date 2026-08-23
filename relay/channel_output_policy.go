@@ -112,7 +112,7 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 			return w.writeDownstream(data)
 		}
 		if w.body.Len()+len(data) > w.bufferLimit {
-			if !w.retryZeroOutput && !w.validateUsage {
+			if !w.retryZeroOutput && !w.validateUsage && !w.estimateUsage {
 				w.contentMatcher.disable()
 				w.nonStreamPassThrough = true
 				w.header.Del("Content-Length")
@@ -312,6 +312,13 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	// A reported input does not make an empty response valid; retry every completed attempt with no effective output.
 	if w.retryZeroOutput && !streamInterrupted && !w.effectiveOutput && inputUsageReported && usage != nil && (!usage.Estimated || info != nil && info.UsageEstimationAudit != nil) {
 		return channelZeroOutputError(errors.New("upstream returned no effective output"))
+	}
+	// Estimation must not turn an empty response into a billable output. If the
+	// upstream still has no output tokens after estimation, expose the existing
+	// retryable 503 error so the relay retry policy can decide what to do.
+	if w.estimateUsage && !streamInterrupted && !w.effectiveOutput &&
+		(usage == nil || service.NormalizeUsageForBilling(usage).OutputTokens <= 0) {
+		return channelZeroOutputError(service.ErrUpstreamUsageMissingOutput)
 	}
 
 	if w.validateUsage && !streamInterrupted {
@@ -544,7 +551,7 @@ func (w *channelOutputRecorder) readyToCommitStream() bool {
 	if w.contentMatcher != nil && !w.contentMatcher.resolvedWithoutMatch() {
 		return false
 	}
-	return !w.retryZeroOutput || w.effectiveOutput
+	return !(w.retryZeroOutput || w.estimateUsage) || w.effectiveOutput
 }
 
 func (w *channelOutputRecorder) commitBufferedStream() error {

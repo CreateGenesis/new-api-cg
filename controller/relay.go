@@ -913,9 +913,6 @@ func evaluateRetryRelayErrorWithPolicy(c *gin.Context, openaiErr *types.NewAPIEr
 			return relayRetryEvaluation{reason: "specific_channel"}
 		}
 	}
-	if openaiErr.GetErrorCode() == types.ErrorCodeChannelZeroOutput && allowSpecificChannelRetry {
-		return relayRetryEvaluation{reason: "zero_output"}
-	}
 	if openaiErr.GetErrorCode() == types.ErrorCodeChannelStreamError {
 		if allowSpecificChannelRetry {
 			// A stream error is returned only before any upstream payload was

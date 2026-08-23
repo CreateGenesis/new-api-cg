@@ -107,18 +107,20 @@ func TestChannelOverloadedNeverRetries(t *testing.T) {
 	), 3))
 }
 
-func TestZeroOutputRetriesOnlyAcrossChannels(t *testing.T) {
+func TestZeroOutputRetriesFollowChannelAndGlobalPolicies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true}
+	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("500-503")
+	require.NoError(t, err)
+	policy := relayRetryPolicy{retryTimes: 1, channelOverride: true, statusCodeRanges: ranges}
 	zeroOutputErr := types.NewErrorWithStatusCode(
 		errors.New("zero output"),
 		types.ErrorCodeChannelZeroOutput,
 		http.StatusServiceUnavailable,
 	)
 
-	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, zeroOutputErr, policy, 0))
+	assert.True(t, shouldRetrySameChannelWithPolicy(ctx, zeroOutputErr, policy, 0))
 	assert.True(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
 
 	ctx.Set("specific_channel_id", 1)
