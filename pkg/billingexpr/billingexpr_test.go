@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,106 @@ func TestSimpleExpr_NoTier(t *testing.T) {
 	if trace.MatchedTier != "" {
 		t.Errorf("tier should be empty, got %q", trace.MatchedTier)
 	}
+}
+
+func TestMultipartParamAndRuleOverride(t *testing.T) {
+	expr := `rule_override_tier(tier("base", p * 2 + c * 8), multipart_param("files.input_reference.0.content_type") == "video/mp4", p * 2 + c * 20, "video_edit")`
+	cost, trace, err := billingexpr.RunExprWithRequest(expr, billingexpr.TokenParams{P: 100, C: 10}, billingexpr.RequestInput{
+		Multipart: &billingexpr.MultipartInput{
+			Files: map[string][]billingexpr.MultipartFileMetadata{
+				"input_reference": {{ContentType: "video/mp4"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, float64(400), cost)
+	require.Equal(t, "video_edit", trace.MatchedTier)
+
+	cost, trace, err = billingexpr.RunExprWithRequest(expr, billingexpr.TokenParams{P: 100, C: 10}, billingexpr.RequestInput{
+		Multipart: &billingexpr.MultipartInput{
+			Files: map[string][]billingexpr.MultipartFileMetadata{
+				"input_reference": {{ContentType: "image/png"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, float64(280), cost)
+	require.Equal(t, "base", trace.MatchedTier)
+}
+
+func TestComputeTieredQuotaWithRequestUsesOverrideAtSettlement(t *testing.T) {
+	expr := `rule_override_tier(tier("base", p * 2), multipart_param("files.input_reference.#") > 0, p * 5, "video_edit")`
+	snapshot := &billingexpr.BillingSnapshot{
+		BillingMode:  "tiered_expr",
+		ExprString:   expr,
+		ExprHash:     billingexpr.ExprHashString(expr),
+		GroupRatio:   1,
+		QuotaPerUnit: 500_000,
+	}
+	result, err := billingexpr.ComputeTieredQuotaWithRequest(snapshot, billingexpr.TokenParams{P: 100}, billingexpr.RequestInput{
+		Multipart: &billingexpr.MultipartInput{
+			Files: map[string][]billingexpr.MultipartFileMetadata{
+				"input_reference": {{Filename: "edit.mp4"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 250, result.ActualQuotaAfterGroup)
+	require.Equal(t, "video_edit", result.MatchedTier)
+}
+
+func TestRuleOverrideIsNotMultiplied(t *testing.T) {
+	expr := `rule_override_tier((tier("base", p * 2)) * 3, true, p * 5, "direct")`
+	cost, trace, err := billingexpr.RunExpr(expr, billingexpr.TokenParams{P: 100})
+	require.NoError(t, err)
+	require.Equal(t, float64(500), cost)
+	require.Equal(t, "direct", trace.MatchedTier)
+}
+
+func TestDirectOverrideUsesItsOwnRawTokenRemainder(t *testing.T) {
+	legacyExpr := `rule_override_tier(tier("base", p * 2), false, p * 5 + cr * 0.5, "direct")`
+	cost, trace, err := billingexpr.RunExpr(legacyExpr, billingexpr.TokenParams{
+		P:  1000,
+		CR: 100,
+	})
+	require.NoError(t, err)
+	require.Equal(t, float64(2000), cost)
+	require.Equal(t, "base", trace.MatchedTier)
+
+	expr := `rule_override_tier(tier("base", p * 2), false, (p_total - cr_total) * 5 + cr_total * 0.5, "direct")`
+	cost, trace, err = billingexpr.RunExpr(expr, billingexpr.TokenParams{
+		P:    1000,
+		RawP: 1000,
+		CR:   100,
+	})
+	require.NoError(t, err)
+	require.Equal(t, float64(2000), cost)
+	require.Equal(t, "base", trace.MatchedTier)
+
+	expr = `rule_override_tier(p * 2, false, tier("direct", p * 5), "direct")`
+	_, trace, err = billingexpr.RunExpr(expr, billingexpr.TokenParams{P: 100})
+	require.NoError(t, err)
+	require.Empty(t, trace.MatchedTier)
+}
+
+func TestUnmatchedOverrideWithEqualCostKeepsBaseTrace(t *testing.T) {
+	expr := `rule_override_tier(tier("base", p * 2), false, tier("direct", p * 2), "direct")`
+	_, trace, err := billingexpr.RunExpr(expr, billingexpr.TokenParams{P: 100})
+	require.NoError(t, err)
+	require.Equal(t, "base", trace.MatchedTier)
+}
+
+func TestNestedOverrideKeepsInnerMatchWhenOuterDoesNotMatch(t *testing.T) {
+	expr := `rule_override_tier(rule_override_tier(tier("base", p * 2), true, p * 5, "inner"), false, p * 7, "outer")`
+	cost, trace, err := billingexpr.RunExpr(expr, billingexpr.TokenParams{P: 100})
+	require.NoError(t, err)
+	require.Equal(t, float64(500), cost)
+	require.Equal(t, "inner", trace.MatchedTier)
+}
+
+func TestExprRejectsNegativeResult(t *testing.T) {
+	_, _, err := billingexpr.RunExpr("p * -1", billingexpr.TokenParams{P: 1})
+	require.Error(t, err)
 }
 
 // ---------------------------------------------------------------------------

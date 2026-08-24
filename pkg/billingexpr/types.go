@@ -8,16 +8,37 @@ import (
 )
 
 type RequestInput struct {
-	Headers map[string]string
-	Body    []byte
+	Headers   map[string]string
+	Body      []byte
+	Multipart *MultipartInput
+}
+
+// MultipartInput contains only the metadata needed by billing expressions.
+// File contents are deliberately excluded: rules must explicitly address a
+// multipart field, filename, content type, optional declared size, or count.
+type MultipartInput struct {
+	Fields map[string][]string                `json:"fields,omitempty"`
+	Files  map[string][]MultipartFileMetadata `json:"files,omitempty"`
+}
+
+type MultipartFileMetadata struct {
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Size        int64  `json:"size,omitempty"`
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
 // Fields beyond P and C are optional — when absent they default to 0,
 // which means cache-unaware expressions keep working unchanged.
 type TokenParams struct {
-	P    float64 // prompt tokens (text) — auto-excludes sub-categories priced separately
-	C    float64 // completion tokens (text) — auto-excludes sub-categories priced separately
+	P float64 // prompt tokens (text) — auto-excludes sub-categories priced separately
+	C float64 // completion tokens (text) — auto-excludes sub-categories priced separately
+	// RawP and RawC are the prompt/completion values before sub-category
+	// exclusion. They are used by generated direct-price overrides so an
+	// override can normalize its own sub-category terms without changing the
+	// base expression's token remainder.
+	RawP float64
+	RawC float64
 	Len  float64 // total input context length for tier conditions (non-Claude: raw prompt_tokens; Claude: text + cache read + cache creation)
 	CR   float64 // cache read (hit) tokens
 	CC   float64 // cache creation tokens (5-min TTL for Claude, generic for others)

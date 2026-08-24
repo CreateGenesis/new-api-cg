@@ -33,6 +33,7 @@ import {
   MATCH_GTE,
   MATCH_LT,
   MATCH_RANGE,
+  SOURCE_MULTIPART,
   SOURCE_TIME,
   normalizeTierLabel,
   parseTiersFromExpr,
@@ -128,7 +129,9 @@ function describeCondition(
     }
     return `${fn} ${opMap[cond.mode] || '='} ${cond.value} (${tz})`
   }
-  const src = cond.source === 'header' ? t('Header') : t('Body param')
+  let src = t('Body param')
+  if (cond.source === 'header') src = t('Header')
+  if (cond.source === SOURCE_MULTIPART) src = t('Multipart parameter')
   const path = cond.path || ''
   if (cond.mode === MATCH_EXISTS) return `${src} ${path} ${t('Exists')}`
   if (cond.mode === MATCH_CONTAINS) {
@@ -151,6 +154,30 @@ function describeGroup(
   return (group.conditions || [])
     .map((c) => describeCondition(c, t))
     .join(' && ')
+}
+
+function describeOverridePrices(
+  override: RequestRuleGroup['override'],
+  symbol: string,
+  rate: number,
+  t: (key: string) => string
+): string {
+  if (!override) return t('Override prices')
+  const prices = BILLING_PRICING_VARS.map((variable) => {
+    const field = variable.tierField
+    if (!field || !Object.hasOwn(override, field)) {
+      return null
+    }
+    const value = Number(override[field as keyof typeof override] || 0)
+    return `${t(variable.shortLabel)} ${symbol}${(value * rate).toFixed(4)}`
+  }).filter((value): value is string => value !== null)
+  return prices.length > 0 ? prices.join(' · ') : t('Override prices')
+}
+
+function nextUniqueKey(counts: Map<string, number>, base: string): string {
+  const occurrence = counts.get(base) || 0
+  counts.set(base, occurrence + 1)
+  return `${base}-${occurrence}`
 }
 
 export function DynamicPricingBreakdown({
@@ -229,6 +256,8 @@ export function DynamicPricingBreakdown({
       (tier) => Number(tier[v.field as string as keyof ParsedTier] || 0) > 0
     )
   })
+  const tierKeyCounts = new Map<string, number>()
+  const ruleKeyCounts = new Map<string, number>()
 
   return (
     <section className={cn('min-w-0', !compact && 'py-3 sm:py-4')}>
@@ -260,15 +289,19 @@ export function DynamicPricingBreakdown({
             {t('Tiered price table')}
           </div>
           <div className='space-y-1.5 sm:hidden'>
-            {tiers.map((tier, i) => {
+            {tiers.map((tier) => {
               const condSummary = formatConditionSummary(tier.conditions, t)
               const isMatched =
                 matchedTierLabel != null &&
                 matchedTierLabel !== '' &&
                 tier.label === matchedTierLabel
+              const tierKey = nextUniqueKey(
+                tierKeyCounts,
+                `tier-mobile-${tier.label || JSON.stringify(tier.conditions)}`
+              )
               return (
                 <div
-                  key={`tier-mobile-${i}`}
+                  key={tierKey}
                   className={cn(
                     'rounded-md border p-2',
                     isMatched && 'border-emerald-500/40 bg-emerald-500/10'
@@ -422,30 +455,46 @@ export function DynamicPricingBreakdown({
                 : 'text-foreground mb-2 text-sm font-semibold'
             }
           >
-            {t('Conditional multipliers')}
+            {t('Request rule pricing')}
           </div>
           <ul className='space-y-1.5'>
-            {ruleGroups.map((group, gi) => (
-              <li
-                key={`group-${gi}`}
-                className='bg-muted/50 flex items-center justify-between gap-3 rounded-md px-3 py-2'
-              >
-                <span
-                  className={cn(
-                    'text-foreground break-all',
-                    compact ? 'text-xs' : 'text-sm'
+            {ruleGroups.map((group) => {
+              const ruleKey = nextUniqueKey(
+                ruleKeyCounts,
+                `group-${group.action || 'multiplier'}-${group.multiplier || group.override?.label || describeGroup(group, t)}`
+              )
+              return (
+                <li
+                  key={ruleKey}
+                  className='bg-muted/50 flex items-center justify-between gap-3 rounded-md px-3 py-2'
+                >
+                  <span
+                    className={cn(
+                      'text-foreground break-all',
+                      compact ? 'text-xs' : 'text-sm'
+                    )}
+                  >
+                    {describeGroup(group, t)}
+                  </span>
+                  {group.action === 'override' ? (
+                    <Badge
+                      variant='secondary'
+                      className='max-w-[65%] shrink-0 bg-blue-100 text-right whitespace-normal text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+                    >
+                      {group.override?.label || t('Override prices')}:{' '}
+                      {describeOverridePrices(group.override, symbol, rate, t)}
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant='secondary'
+                      className='shrink-0 bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'
+                    >
+                      {group.multiplier}x
+                    </Badge>
                   )}
-                >
-                  {describeGroup(group, t)}
-                </span>
-                <Badge
-                  variant='secondary'
-                  className='shrink-0 bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'
-                >
-                  {group.multiplier}x
-                </Badge>
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

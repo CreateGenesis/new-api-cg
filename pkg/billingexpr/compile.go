@@ -39,30 +39,42 @@ var (
 
 // compileEnvPrototypeV1 is the v1 type-checking prototype used at compile time.
 var compileEnvPrototypeV1 = map[string]interface{}{
-	"p":       float64(0),
-	"c":       float64(0),
-	"len":     float64(0),
-	"cr":      float64(0),
-	"cc":      float64(0),
-	"cc1h":    float64(0),
-	"img":     float64(0),
-	"img_o":   float64(0),
-	"ai":      float64(0),
-	"ao":      float64(0),
-	"tier":    func(string, float64) float64 { return 0 },
-	"header":  func(string) string { return "" },
-	"param":   func(string) interface{} { return nil },
-	"has":     func(interface{}, string) bool { return false },
-	"hour":    func(string) int { return 0 },
-	"minute":  func(string) int { return 0 },
-	"weekday": func(string) int { return 0 },
-	"month":   func(string) int { return 0 },
-	"day":     func(string) int { return 0 },
-	"max":     math.Max,
-	"min":     math.Min,
-	"abs":     math.Abs,
-	"ceil":    math.Ceil,
-	"floor":   math.Floor,
+	"p":                  float64(0),
+	"c":                  float64(0),
+	"p_total":            float64(0),
+	"c_total":            float64(0),
+	"cr_total":           float64(0),
+	"cc_total":           float64(0),
+	"cc1h_total":         float64(0),
+	"img_total":          float64(0),
+	"img_o_total":        float64(0),
+	"ai_total":           float64(0),
+	"ao_total":           float64(0),
+	"len":                float64(0),
+	"cr":                 float64(0),
+	"cc":                 float64(0),
+	"cc1h":               float64(0),
+	"img":                float64(0),
+	"img_o":              float64(0),
+	"ai":                 float64(0),
+	"ao":                 float64(0),
+	"tier":               func(string, float64) float64 { return 0 },
+	"header":             func(string) string { return "" },
+	"param":              func(string) interface{} { return nil },
+	"multipart_param":    func(string) interface{} { return nil },
+	"has":                func(interface{}, string) bool { return false },
+	"rule_override":      func(float64, bool, float64) float64 { return 0 },
+	"rule_override_tier": func(float64, bool, float64, string) float64 { return 0 },
+	"hour":               func(string) int { return 0 },
+	"minute":             func(string) int { return 0 },
+	"weekday":            func(string) int { return 0 },
+	"month":              func(string) int { return 0 },
+	"day":                func(string) int { return 0 },
+	"max":                math.Max,
+	"min":                math.Min,
+	"abs":                math.Abs,
+	"ceil":               math.Ceil,
+	"floor":              math.Floor,
 }
 
 func getCompileEnv(version int) map[string]interface{} {
@@ -93,6 +105,7 @@ func compileFromCacheByHash(exprStr, hash string) (*vm.Program, error) {
 	cacheMu.RUnlock()
 
 	version, body := ParseExprVersion(exprStr)
+	body = canonicalizeDirectOverrideExpr(body)
 	prog, err := expr.Compile(body, expr.Env(getCompileEnv(version)), expr.AsFloat64())
 	if err != nil {
 		return nil, fmt.Errorf("expr compile error: %w", err)
@@ -172,4 +185,252 @@ func InvalidateCache() {
 	cacheMu.Lock()
 	cache = make(map[string]*cachedEntry, 64)
 	cacheMu.Unlock()
+}
+
+var directOverrideRawVars = map[string]string{
+	"cr":    "cr_total",
+	"cc":    "cc_total",
+	"cc1h":  "cc1h_total",
+	"img":   "img_total",
+	"ai":    "ai_total",
+	"img_o": "img_o_total",
+	"ao":    "ao_total",
+}
+
+// canonicalizeDirectOverrideExpr keeps direct overrides independent from the
+// base expression's p/c remainder. Older expressions may use p/c/cr directly
+// in the override cost; rewrite those identifiers to raw totals before
+// compilation while preserving quoted strings and nested function calls.
+func canonicalizeDirectOverrideExpr(exprStr string) string {
+	var out strings.Builder
+	for i := 0; i < len(exprStr); {
+		if exprStr[i] == '"' || exprStr[i] == '\'' {
+			end := scanQuoted(exprStr, i)
+			out.WriteString(exprStr[i:end])
+			i = end
+			continue
+		}
+
+		name, ok := directOverrideFunctionAt(exprStr, i)
+		if !ok {
+			out.WriteByte(exprStr[i])
+			i++
+			continue
+		}
+		open := i + len(name)
+		close, ok := matchingParen(exprStr, open)
+		if !ok {
+			out.WriteByte(exprStr[i])
+			i++
+			continue
+		}
+		args, ok := splitExpressionArgs(exprStr[open+1 : close])
+		wantArgs := 3
+		if name == "rule_override_tier" {
+			wantArgs = 4
+		}
+		if len(args) != wantArgs {
+			out.WriteString(exprStr[i : close+1])
+			i = close + 1
+			continue
+		}
+
+		args[0] = canonicalizeDirectOverrideExpr(args[0])
+		args[1] = canonicalizeDirectOverrideExpr(args[1])
+		costExpr := args[2]
+		if name == "rule_override_tier" {
+			costExpr = unwrapDirectOverrideTier(costExpr)
+		}
+		args[2] = canonicalizeDirectOverrideCost(costExpr)
+		out.WriteString(name)
+		out.WriteByte('(')
+		out.WriteString(strings.Join(args, ", "))
+		out.WriteByte(')')
+		i = close + 1
+	}
+	return out.String()
+}
+
+// unwrapDirectOverrideTier removes the legacy tier(name, value) label wrapper
+// from a rule_override_tier override argument. The enclosing function already
+// carries the authoritative override name; removing the eager tier callback
+// keeps an unmatched override from leaking its trace into the base tier.
+func unwrapDirectOverrideTier(exprStr string) string {
+	trimmed := strings.TrimSpace(exprStr)
+	if !strings.HasPrefix(trimmed, "tier(") {
+		return exprStr
+	}
+	close, ok := matchingParen(trimmed, len("tier"))
+	if !ok || close != len(trimmed)-1 {
+		return exprStr
+	}
+	args, ok := splitExpressionArgs(trimmed[len("tier("):close])
+	if !ok || len(args) != 2 {
+		return exprStr
+	}
+	return args[1]
+}
+
+func canonicalizeDirectOverrideCost(exprStr string) string {
+	promptExtras := make(map[string]bool)
+	outputExtras := make(map[string]bool)
+	for _, token := range expressionIdentifiers(exprStr) {
+		switch token {
+		case "cr", "cc", "cc1h", "img", "ai":
+			promptExtras[token] = true
+		case "img_o", "ao":
+			outputExtras[token] = true
+		}
+	}
+	promptRemainder := "p_total"
+	for _, token := range []string{"cr", "cc", "cc1h", "img", "ai"} {
+		if promptExtras[token] {
+			promptRemainder += " - " + directOverrideRawVars[token]
+		}
+	}
+	outputRemainder := "c_total"
+	for _, token := range []string{"img_o", "ao"} {
+		if outputExtras[token] {
+			outputRemainder += " - " + directOverrideRawVars[token]
+		}
+	}
+
+	return rewriteExpressionIdentifiers(exprStr, func(token string) string {
+		switch token {
+		case "p":
+			return "(" + promptRemainder + ")"
+		case "c":
+			return "(" + outputRemainder + ")"
+		default:
+			if raw, ok := directOverrideRawVars[token]; ok {
+				return raw
+			}
+			return token
+		}
+	})
+}
+
+func expressionIdentifiers(exprStr string) []string {
+	var identifiers []string
+	for i := 0; i < len(exprStr); {
+		if exprStr[i] == '"' || exprStr[i] == '\'' {
+			i = scanQuoted(exprStr, i)
+			continue
+		}
+		if !isIdentifierStart(exprStr[i]) {
+			i++
+			continue
+		}
+		start := i
+		i++
+		for i < len(exprStr) && isIdentifierChar(exprStr[i]) {
+			i++
+		}
+		identifiers = append(identifiers, exprStr[start:i])
+	}
+	return identifiers
+}
+
+func rewriteExpressionIdentifiers(exprStr string, rewrite func(string) string) string {
+	var out strings.Builder
+	for i := 0; i < len(exprStr); {
+		if exprStr[i] == '"' || exprStr[i] == '\'' {
+			end := scanQuoted(exprStr, i)
+			out.WriteString(exprStr[i:end])
+			i = end
+			continue
+		}
+		if !isIdentifierStart(exprStr[i]) {
+			out.WriteByte(exprStr[i])
+			i++
+			continue
+		}
+		start := i
+		i++
+		for i < len(exprStr) && isIdentifierChar(exprStr[i]) {
+			i++
+		}
+		out.WriteString(rewrite(exprStr[start:i]))
+	}
+	return out.String()
+}
+
+func directOverrideFunctionAt(exprStr string, offset int) (string, bool) {
+	for _, name := range []string{"rule_override_tier", "rule_override"} {
+		if !strings.HasPrefix(exprStr[offset:], name) {
+			continue
+		}
+		beforeOK := offset == 0 || !isIdentifierChar(exprStr[offset-1])
+		end := offset + len(name)
+		if beforeOK && end < len(exprStr) && exprStr[end] == '(' {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func matchingParen(exprStr string, open int) (int, bool) {
+	depth := 0
+	for i := open; i < len(exprStr); i++ {
+		switch exprStr[i] {
+		case '"', '\'':
+			i = scanQuoted(exprStr, i) - 1
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func splitExpressionArgs(exprStr string) ([]string, bool) {
+	args := make([]string, 0, 4)
+	start := 0
+	depth := 0
+	for i := 0; i < len(exprStr); i++ {
+		switch exprStr[i] {
+		case '"', '\'':
+			i = scanQuoted(exprStr, i) - 1
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				args = append(args, strings.TrimSpace(exprStr[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if depth != 0 {
+		return nil, false
+	}
+	args = append(args, strings.TrimSpace(exprStr[start:]))
+	return args, true
+}
+
+func scanQuoted(exprStr string, start int) int {
+	quote := exprStr[start]
+	for i := start + 1; i < len(exprStr); i++ {
+		if exprStr[i] == '\\' {
+			i++
+			continue
+		}
+		if exprStr[i] == quote {
+			return i + 1
+		}
+	}
+	return len(exprStr)
+}
+
+func isIdentifierStart(char byte) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_'
+}
+
+func isIdentifierChar(char byte) bool {
+	return isIdentifierStart(char) || (char >= '0' && char <= '9')
 }

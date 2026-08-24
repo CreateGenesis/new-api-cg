@@ -3,6 +3,7 @@ package helper
 import (
 	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,41 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestResolveIncomingBillingExprRequestInputMultipartMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "video-model"))
+	part, err := writer.CreateFormFile("input_reference", "edit.mp4")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("video bytes"))
+	require.NoError(t, err)
+	part, err = writer.CreateFormFile("input_reference", "second.mp4")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(body.Bytes()))
+	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	input, err := ResolveIncomingBillingExprRequestInput(ctx, nil)
+	require.NoError(t, err)
+	require.NotNil(t, input.Multipart)
+	require.Equal(t, []string{"video-model"}, input.Multipart.Fields["model"])
+	require.Len(t, input.Multipart.Files["input_reference"], 2)
+	require.Equal(t, "edit.mp4", input.Multipart.Files["input_reference"][0].Filename)
+	require.Equal(t, "application/octet-stream", input.Multipart.Files["input_reference"][0].ContentType)
+	// File content is not read by the billing rule parser. Size is populated
+	// only when the multipart part explicitly provides Content-Length.
+	require.Equal(t, int64(0), input.Multipart.Files["input_reference"][0].Size)
+	replayed, err := io.ReadAll(ctx.Request.Body)
+	require.NoError(t, err)
+	require.Equal(t, body.Bytes(), replayed)
+}
 
 func TestResolveIncomingBillingExprRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -234,7 +234,7 @@ export function tryParseVisualConfig(
 
     const cfg = normalizeVisualConfig({ tiers })
     const regenerated = generateExprFromVisualConfig(cfg)
-    if (regenerated.replace(/\s+/g, '') !== body.replace(/\s+/g, '')) {
+    if (regenerated.replaceAll(/\s+/g, '') !== body.replaceAll(/\s+/g, '')) {
       return null
     }
     return cfg
@@ -291,6 +291,15 @@ export function evalExprLocally(
     const env: Record<string, unknown> = {
       p: promptTokens,
       c: completionTokens,
+      p_total: promptTokens,
+      c_total: completionTokens,
+      cr_total: cacheReadTokens,
+      cc_total: cacheCreateTokens,
+      cc1h_total: cacheCreate1hTokens,
+      img_total: extraTokenValues.imageTokens || 0,
+      img_o_total: extraTokenValues.imageOutputTokens || 0,
+      ai_total: extraTokenValues.audioInputTokens || 0,
+      ao_total: extraTokenValues.audioOutputTokens || 0,
       len,
       tier: tierFn,
       max: Math.max,
@@ -298,6 +307,18 @@ export function evalExprLocally(
       abs: Math.abs,
       ceil: Math.ceil,
       floor: Math.floor,
+      multipart_param: () => null,
+      rule_override: (base: number, matched: boolean, override: number) =>
+        matched ? override : base,
+      rule_override_tier: (
+        base: number,
+        matched: boolean,
+        override: number,
+        name: string
+      ) => {
+        if (matched) matchedTier = name
+        return matched ? override : base
+      },
     }
     for (const field of ESTIMATOR_VARS) {
       env[field.var] = extraTokenValues[field.stateKey] || 0

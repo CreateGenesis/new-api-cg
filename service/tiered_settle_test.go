@@ -734,6 +734,47 @@ func TestBuildTieredTokenParams_GPT_NoCacheVar(t *testing.T) {
 	}
 }
 
+func TestBuildTieredTokenParams_DirectOverrideKeepsRawTotals(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens: 1000,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 200,
+			TextTokens:   800,
+		},
+	}
+	expr := `rule_override_tier(tier("base", p * 2), false, (p_total - cr_total) * 5 + cr_total * 0.5, "direct")`
+	params := BuildTieredTokenParams(usage, false, billingexpr.UsedVars(expr), false)
+	require.Equal(t, 1000.0, params.P)
+	require.Equal(t, 1000.0, params.RawP)
+	require.Equal(t, 200.0, params.CR)
+
+	cost, trace, err := billingexpr.RunExpr(expr, params)
+	require.NoError(t, err)
+	require.Equal(t, 2000.0, cost)
+	require.Equal(t, "base", trace.MatchedTier)
+}
+
+func TestBuildTieredTokenParams_DirectOverrideRawTotalForClaude(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:  800,
+		UsageSemantic: UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 200,
+			TextTokens:   800,
+		},
+	}
+	expr := `rule_override_tier(tier("base", p * 2 + cr * 0.5), true, (p_total - cr_total) * 5 + cr_total * 0.5, "direct")`
+	params := BuildTieredTokenParams(usage, true, billingexpr.UsedVars(expr), false)
+	require.Equal(t, 800.0, params.P)
+	require.Equal(t, 1000.0, params.RawP)
+	require.Equal(t, 200.0, params.CR)
+
+	cost, trace, err := billingexpr.RunExpr(expr, params)
+	require.NoError(t, err)
+	require.Equal(t, 4100.0, cost)
+	require.Equal(t, "direct", trace.MatchedTier)
+}
+
 func TestBuildTieredTokenParams_GPT_WithImage(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     1000,

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 	"github.com/tidwall/gjson"
@@ -17,6 +18,8 @@ import (
 //   - len              — total input context length for tier conditions (never reduced by sub-category exclusion)
 //   - cr, cc, cc1h     — cache read / creation / creation-1h tokens
 //   - tier(name, value) — trace callback that records which tier matched
+//   - multipart_param(path) — reads explicit multipart metadata
+//   - rule_override_tier(base, matched, override, name) — direct request-rule price override
 //   - max, min, abs, ceil, floor — standard math helpers
 //
 // Returns the resulting float64 quota (before group ratio) and a TraceResult
@@ -51,18 +54,43 @@ func RunExprByHashWithRequest(exprStr, hash string, params TokenParams, request 
 func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (float64, TraceResult, error) {
 	trace := TraceResult{}
 	headers := normalizeHeaders(request.Headers)
+	var multipartJSON []byte
+	if request.Multipart != nil {
+		var err error
+		multipartJSON, err = common.Marshal(request.Multipart)
+		if err != nil {
+			return 0, trace, fmt.Errorf("multipart metadata encode error: %w", err)
+		}
+	}
+	rawP := params.RawP
+	if rawP == 0 && params.P != 0 {
+		rawP = params.P
+	}
+	rawC := params.RawC
+	if rawC == 0 && params.C != 0 {
+		rawC = params.C
+	}
 
 	env := map[string]interface{}{
-		"p":     params.P,
-		"c":     params.C,
-		"len":   params.Len,
-		"cr":    params.CR,
-		"cc":    params.CC,
-		"cc1h":  params.CC1h,
-		"img":   params.Img,
-		"img_o": params.ImgO,
-		"ai":    params.AI,
-		"ao":    params.AO,
+		"p":           params.P,
+		"c":           params.C,
+		"p_total":     rawP,
+		"c_total":     rawC,
+		"cr_total":    params.CR,
+		"cc_total":    params.CC,
+		"cc1h_total":  params.CC1h,
+		"img_total":   params.Img,
+		"img_o_total": params.ImgO,
+		"ai_total":    params.AI,
+		"ao_total":    params.AO,
+		"len":         params.Len,
+		"cr":          params.CR,
+		"cc":          params.CC,
+		"cc1h":        params.CC1h,
+		"img":         params.Img,
+		"img_o":       params.ImgO,
+		"ai":          params.AI,
+		"ao":          params.AO,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
@@ -81,6 +109,33 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 				return nil
 			}
 			return result.Value()
+		},
+		"multipart_param": func(path string) interface{} {
+			path = strings.TrimSpace(path)
+			if path == "" || len(multipartJSON) == 0 {
+				return nil
+			}
+			result := gjson.GetBytes(multipartJSON, path)
+			if !result.Exists() {
+				return nil
+			}
+			return result.Value()
+		},
+		"rule_override": func(base float64, matched bool, override float64) float64 {
+			if matched {
+				return override
+			}
+			return base
+		},
+		"rule_override_tier": func(base float64, matched bool, override float64, name string) float64 {
+			if matched {
+				trace.MatchedTier = name
+				trace.Cost = override
+				return override
+			}
+			// The base argument is evaluated before this callback. Keep the trace
+			// it produced, including a nested override that already matched.
+			return base
 		},
 		"has": func(source interface{}, substr string) bool {
 			if source == nil || substr == "" {
@@ -107,6 +162,9 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 	f, ok := out.(float64)
 	if !ok {
 		return 0, trace, fmt.Errorf("expr result is %T, want float64", out)
+	}
+	if f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, trace, fmt.Errorf("expr result must be finite and non-negative, got %g", f)
 	}
 	return f, trace, nil
 }

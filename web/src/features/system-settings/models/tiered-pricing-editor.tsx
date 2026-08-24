@@ -65,6 +65,7 @@ import {
   MATCH_LTE,
   MATCH_RANGE,
   SOURCE_HEADER,
+  SOURCE_MULTIPART,
   SOURCE_PARAM,
   SOURCE_TIME,
   TIME_FUNCS,
@@ -77,6 +78,7 @@ import {
   splitBillingExprAndRequestRules,
   tryParseRequestRuleExpr,
   type ParamHeaderCondition,
+  type RequestPriceOverride,
   type RequestCondition,
   type RequestRuleGroup,
   type TimeCondition,
@@ -332,9 +334,29 @@ function formatTokenHint(n: number | string | null | undefined): string {
 
 function formatNumberDraft(value: number | string): string {
   if (value === '') return ''
-  if (typeof value === 'number')
+  if (typeof value === 'number') {
     return Number.isFinite(value) ? String(value) : '0'
+  }
   return value
+}
+
+function useStableListKeys(prefix: string) {
+  const keys = useRef<string[]>([])
+  const nextId = useRef(0)
+
+  const keyAt = (index: number): string => {
+    while (keys.current.length <= index) {
+      keys.current.push(`${prefix}-${nextId.current}`)
+      nextId.current += 1
+    }
+    return keys.current[index]
+  }
+
+  const removeAt = (index: number) => {
+    keys.current.splice(index, 1)
+  }
+
+  return { keyAt, removeAt }
 }
 
 function parseNumberDraft(value: string): number {
@@ -436,12 +458,10 @@ function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
   return (
     <div className='flex items-center gap-2'>
       <Select
-        items={[
-          ...CONDITION_INPUT_OPTIONS.map((option) => ({
-            value: option.value,
-            label: t(option.labelKey),
-          })),
-        ]}
+        items={CONDITION_INPUT_OPTIONS.map((option) => ({
+          value: option.value,
+          label: t(option.labelKey),
+        }))}
         value={condition.var}
         onValueChange={(value) =>
           onChange({ ...condition, var: value as TierConditionInput['var'] })
@@ -556,6 +576,7 @@ function VisualTierCard({
   onAddCondition,
 }: VisualTierCardProps) {
   const { t } = useTranslation()
+  const conditionKeys = useStableListKeys('visual-condition')
   const cacheMode = getTierCacheMode(tier)
 
   const handleConditionChange = (
@@ -568,6 +589,7 @@ function VisualTierCard({
   }
 
   const handleConditionRemove = (conditionIndex: number) => {
+    conditionKeys.removeAt(conditionIndex)
     onChange({
       ...tier,
       conditions: tier.conditions.filter((_, i) => i !== conditionIndex),
@@ -614,7 +636,6 @@ function VisualTierCard({
       />
     )
   }
-
   return (
     <div className='space-y-3 rounded-lg border p-3'>
       <div className='flex flex-wrap items-center justify-between gap-2'>
@@ -665,14 +686,16 @@ function VisualTierCard({
             {t('Always matches (default tier).')}
           </p>
         ) : (
-          tier.conditions.map((condition, conditionIndex) => (
-            <ConditionRow
-              key={conditionIndex}
-              condition={condition}
-              onChange={(next) => handleConditionChange(conditionIndex, next)}
-              onRemove={() => handleConditionRemove(conditionIndex)}
-            />
-          ))
+          tier.conditions.map((condition, conditionIndex) => {
+            return (
+              <ConditionRow
+                key={conditionKeys.keyAt(conditionIndex)}
+                condition={condition}
+                onChange={(next) => handleConditionChange(conditionIndex, next)}
+                onRemove={() => handleConditionRemove(conditionIndex)}
+              />
+            )
+          })
         )}
       </div>
 
@@ -776,6 +799,7 @@ type VisualEditorProps = {
 
 function VisualEditor({ visualConfig, onChange }: VisualEditorProps) {
   const { t } = useTranslation()
+  const tierKeys = useStableListKeys('visual-tier')
   const config = useMemo(
     () => normalizeVisualConfig(visualConfig),
     [visualConfig]
@@ -811,6 +835,7 @@ function VisualEditor({ visualConfig, onChange }: VisualEditorProps) {
   }
 
   const handleRemoveTier = (index: number) => {
+    tierKeys.removeAt(index)
     const tiers = config.tiers.filter((_, i) => i !== index)
     onChange({ ...config, tiers: tiers.length > 0 ? tiers : config.tiers })
   }
@@ -839,7 +864,6 @@ function VisualEditor({ visualConfig, onChange }: VisualEditorProps) {
       ),
     })
   }
-
   return (
     <div className='space-y-2'>
       <p className='text-muted-foreground text-xs'>
@@ -847,17 +871,19 @@ function VisualEditor({ visualConfig, onChange }: VisualEditorProps) {
           'Each tier supports up to 2 conditions. The last tier without conditions is the fallback.'
         )}
       </p>
-      {config.tiers.map((tier, index) => (
-        <VisualTierCard
-          key={index}
-          tier={tier}
-          index={index}
-          total={config.tiers.length}
-          onChange={(next) => handleTierChange(index, next)}
-          onRemove={() => handleRemoveTier(index)}
-          onAddCondition={() => handleAddCondition(index)}
-        />
-      ))}
+      {config.tiers.map((tier, index) => {
+        return (
+          <VisualTierCard
+            key={tierKeys.keyAt(index)}
+            tier={tier}
+            index={index}
+            total={config.tiers.length}
+            onChange={(next) => handleTierChange(index, next)}
+            onRemove={() => handleRemoveTier(index)}
+            onAddCondition={() => handleAddCondition(index)}
+          />
+        )
+      })}
       <Button
         variant='outline'
         size='sm'
@@ -890,13 +916,19 @@ function RawExprEditor({ exprString, onChange }: RawExprEditorProps) {
             {t('Variables')}: <code>len</code>, <code>p</code>, <code>c</code>,{' '}
             <code>cr</code>, <code>cc</code>, <code>cc1h</code>,{' '}
             <code>img</code>, <code>img_o</code>, <code>ai</code>,{' '}
-            <code>ao</code>
+            <code>ao</code>, <code>p_total</code>, <code>c_total</code>,{' '}
+            <code>cr_total</code>, <code>cc_total</code>,{' '}
+            <code>cc1h_total</code>, <code>img_total</code>,{' '}
+            <code>img_o_total</code>, <code>ai_total</code>,{' '}
+            <code>ao_total</code>
           </div>
           <div>
             {t('Functions')}: <code>tier(name, value)</code>, <code>max</code>,{' '}
             <code>min</code>, <code>ceil</code>, <code>floor</code>,{' '}
             <code>abs</code>, <code>header(name)</code>,{' '}
-            <code>param(path)</code>, <code>has(source, text)</code>
+            <code>param(path)</code>, <code>multipart_param(path)</code>,{' '}
+            <code>rule_override_tier(base, matched, override, name)</code>,{' '}
+            <code>has(source, text)</code>
           </div>
         </AlertDescription>
       </Alert>
@@ -967,20 +999,24 @@ function RuleConditionRow({
         return timeFunc
     }
   }
-  const sourceLabel =
-    condition.source === SOURCE_PARAM
-      ? t('Body param')
-      : condition.source === SOURCE_HEADER
-        ? t('Header')
-        : t('Time')
+  let sourceLabel = t('Time')
+  if (condition.source === SOURCE_PARAM) sourceLabel = t('Body param')
+  else if (condition.source === SOURCE_HEADER) sourceLabel = t('Header')
+  else if (condition.source === SOURCE_MULTIPART) {
+    sourceLabel = t('Multipart parameter')
+  }
 
   const handleSourceChange = (source: string) => {
     if (source === SOURCE_TIME) {
       onChange(createEmptyTimeCondition())
-    } else if (source === SOURCE_HEADER || source === SOURCE_PARAM) {
+    } else if (
+      source === SOURCE_HEADER ||
+      source === SOURCE_PARAM ||
+      source === SOURCE_MULTIPART
+    ) {
       onChange({
         ...createEmptyCondition(),
-        source: source as 'param' | 'header',
+        source: source as 'param' | 'header' | 'multipart',
       })
     }
   }
@@ -992,12 +1028,10 @@ function RuleConditionRow({
   const renderTimeCondition = (timeCond: TimeCondition) => (
     <>
       <Select
-        items={[
-          ...TIME_FUNCS.map((fn) => ({
-            value: fn,
-            label: getTimeFuncLabel(fn),
-          })),
-        ]}
+        items={TIME_FUNCS.map((fn) => ({
+          value: fn,
+          label: getTimeFuncLabel(fn),
+        }))}
         value={timeCond.timeFunc}
         onValueChange={(value) =>
           onChange({ ...timeCond, timeFunc: value as TimeFunc })
@@ -1017,12 +1051,10 @@ function RuleConditionRow({
         </SelectContent>
       </Select>
       <Select
-        items={[
-          ...COMMON_TIMEZONES.map((tz) => ({
-            value: tz.value,
-            label: tz.label,
-          })),
-        ]}
+        items={COMMON_TIMEZONES.map((tz) => ({
+          value: tz.value,
+          label: tz.label,
+        }))}
         value={timeCond.timezone}
         onValueChange={(value) =>
           value !== null && onChange({ ...timeCond, timezone: value })
@@ -1045,12 +1077,10 @@ function RuleConditionRow({
         </SelectContent>
       </Select>
       <Select
-        items={[
-          ...matchOptions.map((option) => ({
-            value: option.value,
-            label: getMatchLabel(option.value),
-          })),
-        ]}
+        items={matchOptions.map((option) => ({
+          value: option.value,
+          label: getMatchLabel(option.value),
+        }))}
         value={timeCond.mode}
         onValueChange={(v) => v !== null && handleModeChange(v)}
       >
@@ -1105,18 +1135,20 @@ function RuleConditionRow({
       <Input
         value={phCond.path}
         onChange={(event) => onChange({ ...phCond, path: event.target.value })}
-        placeholder={
-          phCond.source === SOURCE_HEADER ? 'X-Header-Name' : 'service_tier'
-        }
+        placeholder={(() => {
+          if (phCond.source === SOURCE_HEADER) return 'X-Header-Name'
+          if (phCond.source === SOURCE_MULTIPART) {
+            return 'files.input_reference.0.content_type'
+          }
+          return 'service_tier'
+        })()}
         className='w-44'
       />
       <Select
-        items={[
-          ...matchOptions.map((option) => ({
-            value: option.value,
-            label: getMatchLabel(option.value),
-          })),
-        ]}
+        items={matchOptions.map((option) => ({
+          value: option.value,
+          label: getMatchLabel(option.value),
+        }))}
         value={phCond.mode}
         onValueChange={(v) => v !== null && handleModeChange(v)}
       >
@@ -1152,6 +1184,7 @@ function RuleConditionRow({
         items={[
           { value: SOURCE_PARAM, label: t('Body param') },
           { value: SOURCE_HEADER, label: t('Header') },
+          { value: SOURCE_MULTIPART, label: t('Multipart parameter') },
           { value: SOURCE_TIME, label: t('Time') },
         ]}
         value={condition.source}
@@ -1164,6 +1197,9 @@ function RuleConditionRow({
           <SelectGroup>
             <SelectItem value={SOURCE_PARAM}>{t('Body param')}</SelectItem>
             <SelectItem value={SOURCE_HEADER}>{t('Header')}</SelectItem>
+            <SelectItem value={SOURCE_MULTIPART}>
+              {t('Multipart parameter')}
+            </SelectItem>
             <SelectItem value={SOURCE_TIME}>{t('Time')}</SelectItem>
           </SelectGroup>
         </SelectContent>
@@ -1191,6 +1227,7 @@ function RuleConditionRow({
 type RuleGroupCardProps = {
   group: RequestRuleGroup
   index: number
+  defaultPrices: RequestPriceOverride
   onChange: (next: RequestRuleGroup) => void
   onRemove: () => void
 }
@@ -1198,10 +1235,12 @@ type RuleGroupCardProps = {
 function RuleGroupCard({
   group,
   index,
+  defaultPrices,
   onChange,
   onRemove,
 }: RuleGroupCardProps) {
   const { t } = useTranslation()
+  const conditionKeys = useStableListKeys('rule-condition')
 
   const handleConditionChange = (
     conditionIndex: number,
@@ -1222,6 +1261,32 @@ function RuleGroupCard({
     })
   }
 
+  const handleActionChange = (action: string) => {
+    if (action === 'override') {
+      onChange({
+        ...group,
+        action: 'override',
+        override: group.override || { ...defaultPrices },
+      })
+      return
+    }
+    onChange({ ...group, action: 'multiplier' })
+  }
+
+  const handleOverridePriceChange = (
+    field: keyof RequestPriceOverride,
+    value: number
+  ) => {
+    const normalizedValue = Number.isFinite(value) && value >= 0 ? value : 0
+    onChange({
+      ...group,
+      action: 'override',
+      override: {
+        ...(group.override || defaultPrices),
+        [field]: normalizedValue,
+      },
+    })
+  }
   return (
     <div className='bg-muted/30 space-y-3 rounded-md border p-3'>
       <div className='flex items-center justify-between gap-2'>
@@ -1239,21 +1304,24 @@ function RuleGroupCard({
       </div>
 
       <div className='space-y-2'>
-        {group.conditions.map((condition, conditionIndex) => (
-          <RuleConditionRow
-            key={conditionIndex}
-            condition={condition}
-            onChange={(next) => handleConditionChange(conditionIndex, next)}
-            onRemove={() =>
-              onChange({
-                ...group,
-                conditions: group.conditions.filter(
-                  (_, i) => i !== conditionIndex
-                ),
-              })
-            }
-          />
-        ))}
+        {group.conditions.map((condition, conditionIndex) => {
+          return (
+            <RuleConditionRow
+              key={conditionKeys.keyAt(conditionIndex)}
+              condition={condition}
+              onChange={(next) => handleConditionChange(conditionIndex, next)}
+              onRemove={() => {
+                conditionKeys.removeAt(conditionIndex)
+                onChange({
+                  ...group,
+                  conditions: group.conditions.filter(
+                    (_, i) => i !== conditionIndex
+                  ),
+                })
+              }}
+            />
+          )
+        })}
         <div className='flex flex-wrap gap-2'>
           <Button
             variant='ghost'
@@ -1261,7 +1329,7 @@ function RuleGroupCard({
             onClick={() => handleAddCondition(false)}
           >
             <Plus className='mr-1 h-3 w-3' />
-            {t('Add param/header')}
+            {t('Add request condition')}
           </Button>
           <Button
             variant='ghost'
@@ -1274,22 +1342,137 @@ function RuleGroupCard({
         </div>
       </div>
 
-      <div className='flex items-center gap-2'>
-        <Label className='text-xs'>{t('Multiplier')}</Label>
-        <DraftNumberInput
-          min={0}
-          step={0.000001}
-          value={group.multiplier}
-          onValueChange={(value) =>
-            onChange({ ...group, multiplier: String(value) })
-          }
-          className='w-32'
-          placeholder='1.0'
-        />
-        <span className='text-muted-foreground text-xs'>
-          {t('Final cost = base × multiplier when conditions match')}
-        </span>
+      <div className='flex flex-wrap items-center gap-2'>
+        <Label className='text-xs'>{t('Rule action')}</Label>
+        <Select
+          items={[
+            { value: 'multiplier', label: t('Multiplier') },
+            { value: 'override', label: t('Override prices') },
+          ]}
+          value={group.action || 'multiplier'}
+          onValueChange={(value) => value !== null && handleActionChange(value)}
+        >
+          <SelectTrigger className='w-40' size='sm'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent alignItemWithTrigger={false}>
+            <SelectGroup>
+              <SelectItem value='multiplier'>{t('Multiplier')}</SelectItem>
+              <SelectItem value='override'>{t('Override prices')}</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
+
+      {(group.action || 'multiplier') === 'override' ? (
+        <div className='space-y-2 rounded-md border p-2'>
+          <div className='flex items-center gap-2'>
+            <Label className='text-xs'>{t('Override name')}</Label>
+            <Input
+              value={group.override?.label || ''}
+              onChange={(event) =>
+                onChange({
+                  ...group,
+                  action: 'override',
+                  override: {
+                    ...(group.override || defaultPrices),
+                    label: event.target.value,
+                  },
+                })
+              }
+              placeholder='override'
+              className='h-8 w-48'
+            />
+          </div>
+          <div className='flex flex-wrap gap-x-4 gap-y-2'>
+            <PriceField
+              label={t('Input price')}
+              value={Number(group.override?.input_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('input_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Output price')}
+              value={Number(group.override?.output_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('output_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Cache read price')}
+              value={Number(group.override?.cache_read_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('cache_read_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Cache write price')}
+              value={Number(group.override?.cache_create_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('cache_create_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Cache write (1h) price')}
+              value={Number(group.override?.cache_create_1h_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('cache_create_1h_unit_cost', value)
+              }
+            />
+          </div>
+          <div className='flex flex-wrap gap-x-4 gap-y-2'>
+            <PriceField
+              label={t('Image input price')}
+              value={Number(group.override?.image_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('image_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Image output price')}
+              value={Number(group.override?.image_output_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('image_output_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Audio input price')}
+              value={Number(group.override?.audio_input_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('audio_input_unit_cost', value)
+              }
+            />
+            <PriceField
+              label={t('Audio output price')}
+              value={Number(group.override?.audio_output_unit_cost) || 0}
+              onChange={(value) =>
+                handleOverridePriceChange('audio_output_unit_cost', value)
+              }
+            />
+          </div>
+          <span className='text-muted-foreground text-xs'>
+            {t('Matched rules use these prices directly.')}
+          </span>
+        </div>
+      ) : (
+        <div className='flex items-center gap-2'>
+          <Label className='text-xs'>{t('Multiplier')}</Label>
+          <DraftNumberInput
+            min={0}
+            step={0.000001}
+            value={group.multiplier}
+            onValueChange={(value) =>
+              onChange({ ...group, multiplier: String(value) })
+            }
+            className='w-32'
+            placeholder='1.0'
+          />
+          <span className='text-muted-foreground text-xs'>
+            {t('Final cost = base × multiplier when conditions match')}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -1562,7 +1745,7 @@ function LlmPromptHelper({ modelName }: LlmPromptHelperProps) {
 
   const prompt = useMemo(() => {
     if (modelName) {
-      return LLM_PROMPT_TEMPLATE + `\n\nCurrent model: ${modelName}`
+      return `${LLM_PROMPT_TEMPLATE}\n\nCurrent model: ${modelName}`
     }
     return LLM_PROMPT_TEMPLATE
   }, [modelName])
@@ -1680,6 +1863,31 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     return tryParseRequestRuleExpr(currentRequestRuleExpr) !== null
   }, [currentRequestRuleExpr])
 
+  const defaultOverridePrices = useMemo<RequestPriceOverride>(() => {
+    const tier = visualConfig?.tiers?.[0]
+    if (!tier) return {}
+    type RequestPriceField = Exclude<keyof RequestPriceOverride, 'label'>
+    const usedExtraFields = new Set(
+      BILLING_EXTRA_VARS.filter((variable) =>
+        new RegExp(`\\b${variable.key}\\s*\\*`).test(currentExpr || '')
+      ).map((variable) => variable.tierField)
+    )
+    const prices: RequestPriceOverride = {
+      input_unit_cost: Number(tier.input_unit_cost) || 0,
+      output_unit_cost: Number(tier.output_unit_cost) || 0,
+    }
+    for (const variable of BILLING_EXTRA_VARS) {
+      if (
+        typeof variable.tierField === 'string' &&
+        usedExtraFields.has(variable.tierField)
+      ) {
+        const field = variable.tierField as RequestPriceField
+        prices[field] = Number(tier[variable.tierField]) || 0
+      }
+    }
+    return prices
+  }, [currentExpr, visualConfig])
+
   const effectiveExpr = useMemo(() => {
     if (editorMode === 'visual') {
       return generateExprFromVisualConfig(visualConfig)
@@ -1768,6 +1976,7 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
   const handleRuleGroupsChange = useCallback((next: RequestRuleGroup[]) => {
     setRequestRuleGroups(next)
   }, [])
+  const requestRuleKeys = useStableListKeys('request-rule')
 
   return (
     <div className='space-y-5'>
@@ -1820,7 +2029,7 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
               </h4>
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'When conditions match, the final price is multiplied by X. Multiple matches multiply together; values < 1 act as discounts.'
+                  'Multiplier rules multiply the base price. Override rules use their listed prices directly.'
                 )}
               </p>
             </div>
@@ -1835,23 +2044,27 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
               </Alert>
             ) : (
               <>
-                {requestRuleGroups.map((group, groupIndex) => (
-                  <RuleGroupCard
-                    key={groupIndex}
-                    group={group}
-                    index={groupIndex}
-                    onChange={(next) => {
-                      const updated = [...requestRuleGroups]
-                      updated[groupIndex] = next
-                      handleRuleGroupsChange(updated)
-                    }}
-                    onRemove={() =>
-                      handleRuleGroupsChange(
-                        requestRuleGroups.filter((_, i) => i !== groupIndex)
-                      )
-                    }
-                  />
-                ))}
+                {requestRuleGroups.map((group, groupIndex) => {
+                  return (
+                    <RuleGroupCard
+                      key={requestRuleKeys.keyAt(groupIndex)}
+                      group={group}
+                      index={groupIndex}
+                      defaultPrices={defaultOverridePrices}
+                      onChange={(next) => {
+                        const updated = [...requestRuleGroups]
+                        updated[groupIndex] = next
+                        handleRuleGroupsChange(updated)
+                      }}
+                      onRemove={() => {
+                        requestRuleKeys.removeAt(groupIndex)
+                        handleRuleGroupsChange(
+                          requestRuleGroups.filter((_, i) => i !== groupIndex)
+                        )
+                      }}
+                    />
+                  )
+                })}
                 <Button
                   variant='outline'
                   size='sm'

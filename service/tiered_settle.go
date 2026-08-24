@@ -61,6 +61,11 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	cc1h := float64(cacheCreation1h)
 
 	inputLen := float64(input.TotalInputTokens)
+	// Direct-price overrides use the canonical total so their own explicitly
+	// priced cache/media categories can be subtracted exactly once. The legacy
+	// Claude p value remains uncached input for the base expression.
+	rawP := inputLen
+	rawC := c
 
 	if cacheUsageValidationSplit || semantic != UsageSemanticAnthropic {
 		if usedVars["cr"] {
@@ -98,6 +103,8 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	return billingexpr.TokenParams{
 		P:    p,
 		C:    c,
+		RawP: rawP,
+		RawC: rawC,
 		Len:  inputLen,
 		CR:   cr,
 		CC:   cc5m,
