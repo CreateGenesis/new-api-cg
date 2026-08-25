@@ -76,26 +76,18 @@ image_id_for() {
   docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true
 }
 
-repo_digest_for() {
+resolve_image_ref() {
   local ref="$1" digest
-  digest="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null | head -n 1 | tr -d '\r' || true)"
-  [[ -n "$digest" ]] && printf '%s\n' "$digest" || printf '%s\n' "$ref"
-}
-
-image_ref_for_container() {
-  local id="$1" ref
-  ref="$(docker inspect -f '{{.Config.Image}}' "$id")"
-  repo_digest_for "$ref"
+  [[ -n "$(image_id_for "$ref")" ]] && { printf '%s\n' "$ref"; return 0; }
+  if [[ "$ref" == *@sha256:* ]]; then
+    digest="sha256:${ref##*@sha256:}"
+    [[ -n "$(image_id_for "$digest")" ]] && { printf '%s\n' "$digest"; return 0; }
+  fi
+  return 1
 }
 
 image_id_for_container() {
   docker inspect -f '{{.Image}}' "$1"
-}
-
-node_type_for_container() {
-  local id="$1"
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null \
-    | awk -F= '$1 == "NODE_TYPE" { print $2; exit }'
 }
 
 version_for_image() {
@@ -272,12 +264,33 @@ drain_old_slot() {
   return 1
 }
 
+retire_slot() {
+  local slot="$1" service id port connections
+  service="$(service_for_slot "$slot")"
+  id="$(container_for_slot "$slot" || true)"
+  [[ -n "$id" ]] || return 0
+  port="$(port_for_slot "$slot")"
+  if ! connections="$(old_backend_connections "$port")"; then
+    log "WARNING: cannot inspect $slot connections; leaving container $id running"
+    return 1
+  fi
+  if [[ ! "$connections" =~ ^[0-9]+$ ]] || (( connections != 0 )); then
+    log "WARNING: keeping $slot container $id; ${connections:-unknown} upstream connection(s) remain"
+    return 1
+  fi
+  if ! compose rm -sf "$service" >> "$RUN_LOG" 2>&1; then
+    log "WARNING: failed to remove retired $slot container $id"
+    return 1
+  fi
+  log "retired $slot container $id; only the active slot remains connected"
+}
+
 init_state() {
   local id image digest version
   id="$(container_for_slot blue || true)"
   [[ -n "$id" ]] || die "blue container is not running"
   wait_slot blue 120 || die "blue is not healthy"
-  image="$(image_ref_for_container "$id")"
+  image="$(image_id_for_container "$id")"
   digest="$(docker inspect -f '{{.Image}}' "$id")"
   version="$(version_for_slot "$WEB_HTTP_PORT")"
   ensure_nginx_hook
@@ -312,7 +325,7 @@ repair_nginx_cmd() {
 }
 
 deploy_cmd() {
-  local old_slot new_slot old_image old_digest old_version old_id old_container_image inactive_id inactive_role inactive_image
+  local old_slot new_slot old_image old_digest old_version old_id old_container_image inactive_id inactive_image
   local local_id new_image new_digest new_version
   load_state
   old_slot="$ACTIVE_SLOT"
@@ -331,12 +344,16 @@ deploy_cmd() {
   fi
   if [[ -n "$old_id" ]] && [[ "$old_container_image" == "$local_id" ]]; then
     inactive_id="$(container_for_slot "$new_slot" || true)"
-    inactive_role="$(node_type_for_container "$inactive_id" || true)"
-    if [[ -n "$inactive_id" && "$inactive_role" != slave ]]; then
+    if [[ -n "$inactive_id" ]]; then
       inactive_image="$(image_id_for_container "$inactive_id")"
-      log "local image is unchanged; correcting inactive $new_slot role from ${inactive_role:-unknown} to slave"
-      recreate_slot "$new_slot" slave "$inactive_image" || return 1
-      wait_slot "$new_slot" 180 || return 1
+      if [[ "${PREVIOUS_SLOT:-}" == "$new_slot" && -n "$inactive_image" ]]; then
+        write_state "$old_slot" "$ACTIVE_IMAGE" "${ACTIVE_DIGEST:-$local_id}" "${ACTIVE_VERSION:-unknown}" \
+          "$new_slot" "$inactive_image" "$inactive_image" "${PREVIOUS_VERSION:-unknown}"
+      fi
+      ensure_nginx_hook
+      grep -q "127.0.0.1:$(port_for_slot "$old_slot")" "$NGINX_SWITCH_FILE" \
+        || die "Nginx backend does not match active slot; run repair-nginx before retiring $new_slot"
+      retire_slot "$new_slot" || return 2
     fi
     log "local image $LOCAL_IMAGE is unchanged ($local_id); no update needed"
     return 0
@@ -349,13 +366,13 @@ deploy_cmd() {
   recreate_slot "$new_slot" slave "$new_image" || { log "candidate recreation failed"; return 1; }
   wait_slot "$new_slot" 180 || { log "candidate health failed; active=$old_slot unchanged"; compose rm -sf "$(service_for_slot "$new_slot")" >> "$RUN_LOG" 2>&1 || true; return 1; }
   recreate_slot "$new_slot" master "$new_image" || {
-    log "candidate master promotion failed; restoring slave"
-    recreate_slot "$new_slot" slave "$new_image" >> "$RUN_LOG" 2>&1 || true
+    log "candidate master promotion failed; removing candidate"
+    compose rm -sf "$(service_for_slot "$new_slot")" >> "$RUN_LOG" 2>&1 || true
     return 1
   }
   wait_slot "$new_slot" 180 || {
-    log "candidate failed after master promotion; restoring slave"
-    recreate_slot "$new_slot" slave "$new_image" >> "$RUN_LOG" 2>&1 || true
+    log "candidate failed after master promotion; removing candidate"
+    compose rm -sf "$(service_for_slot "$new_slot")" >> "$RUN_LOG" 2>&1 || true
     return 1
   }
 
@@ -363,13 +380,13 @@ deploy_cmd() {
   if ! write_backend "$new_slot" || ! probe_public; then
     log "traffic probe failed after switch; restoring $old_slot"
     write_backend "$old_slot" >> "$RUN_LOG" 2>&1 || true
-    recreate_slot "$new_slot" slave "$new_image" >> "$RUN_LOG" 2>&1 || true
+    compose rm -sf "$(service_for_slot "$new_slot")" >> "$RUN_LOG" 2>&1 || true
     return 1
   fi
   write_state "$new_slot" "$new_image" "$new_digest" "${new_version:-unknown}" "$old_slot" "$old_image" "$old_digest" "$old_version"
 
   if drain_old_slot "$old_slot" "$(port_for_slot "$old_slot")"; then
-    if recreate_slot "$old_slot" slave "$old_image" && wait_slot "$old_slot" 180; then
+    if retire_slot "$old_slot"; then
       log "deploy completed: active=$new_slot previous=$old_slot version=${new_version:-unknown}"
       return 0
     fi
@@ -399,21 +416,23 @@ rollback_cmd() {
     target_image="$target_container_image"
     target_digest="$target_container_image"
   fi
-  [[ -n "$(image_id_for "$target_image")" ]] || die "rollback image is unavailable locally: $target_image"
+  target_image="$(resolve_image_ref "$target_image" || true)"
+  [[ -n "$target_image" ]] || die "rollback image is unavailable locally: ${PREVIOUS_IMAGE:-unknown}"
+  target_digest="$target_image"
   recreate_slot "$target_slot" master "$target_image" || return 1
   wait_slot "$target_slot" 180 || {
-    recreate_slot "$target_slot" slave "$target_image" >> "$RUN_LOG" 2>&1 || true
+    compose rm -sf "$(service_for_slot "$target_slot")" >> "$RUN_LOG" 2>&1 || true
     return 1
   }
   ensure_nginx_hook
   write_backend "$target_slot" && probe_public || {
     log "rollback probe failed; restoring $old_slot"
     write_backend "$old_slot" >> "$RUN_LOG" 2>&1 || true
-    recreate_slot "$target_slot" slave "$target_image" >> "$RUN_LOG" 2>&1 || true
+    compose rm -sf "$(service_for_slot "$target_slot")" >> "$RUN_LOG" 2>&1 || true
     return 1
   }
   write_state "$target_slot" "$target_image" "$target_digest" "$target_version" "$old_slot" "$old_image" "$old_digest" "$old_version"
-  if drain_old_slot "$old_slot" "$(port_for_slot "$old_slot")" && recreate_slot "$old_slot" slave "$old_image" && wait_slot "$old_slot" 180; then
+  if drain_old_slot "$old_slot" "$(port_for_slot "$old_slot")" && retire_slot "$old_slot"; then
     log "rollback completed: active=$target_slot previous=$old_slot"
     return 0
   fi
