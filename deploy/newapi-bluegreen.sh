@@ -390,7 +390,7 @@ deploy_cmd() {
       log "deploy completed: active=$new_slot previous=$old_slot version=${new_version:-unknown}"
       return 0
     fi
-    log "deploy switched successfully but old slot demotion failed"
+    log "deploy switched successfully but old slot retirement failed"
     return 2
   fi
   log "deploy switched successfully; old slot remains serving existing upstreams"
@@ -436,7 +436,7 @@ rollback_cmd() {
     log "rollback completed: active=$target_slot previous=$old_slot"
     return 0
   fi
-  log "rollback switched successfully but old slot demotion needs attention"
+  log "rollback switched successfully but old slot retirement needs attention"
   return 2
 }
 
