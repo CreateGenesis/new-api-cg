@@ -1179,7 +1179,7 @@ func TestPatchSimulatedModelCacheResponseBodyProductionUsageContracts(t *testing
 	assert.Equal(t, 1026, openAIPayload.Usage.PromptTokensDetails.CachedTokens)
 }
 
-func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIModelInSSE(t *testing.T) {
+func TestPatchSimulatedModelCacheResponseBodyPreservesOpenAIModelInSSE(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     2,
 		CompletionTokens: 3,
@@ -1192,15 +1192,15 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesOpenAIModelInSSE(t *testing.
 		``,
 	}, "\n"))
 
-	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAI, "text/event-stream", body, usage, "glm-5.2")
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAI, "text/event-stream", body, usage)
 
 	got := string(patched)
-	require.Contains(t, got, `"model":"glm-5.2"`)
-	require.NotContains(t, got, `"model":"xopglm52"`)
+	require.Contains(t, got, `"model":"xopglm52"`)
+	require.NotContains(t, got, `"model":"glm-5.2"`)
 	require.Contains(t, got, `data: [DONE]`)
 }
 
-func TestPatchSimulatedModelCacheResponseBodyUpdatesResponsesModelInSSE(t *testing.T) {
+func TestPatchSimulatedModelCacheResponseBodyPreservesResponsesModelInSSE(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     2,
 		CompletionTokens: 3,
@@ -1213,11 +1213,11 @@ func TestPatchSimulatedModelCacheResponseBodyUpdatesResponsesModelInSSE(t *testi
 		``,
 	}, "\n"))
 
-	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAIResponses, "text/event-stream", body, usage, "glm-5.2")
+	patched := PatchSimulatedModelCacheResponseBody(types.RelayFormatOpenAIResponses, "text/event-stream", body, usage)
 
 	got := string(patched)
-	require.Contains(t, got, `"model":"glm-5.2"`)
-	require.NotContains(t, got, `"model":"xopglm52"`)
+	require.Contains(t, got, `"model":"xopglm52"`)
+	require.NotContains(t, got, `"model":"glm-5.2"`)
 	require.Contains(t, got, `data: [DONE]`)
 }
 

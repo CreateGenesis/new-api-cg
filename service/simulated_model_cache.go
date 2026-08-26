@@ -64,8 +64,11 @@ func cleanupLegacySimulatedModelCacheReplayFiles() {
 	})
 }
 
-func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage, responseModel ...string) []byte {
-	return PatchUsageResponseBody(format, contentType, body, usage, simulatedModelCacheResponseModel(format, responseModel...), false)
+func PatchSimulatedModelCacheResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage) []byte {
+	// Simulated cache is an internal billing/usage optimization. Its response
+	// patch must remain protocol-transparent apart from the standard usage
+	// object, including the downstream model name.
+	return PatchUsageResponseBody(format, contentType, body, usage, "", false)
 }
 
 func PatchUsageResponseBody(format types.RelayFormat, contentType string, body []byte, usage *dto.Usage, responseModel string, ensureUsage bool) []byte {
@@ -80,6 +83,18 @@ func PatchUsageResponseBody(format types.RelayFormat, contentType string, body [
 		return body
 	}
 	return patched
+}
+
+func responseModelForFormat(format types.RelayFormat, responseModel string) string {
+	if strings.TrimSpace(responseModel) == "" {
+		return ""
+	}
+	switch format {
+	case types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
+		return responseModel
+	default:
+		return ""
+	}
 }
 
 func patchSimulatedModelCacheSSEBody(format types.RelayFormat, body []byte, usage *dto.Usage, responseModel string, ensureUsage bool) []byte {
@@ -117,7 +132,7 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 		return nil, false
 	}
 	patched := false
-	if model := simulatedModelCacheResponseModel(format, responseModel); model != "" {
+	if model := responseModelForFormat(format, responseModel); model != "" {
 		if _, ok := payload["model"]; ok {
 			payload["model"] = model
 			patched = true
@@ -214,18 +229,6 @@ func shouldEnsurePatchedUsage(format types.RelayFormat, payload map[string]any, 
 		return len(choices) == 0
 	default:
 		return false
-	}
-}
-
-func simulatedModelCacheResponseModel(format types.RelayFormat, responseModel ...string) string {
-	if len(responseModel) == 0 || strings.TrimSpace(responseModel[0]) == "" {
-		return ""
-	}
-	switch format {
-	case types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
-		return responseModel[0]
-	default:
-		return ""
 	}
 }
 

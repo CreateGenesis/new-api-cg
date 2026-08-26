@@ -792,7 +792,7 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 					info.RequestId, info.RelayFormat, writeErr.Error()))
 			}
 		} else if !recorder.passThrough {
-			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info))
+			body = service.PatchSimulatedModelCacheResponseBody(info.RelayFormat, recorder.Header().Get("Content-Type"), body, usage)
 		}
 	}
 

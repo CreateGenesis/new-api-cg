@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGenerateTextOtherInfoRecordsSimulatedCacheStreamUsageInjection(t *testing.T) {
+func TestGenerateTextOtherInfoDoesNotExposeSimulatedCacheHit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -40,16 +40,10 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheStreamUsageInjection(t *testi
 
 	adminInfo, ok := other["admin_info"].(map[string]interface{})
 	require.True(t, ok)
-	cacheInfo, ok := adminInfo["simulated_model_cache"].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, false, cacheInfo["stream_usage_injected"])
-	assert.Equal(t, 50, cacheInfo["simulated_cached_tokens"])
-	assert.Equal(t, SimulatedModelCacheFingerprintVersion, cacheInfo["fingerprint_version"])
-	assert.Equal(t, 12, cacheInfo["candidate_count"])
-	assert.Equal(t, int64(7), cacheInfo["match_duration_ms"])
+	assert.NotContains(t, adminInfo, "simulated_model_cache")
 }
 
-func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *testing.T) {
+func TestGenerateTextOtherInfoDoesNotExposeSimulatedCacheBypass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -70,13 +64,7 @@ func TestGenerateTextOtherInfoRecordsSimulatedCacheBypassWithoutHitFields(t *tes
 
 	adminInfo, ok := other["admin_info"].(map[string]interface{})
 	require.True(t, ok)
-	cacheInfo, ok := adminInfo["simulated_model_cache"].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "memory_budget", cacheInfo["bypass_reason"])
-	assert.NotContains(t, cacheInfo, "missing_input_estimated_tokens")
-	assert.NotContains(t, cacheInfo, "mode")
-	assert.NotContains(t, cacheInfo, "match_ratio")
-	assert.NotContains(t, cacheInfo, "simulated_cached_tokens")
+	assert.NotContains(t, adminInfo, "simulated_model_cache")
 }
 
 func TestGenerateTextOtherInfoRecordsUsageTokenLimitAudit(t *testing.T) {
