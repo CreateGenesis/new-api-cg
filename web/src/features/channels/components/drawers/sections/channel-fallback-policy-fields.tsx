@@ -294,7 +294,9 @@ export function ChannelFallbackPolicyFields(
                       onBlur={field.onBlur}
                       name={field.name}
                       ref={field.ref}
-                      onChange={(event) => field.onChange(Number(event.target.value))}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
                     />
                   </FormControl>
                   <FormDescription>
@@ -321,7 +323,9 @@ export function ChannelFallbackPolicyFields(
                       onBlur={field.onBlur}
                       name={field.name}
                       ref={field.ref}
-                      onChange={(event) => field.onChange(Number(event.target.value))}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
                     />
                   </FormControl>
                   <FormDescription>

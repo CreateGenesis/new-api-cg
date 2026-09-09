@@ -29,9 +29,11 @@ func applySystemPromptIfNeeded(c *gin.Context, info *relaycommon.RelayInfo, requ
 
 	systemRole := request.GetSystemRoleName()
 
+	// A Kimi K3 dynamic tool loading message ({"role":"system","tools":[...]})
+	// declares tools rather than a system prompt and must never receive content.
 	containSystemPrompt := false
 	for _, message := range request.Messages {
-		if message.Role == systemRole {
+		if message.Role == systemRole && len(message.Tools) == 0 {
 			containSystemPrompt = true
 			break
 		}
@@ -51,7 +53,7 @@ func applySystemPromptIfNeeded(c *gin.Context, info *relaycommon.RelayInfo, requ
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, true)
 	for i, message := range request.Messages {
-		if message.Role != systemRole {
+		if message.Role != systemRole || len(message.Tools) > 0 {
 			continue
 		}
 		if message.IsStringContent() {
@@ -70,38 +72,46 @@ func applySystemPromptIfNeeded(c *gin.Context, info *relaycommon.RelayInfo, requ
 	}
 }
 
-func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, request *dto.GeneralOpenAIRequest) (*dto.Usage, *types.NewAPIError, bool) {
-	chatJSON, err := common.Marshal(request)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
-	}
-
-	chatJSON, err = relaycommon.RemoveDisabledFields(chatJSON, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
-	}
-
-	if len(info.ParamOverride) > 0 {
-		chatJSON, err = relaycommon.ApplyParamOverrideWithRelayInfo(chatJSON, info)
+func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, request any) (*dto.Usage, *types.NewAPIError) {
+	paramOverrideApplied := false
+	if chatRequest, ok := request.(*dto.GeneralOpenAIRequest); ok {
+		chatJSON, err := common.Marshal(chatRequest)
 		if err != nil {
-			return nil, newAPIErrorFromParamOverride(err), false
+			return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
+
+		chatJSON, err = relaycommon.RemoveDisabledFields(chatJSON, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		}
+
+		if len(info.ParamOverride) > 0 {
+			chatJSON, err = relaycommon.ApplyParamOverrideWithRelayInfo(chatJSON, info)
+			if err != nil {
+				return nil, newAPIErrorFromParamOverride(err)
+			}
+			paramOverrideApplied = true
+		}
+
+		var overriddenChatReq dto.GeneralOpenAIRequest
+		if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {
+			return nil, types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry())
+		}
+		request = &overriddenChatReq
 	}
 
-	var overriddenChatReq dto.GeneralOpenAIRequest
-	if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {
-		return nil, types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry()), false
-	}
-
-	result, err := service.ConvertRequestVia(c, info, &overriddenChatReq, types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses)
+	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
 	if err != nil {
-		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry()), false
+		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 	responsesReq, ok := result.Value.(*dto.OpenAIResponsesRequest)
 	if !ok {
-		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	return relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
+}
 
+func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, paramOverrideApplied bool) (*dto.Usage, *types.NewAPIError) {
 	savedRelayMode := info.RelayMode
 	savedRequestURLPath := info.RequestURLPath
 	defer func() {
@@ -114,25 +124,31 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+		return nil, newConvertRequestFailedError(c, info, err)
 	}
 	relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
 	jsonData, err := common.Marshal(convertedRequest)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
 	jsonData, err = relaycommon.RemoveDisabledFields(jsonData, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+	}
+	if !paramOverrideApplied && len(info.ParamOverride) > 0 {
+		jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
+		if err != nil {
+			return nil, newAPIErrorFromParamOverride(err)
+		}
 	}
 
 	cacheAttempt := prepareSimulatedModelCacheAttempt(c, info, jsonData)
 
 	body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry()), false
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 	defer closer.Close()
 	jsonData = nil
@@ -142,10 +158,10 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	var httpResp *http.Response
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError), false
+		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
 	if resp == nil {
-		return nil, types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError), false
+		return nil, types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
@@ -157,7 +173,7 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr, false
+		return nil, newApiErr
 	}
 
 	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
@@ -173,17 +189,17 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	}
 	if newApiErr != nil {
 		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newApiErr); policyErr != nil {
-			return nil, policyErr, false
+			return nil, policyErr
 		}
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr, false
+		return nil, newApiErr
 	}
 	if recorder != nil {
 		if policyErr := finishSimulatedModelCacheRecorder(c, info, cacheAttempt, recorder, usage); policyErr != nil {
-			return nil, policyErr, false
+			return nil, policyErr
 		}
 	}
-	return usage, nil, false
+	return usage, nil
 }
 
 func isResponsesEventStreamContentType(contentType string) bool {

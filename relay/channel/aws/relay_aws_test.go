@@ -358,7 +358,7 @@ func TestAwsStreamHandlerUsesFinalUpstreamUsage(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "[DONE]")
 }
 
-func TestAwsStreamHandlerStopsAtClientCancellationAndKeepsPartialBillingUsage(t *testing.T) {
+func TestAwsStreamHandlerStopsAtClientCancellation(t *testing.T) {
 	originalRelayTimeout := common.RelayTimeout
 	common.RelayTimeout = 0
 	t.Cleanup(func() {

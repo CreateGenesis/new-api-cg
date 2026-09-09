@@ -219,8 +219,8 @@ func TestCachedChannelSelectionFiltersBeforeChoosingHighestPriority(t *testing.T
 	priorityLow := int64(5)
 	weight := uint(1)
 	channels := map[int]*Channel{
-		31: {Id: 31, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityHigh, Weight: &weight},
-		32: {Id: 32, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityLow, Weight: &weight},
+		31: {Id: 31, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityHigh, Weight: &weight, OtherSettings: `{"advanced_custom":{"advanced_routes":[{"incoming_path":"/v1/messages"}]}}`},
+		32: {Id: 32, Type: constant.ChannelTypeAdvancedCustom, Priority: &priorityLow, Weight: &weight, OtherSettings: `{"advanced_custom":{"advanced_routes":[{"incoming_path":"/v1/responses"}]}}`},
 	}
 
 	channelSyncLock.Lock()

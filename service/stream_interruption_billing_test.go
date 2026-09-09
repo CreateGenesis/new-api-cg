@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/QuantumNous/new-api/model"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -91,9 +92,8 @@ func TestEvaluateStreamInterruptionBillingPreservesTieredQuotaBeforeWaiver(t *te
 func TestAttachStreamInterruptionBillingAddsAdminAudit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(nil)
-	other := map[string]interface{}{
-		"admin_info": map[string]interface{}{"use_channel": []string{"7"}},
-	}
+	other := model.NewLogOther()
+	other.SetAdmin("use_channel", []string{"7"})
 	decision := StreamInterruptionBillingDecision{
 		Applied:             true,
 		Mode:                dto.StreamInterruptionBillingModeAllInterruptedFree,
@@ -105,7 +105,7 @@ func TestAttachStreamInterruptionBillingAddsAdminAudit(t *testing.T) {
 
 	attachStreamInterruptionBilling(ctx, &relaycommon.RelayInfo{UserId: 9, OriginModelName: "gpt-test"}, other, decision)
 
-	adminInfo := other["admin_info"].(map[string]interface{})
+	adminInfo := other.Snapshot()["admin_info"].(map[string]interface{})
 	assert.Equal(t, []string{"7"}, adminInfo["use_channel"])
 	audit, ok := adminInfo["stream_interruption_billing"].(map[string]interface{})
 	require.True(t, ok)

@@ -3,6 +3,7 @@ package helper
 import (
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"mime/multipart"
 	"strconv"
@@ -28,9 +29,7 @@ func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.Re
 			input.Multipart = multipartInput
 		}
 		merged := cloneStringMap(info.RequestHeaders)
-		for k, v := range input.Headers {
-			merged[k] = v
-		}
+		maps.Copy(merged, input.Headers)
 		input.Headers = merged
 		return input, nil
 	}

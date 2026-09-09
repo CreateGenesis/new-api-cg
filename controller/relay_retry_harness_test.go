@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	hostdto "github.com/QuantumNous/new-api/dto"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -765,7 +766,7 @@ func TestRelayRetryHarnessStopsAfterUniqueChannelsAndUpgradesBoundedTokenRoutes(
 	)
 	pinnedStreamCtx.Request.Header.Set("Content-Type", "application/json")
 	pinnedStreamCtx.Set(common.RequestIdKey, "relay-disable-stream-pinned")
-	pinnedStreamCtx.Set("specific_channel_id", channels[0].Id)
+	service.GetChannelConstraints(pinnedStreamCtx).AddPin(hostdto.ChannelPin{ChannelId: channels[0].Id, Source: hostdto.PinSourceOriginTask, Rank: hostdto.PinRankOriginTask, RetryMode: hostdto.PinRetrySameChannel})
 	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(pinnedStreamCtx, constant.ContextKeyUsingGroup, "default")

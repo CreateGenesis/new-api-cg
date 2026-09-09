@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	hostdto "github.com/QuantumNous/new-api/dto"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,8 +81,8 @@ func TestBuildRelayErrorLogDetailsIncludesUpstreamDiagnostics(t *testing.T) {
 
 	details := buildRelayErrorLogDetails(ctx, upstreamErr, 12)
 
-	assert.Equal(t, http.StatusServiceUnavailable, details["status_code"])
-	adminInfo, ok := details["admin_info"].(map[string]interface{})
+	assert.Equal(t, http.StatusServiceUnavailable, details.Snapshot()["status_code"])
+	adminInfo, ok := details.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, http.StatusTooManyRequests, adminInfo["upstream_status_code"])
 	assert.Equal(t, []string{"12"}, adminInfo["use_channel"])
@@ -123,7 +124,7 @@ func TestZeroOutputRetriesFollowChannelAndGlobalPolicies(t *testing.T) {
 	assert.True(t, shouldRetrySameChannelWithPolicy(ctx, zeroOutputErr, policy, 0))
 	assert.True(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
 
-	ctx.Set("specific_channel_id", 1)
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 1, Source: hostdto.PinSourceOriginTask, Rank: hostdto.PinRankOriginTask, RetryMode: hostdto.PinRetrySameChannel})
 	assert.False(t, shouldRetryWithPolicy(ctx, zeroOutputErr, policy, 0))
 }
 
@@ -145,7 +146,7 @@ func TestResponseContentMatchFollowsChannelRetryPolicy(t *testing.T) {
 	assert.False(t, shouldRetrySameChannelWithPolicy(ctx, matchedErr, policy, 1))
 	assert.True(t, shouldRetryWithPolicy(ctx, matchedErr, policy, 0))
 
-	ctx.Set("specific_channel_id", 1)
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 1, Source: hostdto.PinSourceOriginTask, Rank: hostdto.PinRankOriginTask, RetryMode: hostdto.PinRetrySameChannel})
 	assert.False(t, shouldRetryWithPolicy(ctx, matchedErr, policy, 0))
 }
 
@@ -200,7 +201,7 @@ func TestSpecificChannelBypassesOverloadAdmission(t *testing.T) {
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	common.SetContextKey(ctx, constant.ContextKeyTokenSpecificChannelId, "950001")
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 950001, Source: hostdto.PinSourceToken, Rank: hostdto.PinRankToken, RetryMode: hostdto.PinRetrySingleAttempt})
 	channel := &model.Channel{
 		Id: 950001, Type: constant.ChannelTypeOpenAI, Name: "specific", Key: "key-a",
 		ChannelInfo: model.ChannelInfo{ChannelOverloadProtection: model.OverloadProtection{
@@ -524,7 +525,7 @@ func TestInternalRetryOverloadForcesChannelSwitchWithoutStatusMatch(t *testing.T
 	ctx.Set("channel_affinity_skip_retry_on_failure", true)
 	assert.False(t, shouldSwitchChannelAfterInternalRetryOverload(ctx, lastUpstreamErr, policy, 0))
 	ctx.Set("channel_affinity_skip_retry_on_failure", false)
-	common.SetContextKey(ctx, constant.ContextKeyTokenSpecificChannelId, "1")
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 1, Source: hostdto.PinSourceToken, Rank: hostdto.PinRankToken, RetryMode: hostdto.PinRetrySingleAttempt})
 	assert.False(t, shouldSwitchChannelAfterInternalRetryOverload(ctx, lastUpstreamErr, policy, 0))
 }
 
@@ -550,7 +551,7 @@ func TestControllerOwnsOverloadLeaseOnlyForP0TextProtocols(t *testing.T) {
 func TestChannelStatusCodeRetryAllowsSpecificChannelSameChannelRetryOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Set("specific_channel_id", 1)
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 1, Source: hostdto.PinSourceOriginTask, Rank: hostdto.PinRankOriginTask, RetryMode: hostdto.PinRetrySameChannel})
 	ranges, err := operation_setting.ParseHTTPStatusCodeRanges("429")
 	require.NoError(t, err)
 	channelPolicy := relayRetryPolicy{
@@ -603,7 +604,7 @@ func TestShouldRetryWithPolicyKeepsExistingSkipRules(t *testing.T) {
 	assert.True(t, shouldRetryWithPolicy(ctx, statusCodeError(700), policy, 0))
 	assert.False(t, shouldRetryWithPolicy(ctx, types.NewErrorWithStatusCode(errors.New("skip"), types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests, types.ErrOptionWithSkipRetry()), policy, 0))
 
-	ctx.Set("specific_channel_id", 1)
+	service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 1, Source: hostdto.PinSourceOriginTask, Rank: hostdto.PinRankOriginTask, RetryMode: hostdto.PinRetrySameChannel})
 	assert.False(t, shouldRetryWithPolicy(ctx, statusCodeError(http.StatusTooManyRequests), policy, 0))
 }
 
@@ -758,7 +759,7 @@ func TestUpgradeInputTokenRoutingAfterUpstream400RejectsIneligibleErrorsAndChann
 			name:    "fixed channel",
 			channel: boundedGLMChannel(),
 			configure: func(ctx *gin.Context) {
-				common.SetContextKey(ctx, constant.ContextKeyTokenSpecificChannelId, "12")
+				service.GetChannelConstraints(ctx).AddPin(hostdto.ChannelPin{ChannelId: 12, Source: hostdto.PinSourceToken, Rank: hostdto.PinRankToken, RetryMode: hostdto.PinRetrySingleAttempt})
 			},
 			error: upstreamStatusCodeError(http.StatusBadRequest),
 		},

@@ -74,7 +74,7 @@ func TestChannelKeyRequiresSecurityProofFromRoot(t *testing.T) {
 		}
 	})
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}, &model.AuditLog{}, &model.TwoFA{}, &model.PasskeyCredential{}, &model.AuthFlow{}))
 	root := &model.User{
 		Id:          1,
 		Username:    "root",
@@ -102,7 +102,12 @@ func TestChannelKeyRequiresSecurityProofFromRoot(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"code":"SECURITY_PROOF_REQUIRED"`)
 	assert.NotContains(t, recorder.Body.String(), channel.Key)
 
-	proofToken, _, err := service.IssueSecurityProof(rootAuth.identity, "2fa", []string{"channel.key.read"})
+	require.NoError(t, db.Create(&model.TwoFA{UserId: root.Id, Secret: "test-factor", IsEnabled: true}).Error)
+	binding, err := service.BindVerificationOperation(service.VerificationOperation{
+		Scope: service.VerificationScopeChannelKeyRead, Context: []byte(`{"channel_id":1}`),
+	})
+	require.NoError(t, err)
+	proofToken, _, err := service.IssueSecurityProof(rootAuth.identity, service.VerificationMethodTwoFA, binding)
 	require.NoError(t, err)
 	request = httptest.NewRequest(http.MethodPost, "/api/channel/1/key", nil)
 	request.Header.Set("Authorization", "Bearer "+rootAuth.accessToken)
@@ -121,8 +126,8 @@ func TestChannelKeyRequiresSecurityProofFromRoot(t *testing.T) {
 	assert.True(t, response.Success)
 	assert.Equal(t, channel.Key, response.Data.Key)
 
-	var auditLog model.Log
-	require.NoError(t, db.Where("type = ? AND content = ?", model.LogTypeManage, "Viewed channel key test-channel (ID: 1)").First(&auditLog).Error)
+	var auditLog model.AuditLog
+	require.NoError(t, db.Where("content = ?", "Viewed channel key test-channel (ID: 1)").First(&auditLog).Error)
 	assert.Equal(t, "Viewed channel key test-channel (ID: 1)", auditLog.Content)
 
 	admin := &model.User{
@@ -170,7 +175,7 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 		}
 	})
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Channel{}, &model.Log{}, &model.AuditLog{}))
 	root := &model.User{
 		Id:          1,
 		Username:    "root",
@@ -248,10 +253,12 @@ func TestMultiKeySecretsAreMaskedAndRootCanRevealOneWithoutTwoFactor(t *testing.
 	assert.Equal(t, shortKey, revealResponse.Data.Key)
 	assert.Equal(t, "no-store, no-cache, must-revalidate, private, max-age=0", revealRecorder.Header().Get("Cache-Control"))
 
-	var auditLog model.Log
+	var auditLog model.AuditLog
 	require.NoError(t, db.Where("content = ?", "Viewed multi-key #2 for channel multi-channel (ID: 2)").First(&auditLog).Error)
 	var auditOther map[string]interface{}
-	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditOther))
+	auditJSON, err := common.Marshal(auditLog.Other)
+	require.NoError(t, err)
+	require.NoError(t, common.Unmarshal(auditJSON, &auditOther))
 	op, ok := auditOther["op"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "channel.multi_key_view", op["action"])

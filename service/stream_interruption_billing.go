@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"github.com/QuantumNous/new-api/model"
 
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -59,16 +60,11 @@ func EvaluateStreamInterruptionBilling(relayInfo *relaycommon.RelayInfo, outputT
 	return decision
 }
 
-func attachStreamInterruptionBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}, decision StreamInterruptionBillingDecision) {
+func attachStreamInterruptionBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther, decision StreamInterruptionBillingDecision) {
 	if !decision.Applied || other == nil {
 		return
 	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = map[string]interface{}{}
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["stream_interruption_billing"] = map[string]interface{}{
+	other.SetAdmin("stream_interruption_billing", map[string]any{
 		"mode":                  decision.Mode,
 		"original_quota":        decision.OriginalQuota,
 		"output_tokens":         decision.OutputTokens,
@@ -76,7 +72,7 @@ func attachStreamInterruptionBilling(ctx *gin.Context, relayInfo *relaycommon.Re
 		"protocol_end_required": decision.ProtocolEndRequired,
 		"protocol_end_received": decision.ProtocolEndReceived,
 		"protocol_end_event":    decision.ProtocolEndEvent,
-	}
+	})
 
 	userID := 0
 	modelName := ""

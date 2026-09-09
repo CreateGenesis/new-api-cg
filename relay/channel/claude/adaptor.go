@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"io"
 	"net/http"
@@ -23,9 +24,15 @@ import (
 type Adaptor struct {
 }
 
-func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
+	result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, request)
+	if err != nil {
+		return nil, err
+	}
+	return result.Value, nil
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
@@ -81,6 +88,22 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	}
 	if !info.IsOfficialCompatibility() && !info.IsDeepSeekV4OfficialCompatibility() {
 		request.ResponseFormat = nil
+		if request.MaxTokens != nil && *request.MaxTokens == 0 {
+			request.MaxTokens = nil
+		}
+		if err := relayconvert.ApplyClaudeThinkingModel(request, info); err != nil {
+			return nil, err
+		}
+		if request.MaxTokens == nil {
+			defaultMaxTokens := uint(model_setting.GetClaudeSettings().GetDefaultMaxTokens(request.Model))
+			request.MaxTokens = &defaultMaxTokens
+		}
+		// ApplyClaudeThinkingModel no longer rewrites request.Model. Do not write
+		// a still-suffixed name back over the entry-normalized UpstreamModelName
+		// (AWS/Vertex look up getAwsModelID / claudeModelMap from that field).
+		if info.UpstreamModelName == "" {
+			info.UpstreamModelName = request.Model
+		}
 	}
 	return request, nil
 }
@@ -191,13 +214,16 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 		return request, nil
 	}
-	result, err := relayconvert.ConvertRequest(c, info, types.RelayFormatClaude, request)
+	result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, request)
 	if err != nil {
 		return nil, err
 	}
 	converted, ok := result.Value.(*dto.ClaudeRequest)
 	if !ok {
 		return nil, fmt.Errorf("expected Anthropic messages request, got %T", result.Value)
+	}
+	if !info.IsOfficialCompatibility() && !info.IsDeepSeekV4OfficialCompatibility() {
+		converted.ResponseFormat = nil
 	}
 	if info.IsOfficialCompatibility() {
 		if request.ResponseFormat != nil {
@@ -213,6 +239,9 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 				return nil, err
 			}
 			converted.OutputConfig = outputConfig
+			if info.IsKimiK3OfficialCompatibility() && converted.Thinking == nil {
+				converted.Thinking = &dto.Thinking{Type: "enabled"}
+			}
 		}
 		if info.IsKimiK3OfficialCompatibility() {
 			if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
@@ -261,8 +290,16 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			return nil, err
 		}
 		if info.IsDeepSeekV4OfficialCompatibility() {
-			converted.FrequencyPenalty = request.FrequencyPenalty
-			converted.PresencePenalty = request.PresencePenalty
+			if len(request.FrequencyPenalty) > 0 {
+				if err := common.Unmarshal(request.FrequencyPenalty, &converted.FrequencyPenalty); err != nil {
+					return nil, err
+				}
+			}
+			if len(request.PresencePenalty) > 0 {
+				if err := common.Unmarshal(request.PresencePenalty, &converted.PresencePenalty); err != nil {
+					return nil, err
+				}
+			}
 			if err := relayconvert.NormalizeDeepSeekV4ChatRequest(converted); err != nil {
 				return nil, err
 			}
@@ -278,11 +315,13 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		return converted, nil
 	}
 	if info.RequiresRequestConversion() {
-		converted, err := relayconvert.OpenAIResponsesRequestToClaudeMessages(c, info, &request)
+		structuralRequest := request
+		structuralRequest.Reasoning = nil
+		converted, err := relayconvert.OpenAIResponsesRequestToClaudeMessages(c, info, &structuralRequest)
 		if err != nil {
 			return nil, err
 		}
-		chatRequest, err := relayconvert.ResponsesRequestToChatCompletionsRequest(&request)
+		chatRequest, err := relayconvert.ResponsesRequestToChatCompletionsRequest(&structuralRequest)
 		if err != nil {
 			return nil, err
 		}
@@ -308,6 +347,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 				return nil, err
 			}
 			converted.OutputConfig = outputConfig
+			if info.IsKimiK3OfficialCompatibility() && converted.Thinking == nil {
+				converted.Thinking = &dto.Thinking{Type: "enabled"}
+			}
 		}
 		if info.IsKimiK3OfficialCompatibility() {
 			if err := relayconvert.NormalizeKimiK3ClaudeRequest(converted); err != nil {
@@ -323,7 +365,15 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		}
 		return converted, nil
 	}
-	return nil, errors.New("not implemented")
+	result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, &request)
+	if err != nil {
+		return nil, err
+	}
+	claudeRequest, ok := result.Value.(*dto.ClaudeRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+	}
+	return claudeRequest, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
@@ -354,6 +404,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			return ClaudeToResponsesStreamHandler(c, resp, info)
 		}
 		return ClaudeToResponsesHandler(c, resp, info)
+	}
+	if info.RelayFormat == types.RelayFormatOpenAIResponses && info.IsStream {
+		return ClaudeResponsesStreamHandler(c, resp, info)
 	}
 	if info.IsStream {
 		return ClaudeStreamHandler(c, resp, info)

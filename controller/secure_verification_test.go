@@ -1,11 +1,18 @@
 package controller
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -22,9 +29,11 @@ func TestUniversalVerifyIssuesPasswordProofOnlyForCurrentRoot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.AuditLog{}, &model.UserSession{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{}))
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
+	previousEncryption := common.PasswordLoginEncryptionEnabled
+	common.PasswordLoginEncryptionEnabled = false
 	previousSecret := common.SessionSecret
 	previousRedisEnabled := common.RedisEnabled
 	model.DB = db
@@ -35,6 +44,7 @@ func TestUniversalVerifyIssuesPasswordProofOnlyForCurrentRoot(t *testing.T) {
 		model.DB = previousDB
 		model.LOG_DB = previousLogDB
 		common.SessionSecret = previousSecret
+		common.PasswordLoginEncryptionEnabled = previousEncryption
 		common.RedisEnabled = previousRedisEnabled
 	})
 
@@ -46,6 +56,7 @@ func TestUniversalVerifyIssuesPasswordProofOnlyForCurrentRoot(t *testing.T) {
 	}
 	require.NoError(t, db.Create(&root).Error)
 	identity := service.AuthIdentity{UserID: root.Id, SessionID: "root-session", UserAuthVersion: 1, SessionVersion: 1}
+	require.NoError(t, db.Create(&model.UserSession{SID: identity.SessionID, UserID: root.Id, Version: 1, UserAuthVersion: 1, Status: model.UserSessionStatusActive, RefreshHash: "test-refresh-hash", ExpiresAt: time.Now().Add(time.Hour).Unix()}).Error)
 
 	tests := []struct {
 		name     string
@@ -107,14 +118,60 @@ func TestUniversalVerifyIssuesPasswordProofOnlyForCurrentRoot(t *testing.T) {
 				assert.Empty(t, result.Data.ProofToken)
 				return
 			}
-			method, err := service.VerifySecurityProof(
-				result.Data.ProofToken,
-				identity,
-				constant.SecurityProofScopeSystemBackupExport,
-				[]string{constant.SecurityProofMethodPassword},
-			)
+			operation := service.VerificationOperation{Scope: constant.SecurityProofScopeSystemBackupExport}
+			_, err := service.ConsumeOperationProof(result.Data.ProofToken, identity, service.VerificationOperation{Scope: constant.SecurityProofScopeSystemBackupImport})
+			assert.ErrorIs(t, err, service.ErrProofScope)
+			wrongSession := identity
+			wrongSession.SessionID = "another-session"
+			_, err = service.ConsumeOperationProof(result.Data.ProofToken, wrongSession, operation)
+			assert.ErrorIs(t, err, service.ErrAuthTokenInvalid)
+			authorization, err := service.ConsumeOperationProof(result.Data.ProofToken, identity, operation)
 			require.NoError(t, err)
-			assert.Equal(t, constant.SecurityProofMethodPassword, method)
+			assert.Equal(t, constant.SecurityProofMethodPassword, authorization.Method)
+			_, err = service.ConsumeOperationProof(result.Data.ProofToken, identity, operation)
+			assert.ErrorIs(t, err, service.ErrProofConsumed)
+		})
+	}
+}
+
+func TestSystemBackupProofRejectsExpiryMethodBypassAndPlaintextWhenEncryptionRequired(t *testing.T) {
+	for _, scope := range []string{constant.SecurityProofScopeSystemBackupExport, constant.SecurityProofScopeSystemBackupImport} {
+		t.Run(scope, func(t *testing.T) {
+			user, identity := setupSecurityEnrollmentTest(t)
+			require.NoError(t, model.DB.Model(user).Update("role", common.RoleRootUser).Error)
+			input := service.VerificationInput{Username: user.Username, Password: "enrollment-password", Method: service.VerificationMethodPassword, Scope: scope}
+			for _, method := range []string{service.VerificationMethodSession, service.VerificationMethodTwoFA, service.VerificationMethodPasskey, service.VerificationMethodOAuth} {
+				bypass := input
+				bypass.Method = method
+				_, err := service.VerifySecurityInput(identity, bypass)
+				assert.ErrorIs(t, err, service.ErrProofMethod)
+			}
+			common.PasswordLoginEncryptionEnabled = true
+			_, err := service.VerifySecurityInput(identity, input)
+			assert.ErrorIs(t, err, service.ErrVerificationFailed)
+			kid, publicPEM := common.PasswordEncryptionPublicKey()
+			if kid == "" {
+				privatePEM, err := common.GeneratePasswordEncryptionPrivateKey()
+				require.NoError(t, err)
+				require.NoError(t, common.LoadPasswordEncryptionPrivateKey(privatePEM))
+				kid, publicPEM = common.PasswordEncryptionPublicKey()
+			}
+			block, _ := pem.Decode([]byte(publicPEM))
+			require.NotNil(t, block)
+			parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+			require.NoError(t, err)
+			pub, ok := parsed.(*rsa.PublicKey)
+			require.True(t, ok)
+			ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, []byte(input.Password), nil)
+			require.NoError(t, err)
+			input.Password = ""
+			input.EncryptionKeyID = kid
+			input.PasswordEncrypted = base64.StdEncoding.EncodeToString(ciphertext)
+			proof, err := service.VerifySecurityInput(identity, input)
+			require.NoError(t, err)
+			require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("user_id = ?", user.Id).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+			_, err = service.ConsumeOperationProof(proof.ProofToken, identity, service.VerificationOperation{Scope: scope})
+			assert.ErrorIs(t, err, service.ErrAuthTokenExpired)
 		})
 	}
 }

@@ -124,7 +124,7 @@ func TestStreamStatus_RecordError_CapAtMax(t *testing.T) {
 	t.Parallel()
 	s := NewStreamStatus()
 
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		s.RecordError(fmt.Sprintf("error_%d", i))
 	}
 
@@ -143,7 +143,7 @@ func TestStreamStatus_RecordError_Concurrent(t *testing.T) {
 	s := NewStreamStatus()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

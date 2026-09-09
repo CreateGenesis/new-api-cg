@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"testing"
@@ -21,7 +23,7 @@ func setupSystemBackupTest(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&model.Option{}, &model.Channel{}, &model.Ability{}, &model.Vendor{}, &model.Model{},
 		&model.PrefillGroup{}, &model.Setup{}, &model.CustomOAuthProvider{}, &model.SubscriptionPlan{},
-		&model.AuthzRole{}, &model.CasbinRule{}, &model.User{}, &model.Token{}, &model.Redemption{},
+		&model.TaskPlugin{}, &model.AuthzRole{}, &model.CasbinRule{}, &model.User{}, &model.Token{}, &model.Redemption{},
 		&model.TwoFA{}, &model.TwoFABackupCode{}, &model.PasskeyCredential{},
 		&model.ExternalIdentityClaim{}, &model.UserOAuthBinding{}, &model.UserSubscription{},
 		&model.UserSession{}, &model.AuthFlow{}, &model.SubscriptionPreConsumeRecord{}, &model.Log{},
@@ -58,6 +60,13 @@ func seedSystemBackupSource(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	passwordHash, err := common.Password2Hash("SourcePassword123")
 	require.NoError(t, err)
+	pluginSource := `export const meta = {apiVersion:1,key:"backup-plugin",name:"Backup plugin",version:"1.0.0",author:{name:"Test"},models:["backup-video"],fetchMode:"per_task"};
+ export function buildSubmitRequest(){return {url:"https://example.com/submit"};}
+ export function parseSubmitResponse(){return {taskId:"one"};}
+ export function buildQueryRequest(){return {url:"https://example.com/query"};}
+ export function parseTaskResult(){return {status:"SUCCESS"};}`
+	digest := sha256.Sum256([]byte(pluginSource))
+	require.NoError(t, db.Create(&model.TaskPlugin{Id: 25, Key: "backup-plugin", APIVersion: 1, Version: "1.0.0", Source: pluginSource, SourceHash: hex.EncodeToString(digest[:]), Enabled: true, Active: true, Icon: "data:image/svg+xml;base64,PHN2Zy8+"}).Error)
 	accessToken := "source-admin-access-token"
 	require.NoError(t, db.Create(&model.Option{Key: "custom.integration_secret", Value: "option-secret"}).Error)
 	require.NoError(t, db.Create(&model.Vendor{Id: 10, Name: "Source vendor", Status: 1}).Error)
@@ -72,7 +81,7 @@ func seedSystemBackupSource(t *testing.T, db *gorm.DB) {
 	}).Error)
 	require.NoError(t, db.Create(&model.User{
 		Id: 50, Username: "root-source", Password: passwordHash, Role: common.RoleRootUser,
-		Status: common.UserStatusEnabled, Group: "default", AccessToken: &accessToken, AuthVersion: 3,
+		Status: common.UserStatusEnabled, Group: "default", AccessToken: &accessToken, AccessTokenCreatedAt: common.GetPointer(int64(1700000000)), AuthVersion: 3,
 	}).Error)
 	require.NoError(t, db.Create(&model.Token{
 		Id: 60, UserId: 50, Key: "source-api-token", Name: "source-token", Status: 1, Group: "default",
@@ -183,6 +192,15 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	assert.True(t, common.ValidatePasswordAndHash("SourcePassword123", restoredUser.Password))
 	require.NotNil(t, restoredUser.AccessToken)
 	assert.Equal(t, "source-admin-access-token", *restoredUser.AccessToken)
+	require.NotNil(t, restoredUser.AccessTokenCreatedAt)
+	assert.EqualValues(t, 1700000000, *restoredUser.AccessTokenCreatedAt)
+	var restoredPlugin model.TaskPlugin
+	require.NoError(t, db.First(&restoredPlugin, 25).Error)
+	assert.Equal(t, "backup-plugin", restoredPlugin.Key)
+	assert.True(t, restoredPlugin.Active)
+	assert.True(t, restoredPlugin.Enabled)
+	assert.Contains(t, restoredPlugin.Source, "buildSubmitRequest")
+	assert.Equal(t, "data:image/svg+xml;base64,PHN2Zy8+", restoredPlugin.Icon)
 	var restoredToken model.Token
 	require.NoError(t, db.First(&restoredToken, 60).Error)
 	assert.Equal(t, "source-api-token", restoredToken.Key)

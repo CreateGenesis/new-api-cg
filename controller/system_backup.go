@@ -67,6 +67,9 @@ func ApplySystemBackupImport(c *gin.Context) {
 		c.JSON(status, gin.H{"success": false, "message": err.Error(), "data": preview})
 		return
 	}
+	if err := syncTaskPluginsOnceContext(c.Request.Context()); err != nil {
+		common.SysError("failed to synchronize task plugins after restore: " + err.Error())
+	}
 	recordManageAudit(c, "system_backup.import", map[string]interface{}{
 		"hash":    preview.Hash,
 		"records": preview.RecordCount,

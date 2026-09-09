@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -30,7 +31,6 @@ func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     1000,
 		CompletionTokens: 200,
-		UsageSemantic:    UsageSemanticAnthropic,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedTokens:         100,
 			CachedCreationTokens: 50,
@@ -102,7 +102,6 @@ func TestCalculateTextQuotaSummaryUsesSplitClaudeCacheCreationRatios(t *testing.
 	usage := &dto.Usage{
 		PromptTokens:     100,
 		CompletionTokens: 0,
-		UsageSemantic:    UsageSemanticAnthropic,
 		PromptTokensDetails: dto.InputTokenDetails{
 			CachedCreationTokens: 10,
 		},
@@ -155,76 +154,6 @@ func TestCalculateTextQuotaSummaryUsesAnthropicUsageSemanticFromUpstreamUsage(t 
 	require.True(t, summary.IsClaudeUsageSemantic)
 	require.Equal(t, "anthropic", summary.UsageSemantic)
 	require.Equal(t, 1488, summary.Quota)
-}
-
-func TestSimulatedAnthropicCacheResponseDoesNotIncreaseBilling(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(w)
-	usage := &dto.Usage{
-		PromptTokens:     100,
-		CompletionTokens: 10,
-		TotalTokens:      110,
-		UsageSemantic:    "anthropic",
-	}
-	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
-		Mode:       "partial_fingerprint",
-		MatchRatio: 0.25,
-	})
-	require.NotNil(t, marker)
-
-	require.Equal(t, 75, usage.PromptTokens)
-	require.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
-
-	relayInfo := &relaycommon.RelayInfo{
-		RelayFormat:     types.RelayFormatClaude,
-		OriginModelName: "glm-5.2",
-		PriceData: hosttypes.PriceData{
-			ModelRatio:      1,
-			CompletionRatio: 1,
-			CacheRatio:      0.1,
-			GroupRatioInfo: hosttypes.GroupRatioInfo{
-				GroupRatio: 1,
-			},
-		},
-		StartTime: time.Now(),
-	}
-	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
-	require.Equal(t, 88, summary.Quota, "billing remains round(75 uncached + 25*0.1 cached + 10 output)")
-
-	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true}, false)
-	require.Equal(t, float64(75), tiered.P)
-	require.Equal(t, float64(25), tiered.CR)
-	require.Equal(t, float64(100), tiered.Len)
-}
-
-func TestProductionCachedUsageAlignsRatioAndTieredInputs(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	usage := &dto.Usage{
-		PromptTokens: 0, CompletionTokens: 220, UsageSemantic: UsageSemanticAnthropic,
-		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 1026},
-	}
-	relayInfo := &relaycommon.RelayInfo{
-		OriginModelName: "production-cache-regression",
-		PriceData: hosttypes.PriceData{
-			ModelRatio: 1, CompletionRatio: 2, CacheRatio: 0.2,
-			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
-		},
-		StartTime: time.Now(),
-	}
-
-	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
-	assert.Equal(t, 0, summary.PromptTokens)
-	assert.Equal(t, 1026, summary.CacheTokens)
-	assert.Equal(t, 1246, summary.TotalTokens)
-	assert.Equal(t, 645, summary.Quota)
-
-	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true}, false)
-	assert.Equal(t, float64(0), tiered.P)
-	assert.Equal(t, float64(1026), tiered.CR)
-	assert.Equal(t, float64(220), tiered.C)
-	assert.Equal(t, float64(1026), tiered.Len)
 }
 
 func TestCalculateTextQuotaSummaryUsesClaudeBillingUsageBeforeTopLevelUsage(t *testing.T) {
@@ -355,132 +284,137 @@ func TestCalculateTextQuotaSummaryUsesOpenAIBillingUsageBeforeTopLevelUsage(t *t
 	require.Equal(t, 98, summary.Quota)
 }
 
-func TestUpstreamUsageProtocolsHaveRatioAndTieredBillingParity(t *testing.T) {
+func TestCalculateTextQuotaSummaryUsesOpenAIResponsesInputTokenDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	relayInfo := &relaycommon.RelayInfo{
-		OriginModelName: "cache-parity",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
-		},
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "gpt-4o",
 		PriceData: hosttypes.PriceData{
 			ModelRatio:      1,
-			CompletionRatio: 1,
-			CacheRatio:      0.1,
+			CompletionRatio: 2,
+			CacheRatio:      0.25,
 			GroupRatioInfo:  hosttypes.GroupRatioInfo{GroupRatio: 1},
 		},
 		StartTime: time.Now(),
 	}
-	usages := map[string]*dto.Usage{
-		"OpenAI": {BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
-			PromptTokens:     2604,
-			CompletionTokens: 383,
-			TotalTokens:      2987,
-			PromptTokensDetails: dto.InputTokenDetails{
-				CachedTokens: 2432,
-			},
-		})},
-		"Claude": {BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
-			InputTokens:          172,
-			CacheReadInputTokens: 2432,
-			OutputTokens:         383,
-		})},
-		"Gemini": {BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
-			PromptTokenCount:        2604,
-			CandidatesTokenCount:    383,
-			TotalTokenCount:         2987,
-			CachedContentTokenCount: 2432,
-		})},
+
+	responsesUsage := &dto.Usage{
+		InputTokens:  100,
+		OutputTokens: 10,
+		TotalTokens:  110,
+		InputTokensDetails: &dto.InputTokenDetails{
+			CachedTokens: 40,
+		},
 	}
-
-	for name, usage := range usages {
-		t.Run(name, func(t *testing.T) {
-			summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveBillingUsage(usage))
-			assert.Equal(t, 172, summary.PromptTokens)
-			assert.Equal(t, 2432, summary.CacheTokens)
-			assert.Equal(t, 2604, summary.UsageNormalization.InputTokens.TotalInputTokens)
-			assert.Equal(t, 798, summary.Quota)
-
-			withCacheVariable := BuildTieredTokenParams(usage, false, map[string]bool{"cr": true}, true)
-			assert.Equal(t, float64(172), withCacheVariable.P)
-			assert.Equal(t, float64(2432), withCacheVariable.CR)
-			assert.Equal(t, float64(2604), withCacheVariable.Len)
-
-			withoutCacheVariable := BuildTieredTokenParams(usage, false, nil, true)
-			assert.Equal(t, float64(2604), withoutCacheVariable.P)
-		})
-	}
-}
-
-func TestCalculateTextQuotaSummaryCacheValidationSplitIsChannelScoped(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	usage := &dto.Usage{
-		PromptTokens:     70,
-		CompletionTokens: 20,
-		TotalTokens:      120,
+	convertedUsage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		TotalTokens:      110,
 		PromptTokensDetails: dto.InputTokenDetails{
-			CachedTokens: 30,
+			CachedTokens: 40,
 		},
-	}
-	priceData := hosttypes.PriceData{
-		ModelRatio:      1,
-		CompletionRatio: 1,
-		CacheRatio:      0.1,
-		GroupRatioInfo:  hosttypes.GroupRatioInfo{GroupRatio: 1},
+		BillingUsage: dto.NewOpenAIResponsesBillingUsage(responsesUsage),
 	}
 
-	disabled := calculateTextQuotaSummary(ctx, &relaycommon.RelayInfo{
-		OriginModelName: "cache-split-disabled",
-		PriceData:       priceData,
-		StartTime:       time.Now(),
-	}, usage)
-	enabled := calculateTextQuotaSummary(ctx, &relaycommon.RelayInfo{
-		OriginModelName: "cache-split-enabled",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
-		},
-		PriceData: priceData,
-		StartTime: time.Now(),
-	}, usage)
+	effectiveUsage := effectiveBillingUsage(convertedUsage)
+	require.Equal(t, 40, effectiveUsage.PromptTokensDetails.CachedTokens)
+	require.Zero(t, convertedUsage.BillingUsage.OpenAIUsage.PromptTokensDetails.CachedTokens)
 
-	assert.False(t, disabled.CacheUsageValidationSplit)
-	assert.Equal(t, 63, disabled.Quota)
-	assert.Equal(t, BillingUsageNormalization{}, disabled.UsageNormalization)
-	assert.True(t, enabled.CacheUsageValidationSplit)
-	assert.Equal(t, 93, enabled.Quota)
-	assert.Equal(t, UsageAccountingModeSeparate, enabled.UsageNormalization.Audit.Mode)
-	assert.Equal(t, UsageNormalizationSourceTotalTokens, enabled.UsageNormalization.Audit.Source)
+	summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveUsage)
+	require.Equal(t, 40, summary.CacheTokens)
+	// 60 uncached input + 40*0.25 cached input + 10*2 output = 90.
+	require.Equal(t, 90, summary.Quota)
 }
 
-func TestCalculateTextQuotaSummaryOpenAIMetadataWinsOverSeparateTotal(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	relayInfo := &relaycommon.RelayInfo{
-		OriginModelName: "openai-cache-contract",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+func TestUsageFromOpenAIBillingUsageNormalizesCacheDetailsWithoutOverwritingCanonicalValues(t *testing.T) {
+	responsesUsage := &dto.Usage{
+		InputTokens:          100,
+		OutputTokens:         10,
+		PromptCacheHitTokens: 55,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 8,
+			TextTokens:   12,
 		},
+		InputTokensDetails: &dto.InputTokenDetails{
+			CachedTokens:         40,
+			CachedCreationTokens: 5,
+			CacheWriteTokens:     6,
+			TextTokens:           60,
+			ImageTokens:          7,
+			AudioTokens:          9,
+		},
+	}
+
+	billingUsage := dto.NewOpenAIResponsesBillingUsage(responsesUsage)
+	usage := effectiveBillingUsage(&dto.Usage{BillingUsage: billingUsage})
+
+	require.Equal(t, 8, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 5, usage.PromptTokensDetails.CachedCreationTokens)
+	require.Equal(t, 6, usage.PromptTokensDetails.CacheWriteTokens)
+	require.Equal(t, 12, usage.PromptTokensDetails.TextTokens)
+	require.Equal(t, 7, usage.PromptTokensDetails.ImageTokens)
+	require.Equal(t, 9, usage.PromptTokensDetails.AudioTokens)
+	require.Zero(t, billingUsage.OpenAIUsage.PromptTokensDetails.CachedCreationTokens)
+}
+
+func TestUsageFromOpenAIBillingUsageFallsBackToPromptCacheHitTokens(t *testing.T) {
+	usage := effectiveBillingUsage(&dto.Usage{
+		BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+			PromptTokens:         100,
+			CompletionTokens:     10,
+			PromptCacheHitTokens: 35,
+		}),
+	})
+
+	require.Equal(t, 35, usage.PromptTokensDetails.CachedTokens)
+}
+
+func TestCalculateTextQuotaSummaryNormalizesOpenAIResponsesBillingUsageDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "gpt-5.6-sol",
 		PriceData: hosttypes.PriceData{
-			ModelRatio: 1, CompletionRatio: 1, CacheRatio: 0.1,
-			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
+			ModelRatio:         1,
+			CompletionRatio:    2,
+			CacheRatio:         0.5,
+			CacheCreationRatio: 2,
+			GroupRatioInfo:     hosttypes.GroupRatioInfo{GroupRatio: 1},
 		},
 		StartTime: time.Now(),
 	}
+
+	responsesDetails := dto.InputTokenDetails{
+		CachedTokens:     80,
+		CacheWriteTokens: 10,
+		TextTokens:       100,
+	}
 	usage := &dto.Usage{
-		PromptTokens: 87, CompletionTokens: 16, TotalTokens: 190,
-		UsageSemantic:       UsageSemanticOpenAI,
-		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 87},
+		PromptTokens:     999,
+		CompletionTokens: 999,
+		BillingUsage: dto.NewOpenAIResponsesBillingUsage(&dto.Usage{
+			InputTokens:        100,
+			OutputTokens:       10,
+			TotalTokens:        110,
+			InputTokensDetails: &responsesDetails,
+		}),
 	}
 
-	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	effectiveUsage := effectiveBillingUsage(usage)
+	summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveUsage)
 
-	assert.Equal(t, UsageAccountingModeIncluded, summary.UsageNormalization.Audit.Mode)
-	assert.Equal(t, UsageNormalizationStatusMismatch, summary.UsageNormalization.Audit.Status)
-	assert.Zero(t, summary.PromptTokens)
-	assert.Equal(t, 87, summary.CacheTokens)
-	assert.Equal(t, 16, summary.CompletionTokens)
-	assert.Equal(t, 25, summary.Quota)
+	require.Equal(t, dto.BillingUsageSourceOAIResponses, effectiveUsage.UsageSource)
+	require.Equal(t, responsesDetails, effectiveUsage.PromptTokensDetails)
+	require.Equal(t, 100, summary.PromptTokens)
+	require.Equal(t, 10, summary.CompletionTokens)
+	require.Equal(t, 80, summary.CacheTokens)
+	require.Equal(t, 10, summary.CacheCreationTokens)
+	// (100-80-10) + 80*0.5 + 10*2 + 10*2 = 90
+	require.Equal(t, 90, summary.Quota)
 }
 
 func TestUsageBillingPathForLog(t *testing.T) {
@@ -512,60 +446,20 @@ func TestUsageBillingPathForLog(t *testing.T) {
 }
 
 func TestAppendUsageBillingPathForLogWritesAdminInfo(t *testing.T) {
-	other := map[string]interface{}{
-		"admin_info": map[string]interface{}{},
-	}
+	other := model.NewLogOther()
 	appendUsageBillingPathForLog(other, true, &dto.Usage{
 		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),
 	})
 
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, usageBillingPathAnthropic, adminInfo["usage_billing_path"])
 
-	other = map[string]interface{}{}
+	other = model.NewLogOther()
 	appendUsageBillingPathForLog(other, true, nil)
-	adminInfo, ok = other["admin_info"].(map[string]interface{})
+	adminInfo, ok = other.Snapshot()["admin_info"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, usageBillingPathLocal, adminInfo["usage_billing_path"])
-}
-
-func TestAttachUsageNormalizationAuditWritesAdminOnlyLogData(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	normalized := NormalizeUsageForBilling(&dto.Usage{
-		PromptTokens:     100,
-		CompletionTokens: 20,
-		TotalTokens:      120,
-		PromptTokensDetails: dto.InputTokenDetails{
-			CachedTokens: 30,
-		},
-	})
-	other := map[string]interface{}{}
-
-	AttachUsageNormalizationAudit(ctx, &relaycommon.RelayInfo{
-		RequestId: "req-normalization",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
-		},
-	}, other, normalized)
-
-	encoded, err := common.Marshal(other)
-	require.NoError(t, err)
-	var decoded struct {
-		AdminInfo struct {
-			UsageNormalization UsageNormalizationAudit `json:"usage_normalization"`
-		} `json:"admin_info"`
-	}
-	require.NoError(t, common.Unmarshal(encoded, &decoded))
-	assert.Equal(t, UsageAccountingModeIncluded, decoded.AdminInfo.UsageNormalization.Mode)
-	assert.Equal(t, UsageNormalizationSourceTotalTokens, decoded.AdminInfo.UsageNormalization.Source)
-	assert.Equal(t, 70, decoded.AdminInfo.UsageNormalization.NormalizedUncachedInputTokens)
-	assert.Equal(t, 100, decoded.AdminInfo.UsageNormalization.NormalizedTotalInputTokens)
-
-	disabledOther := map[string]interface{}{}
-	AttachUsageNormalizationAudit(ctx, &relaycommon.RelayInfo{}, disabledOther, normalized)
-	assert.NotContains(t, disabledOther, "admin_info")
 }
 
 func TestCacheWriteTokensTotal(t *testing.T) {
@@ -592,7 +486,7 @@ func TestCacheWriteTokensTotal(t *testing.T) {
 	})
 }
 
-func TestCalculateTextQuotaSummaryClampsInvalidOpenAICachedInput(t *testing.T) {
+func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(w)
@@ -623,10 +517,8 @@ func TestCalculateTextQuotaSummaryClampsInvalidOpenAICachedInput(t *testing.T) {
 
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 
-	// The unmarked usage follows OpenAI semantics: cached input exceeds the
-	// reported total, so uncached input is clamped to zero instead of negative.
-	require.Equal(t, 62, summary.PromptTokens)
-	require.Equal(t, 1562, summary.Quota)
+	// 62 + 3544*0.1 + 586*1.25 + 95*5 = 1624.9 => 1624
+	require.Equal(t, 1624, summary.Quota)
 }
 
 func TestCalculateTextQuotaSummaryBillsOpenAICacheWriteTokens(t *testing.T) {
@@ -928,9 +820,9 @@ func TestComposeTieredTextQuotaErrorFallbackUsesPreConsumedQuota(t *testing.T) {
 // settlement both saturates the quota and records the clamp on RelayInfo, so
 // every consume path (text, audio, WSS) can surface it under admin_info.
 func TestTryTieredSettleRecordsClampOnOverflow(t *testing.T) {
-	// exprOutput = p * 1e9; quotaBeforeGroup = p*1e9 / 1e6 * 5e5 far exceeds
-	// MaxInt32 and must saturate.
-	exprStr := `tier("base", p * 1000000000)`
+	// exprOutput = p * 1e12; quotaBeforeGroup = p*1e12 / 1e6 * 5e5 far exceeds
+	// the supported single-request range and must saturate.
+	exprStr := `tier("base", p * 1000000000000)`
 	relayInfo := &relaycommon.RelayInfo{
 		OriginModelName: "overflow-model",
 		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
@@ -946,7 +838,7 @@ func TestTryTieredSettleRecordsClampOnOverflow(t *testing.T) {
 
 	require.True(t, ok)
 	require.NotNil(t, result)
-	require.Equal(t, math.MaxInt32, quota, "oversized settlement must clamp, never wrap negative")
+	require.Equal(t, common.MaxQuota, quota, "oversized settlement must clamp, never wrap negative")
 	require.NotNil(t, relayInfo.QuotaClamp, "clamp must be recorded on RelayInfo for admin auditing")
 	require.Equal(t, common.QuotaClampOverflow, relayInfo.QuotaClamp.Kind)
 }
@@ -1198,6 +1090,38 @@ func TestCalculateTextToolCallSurchargeGeminiGoogleSearch(t *testing.T) {
 	assert.Equal(t, 14.0, summary.ToolSurchargeItems[0].Price)
 }
 
+func TestCalculateTextToolCallSurchargeGeminiFunctionCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	operation_setting.SetToolPriceForTest("gemini_surcharge_fn", 5.0)
+	t.Cleanup(func() {
+		operation_setting.DeleteToolPriceForTest("gemini_surcharge_fn")
+	})
+
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-2.5-flash",
+		ResponsesUsageInfo: &relaycommon.ResponsesUsageInfo{
+			BuiltInTools: map[string]*relaycommon.BuildInToolInfo{
+				"gemini_surcharge_fn": {CallCount: 2},
+			},
+		},
+	}
+	summary := &textQuotaSummary{ModelName: "gemini-2.5-flash", GroupRatio: 1}
+
+	surcharge := calculateTextToolCallSurcharge(ctx, relayInfo, summary)
+	expected := decimal.NewFromFloat(5.0 * 2 / 1000).Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+	assert.True(t, expected.Equal(surcharge), "got %s want %s", surcharge, expected)
+	require.Len(t, summary.ToolSurchargeItems, 1)
+	assert.Equal(t, "gemini_surcharge_fn", summary.ToolSurchargeItems[0].Name)
+	assert.Equal(t, 2, summary.ToolSurchargeItems[0].Count)
+	assert.Equal(t, 5.0, summary.ToolSurchargeItems[0].Price)
+
+	other := model.NewLogOther()
+	appendToolSurchargeLogInfo(other, summary.ToolSurchargeItems)
+	assert.Equal(t, summary.ToolSurchargeItems, other.Snapshot()["tool_surcharges"])
+}
+
 func TestCalculateTextToolCallSurchargeImageGenerationDefaultPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1289,15 +1213,290 @@ func TestAppendToolSurchargeLogInfoWritesOnlyStructuredFields(t *testing.T) {
 		{Name: dto.BuildInToolWebSearch, Count: 2, Price: 10},
 		{Name: dto.BuildInToolImageGeneration, Count: 1, Price: 150},
 	}
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 
 	appendToolSurchargeLogInfo(other, items)
 
-	assert.Equal(t, items, other["tool_surcharges"])
-	assert.NotContains(t, other, "web_search")
-	assert.NotContains(t, other, "web_search_call_count")
-	assert.NotContains(t, other, "web_search_price")
-	assert.NotContains(t, other, "file_search")
-	assert.NotContains(t, other, "image_generation_call")
-	assert.NotContains(t, other, "image_generation_call_price")
+	fields := other.Snapshot()
+	assert.Equal(t, items, fields["tool_surcharges"])
+	assert.NotContains(t, fields, "web_search")
+	assert.NotContains(t, fields, "web_search_call_count")
+	assert.NotContains(t, fields, "web_search_price")
+	assert.NotContains(t, fields, "file_search")
+	assert.NotContains(t, fields, "image_generation_call")
+	assert.NotContains(t, fields, "image_generation_call_price")
+}
+
+func TestSimulatedAnthropicCacheResponseDoesNotIncreaseBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	usage := &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		TotalTokens:      110,
+		UsageSemantic:    "anthropic",
+	}
+	marker := ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{
+		Mode:       "partial_fingerprint",
+		MatchRatio: 0.25,
+	})
+	require.NotNil(t, marker)
+
+	require.Equal(t, 75, usage.PromptTokens)
+	require.Equal(t, 25, usage.PromptTokensDetails.CachedTokens)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "glm-5.2",
+		PriceData: hosttypes.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			CacheRatio:      0.1,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{
+				GroupRatio: 1,
+			},
+		},
+		StartTime: time.Now(),
+	}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	require.Equal(t, 88, summary.Quota, "billing remains round(75 uncached + 25*0.1 cached + 10 output)")
+
+	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true}, false)
+	require.Equal(t, float64(75), tiered.P)
+	require.Equal(t, float64(25), tiered.CR)
+	require.Equal(t, float64(100), tiered.Len)
+}
+
+func TestProductionCachedUsageAlignsRatioAndTieredInputs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	usage := &dto.Usage{
+		PromptTokens: 0, CompletionTokens: 220, UsageSemantic: UsageSemanticAnthropic,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 1026},
+	}
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "production-cache-regression",
+		PriceData: hosttypes.PriceData{
+			ModelRatio: 1, CompletionRatio: 2, CacheRatio: 0.2,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	assert.Equal(t, 0, summary.PromptTokens)
+	assert.Equal(t, 1026, summary.CacheTokens)
+	assert.Equal(t, 1246, summary.TotalTokens)
+	assert.Equal(t, 645, summary.Quota)
+
+	tiered := BuildTieredTokenParams(usage, true, map[string]bool{"cr": true}, false)
+	assert.Equal(t, float64(0), tiered.P)
+	assert.Equal(t, float64(1026), tiered.CR)
+	assert.Equal(t, float64(220), tiered.C)
+	assert.Equal(t, float64(1026), tiered.Len)
+}
+
+func TestUpstreamUsageProtocolsHaveRatioAndTieredBillingParity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "cache-parity",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+		PriceData: hosttypes.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			CacheRatio:      0.1,
+			GroupRatioInfo:  hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+	usages := map[string]*dto.Usage{
+		"OpenAI": {BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+			PromptTokens:     2604,
+			CompletionTokens: 383,
+			TotalTokens:      2987,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens: 2432,
+			},
+		})},
+		"Claude": {BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:          172,
+			CacheReadInputTokens: 2432,
+			OutputTokens:         383,
+		})},
+		"Gemini": {BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+			PromptTokenCount:        2604,
+			CandidatesTokenCount:    383,
+			TotalTokenCount:         2987,
+			CachedContentTokenCount: 2432,
+		})},
+	}
+
+	for name, usage := range usages {
+		t.Run(name, func(t *testing.T) {
+			summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveBillingUsage(usage))
+			assert.Equal(t, 172, summary.PromptTokens)
+			assert.Equal(t, 2432, summary.CacheTokens)
+			assert.Equal(t, 2604, summary.UsageNormalization.InputTokens.TotalInputTokens)
+			assert.Equal(t, 798, summary.Quota)
+
+			withCacheVariable := BuildTieredTokenParams(usage, false, map[string]bool{"cr": true}, true)
+			assert.Equal(t, float64(172), withCacheVariable.P)
+			assert.Equal(t, float64(2432), withCacheVariable.CR)
+			assert.Equal(t, float64(2604), withCacheVariable.Len)
+
+			withoutCacheVariable := BuildTieredTokenParams(usage, false, nil, true)
+			assert.Equal(t, float64(2604), withoutCacheVariable.P)
+		})
+	}
+}
+
+func TestCalculateTextQuotaSummaryCacheValidationSplitIsChannelScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	usage := &dto.Usage{
+		PromptTokens:     70,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 30,
+		},
+	}
+	priceData := hosttypes.PriceData{
+		ModelRatio:      1,
+		CompletionRatio: 1,
+		CacheRatio:      0.1,
+		GroupRatioInfo:  hosttypes.GroupRatioInfo{GroupRatio: 1},
+	}
+
+	disabled := calculateTextQuotaSummary(ctx, &relaycommon.RelayInfo{
+		OriginModelName: "cache-split-disabled",
+		PriceData:       priceData,
+		StartTime:       time.Now(),
+	}, usage)
+	enabled := calculateTextQuotaSummary(ctx, &relaycommon.RelayInfo{
+		OriginModelName: "cache-split-enabled",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+		PriceData: priceData,
+		StartTime: time.Now(),
+	}, usage)
+
+	assert.False(t, disabled.CacheUsageValidationSplit)
+	assert.Equal(t, 63, disabled.Quota)
+	assert.Equal(t, BillingUsageNormalization{}, disabled.UsageNormalization)
+	assert.True(t, enabled.CacheUsageValidationSplit)
+	assert.Equal(t, 93, enabled.Quota)
+	assert.Equal(t, UsageAccountingModeSeparate, enabled.UsageNormalization.Audit.Mode)
+	assert.Equal(t, UsageNormalizationSourceTotalTokens, enabled.UsageNormalization.Audit.Source)
+}
+
+func TestCalculateTextQuotaSummaryOpenAIMetadataWinsOverSeparateTotal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "openai-cache-contract",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+		PriceData: hosttypes.PriceData{
+			ModelRatio: 1, CompletionRatio: 1, CacheRatio: 0.1,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+	usage := &dto.Usage{
+		PromptTokens: 87, CompletionTokens: 16, TotalTokens: 190,
+		UsageSemantic:       UsageSemanticOpenAI,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 87},
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	assert.Equal(t, UsageAccountingModeIncluded, summary.UsageNormalization.Audit.Mode)
+	assert.Equal(t, UsageNormalizationStatusMismatch, summary.UsageNormalization.Audit.Status)
+	assert.Zero(t, summary.PromptTokens)
+	assert.Equal(t, 87, summary.CacheTokens)
+	assert.Equal(t, 16, summary.CompletionTokens)
+	assert.Equal(t, 25, summary.Quota)
+}
+
+func TestAttachUsageNormalizationAuditWritesAdminOnlyLogData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	normalized := NormalizeUsageForBilling(&dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 30,
+		},
+	})
+	other := model.NewLogOther()
+
+	AttachUsageNormalizationAudit(ctx, &relaycommon.RelayInfo{
+		RequestId: "req-normalization",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{CacheUsageValidationSplit: true},
+		},
+	}, other, normalized)
+
+	encoded, err := common.Marshal(other)
+	require.NoError(t, err)
+	var decoded struct {
+		AdminInfo struct {
+			UsageNormalization UsageNormalizationAudit `json:"usage_normalization"`
+		} `json:"admin_info"`
+	}
+	require.NoError(t, common.Unmarshal(encoded, &decoded))
+	assert.Equal(t, UsageAccountingModeIncluded, decoded.AdminInfo.UsageNormalization.Mode)
+	assert.Equal(t, UsageNormalizationSourceTotalTokens, decoded.AdminInfo.UsageNormalization.Source)
+	assert.Equal(t, 70, decoded.AdminInfo.UsageNormalization.NormalizedUncachedInputTokens)
+	assert.Equal(t, 100, decoded.AdminInfo.UsageNormalization.NormalizedTotalInputTokens)
+
+	disabledOther := model.NewLogOther()
+	AttachUsageNormalizationAudit(ctx, &relaycommon.RelayInfo{}, disabledOther, normalized)
+	assert.NotContains(t, disabledOther.Snapshot(), "admin_info")
+}
+
+func TestCalculateTextQuotaSummaryClampsInvalidOpenAICachedInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "claude-3-7-sonnet",
+		PriceData: hosttypes.PriceData{
+			ModelRatio:           1,
+			CompletionRatio:      5,
+			CacheRatio:           0.1,
+			CacheCreationRatio:   1.25,
+			CacheCreation5mRatio: 1.25,
+			CacheCreation1hRatio: 2,
+			GroupRatioInfo:       hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		UsageSemantic:    UsageSemanticOpenAI,
+		PromptTokens:     62,
+		CompletionTokens: 95,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 3544,
+		},
+		ClaudeCacheCreation5mTokens: 586,
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	// Explicitly marked OpenAI usage follows inclusive semantics: cached input exceeds the
+	// reported total, so uncached input is clamped to zero instead of negative.
+	require.Equal(t, 62, summary.PromptTokens)
+	require.Equal(t, 1562, summary.Quota)
 }

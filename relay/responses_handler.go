@@ -24,7 +24,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	info.InitChannelMeta(c)
 	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact &&
-		!common.IsResponsesCompactAPIType(info.ApiType) {
+		!common.SupportsResponsesCompact(info.ChannelType, info.ApiType) {
 		return types.NewErrorWithStatusCode(
 			fmt.Errorf("unsupported endpoint %q for api type %d", "/v1/responses/compact", info.ApiType),
 			types.ErrorCodeInvalidRequest,
@@ -90,9 +90,11 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		if err := relayconvert.NormalizeDeepSeekV4ResponsesRequest(request); err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-	} else {
-		request.FrequencyPenalty = nil
-		request.PresencePenalty = nil
+	}
+	if !info.IsOfficialCompatibility() && !info.IsDeepSeekV4OfficialCompatibility() {
+		if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
+			return newConvertRequestFailedError(c, info, err)
+		}
 	}
 
 	adaptor := GetAdaptor(info.ApiType)
@@ -115,7 +117,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	} else {
 		convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
 		if err != nil {
-			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			return newConvertRequestFailedError(c, info, err)
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 		jsonData, err := common.Marshal(convertedRequest)

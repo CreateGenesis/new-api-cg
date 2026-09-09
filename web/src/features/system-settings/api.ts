@@ -16,6 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { t } from 'i18next'
+
+import { encryptPassword } from '@/features/auth/lib/password-encryption'
 import { api } from '@/lib/api'
 
 import type {
@@ -87,9 +90,24 @@ export async function verifySystemBackupPassword(request: {
   password: string
   scope: SystemBackupProofScope
 }) {
+  const requirements = await api.get<{
+    success: boolean
+    data?: { password_encryption_enabled: boolean }
+  }>('/api/verify/methods', { params: { scope: request.scope } })
+  if (!requirements.data.success || !requirements.data.data) {
+    throw new Error(t('Verification failed. Please try again.'))
+  }
+  const passwordFields = requirements.data.data.password_encryption_enabled
+    ? await encryptPassword(request.password)
+    : { password: request.password }
   const res = await api.post<SystemBackupProofResponse>(
     '/api/verify',
-    { method: 'password', ...request },
+    {
+      method: 'password',
+      username: request.username,
+      scope: request.scope,
+      ...passwordFields,
+    },
     { skipBusinessError: true, skipErrorHandler: true }
   )
   return res.data

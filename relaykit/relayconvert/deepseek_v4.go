@@ -98,7 +98,22 @@ func NormalizeDeepSeekV4ResponsesRequest(request *dto.OpenAIResponsesRequest) er
 	if err := validateDeepSeekV4Sampling(request.Temperature, request.TopP); err != nil {
 		return err
 	}
-	if err := validateDeepSeekV4Penalties(request.PresencePenalty, request.FrequencyPenalty); err != nil {
+	var presencePenalty, frequencyPenalty *float64
+	for name, raw := range map[string][]byte{"presence_penalty": request.PresencePenalty, "frequency_penalty": request.FrequencyPenalty} {
+		if len(raw) == 0 {
+			continue
+		}
+		var value *float64
+		if err := kitutil.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		if name == "presence_penalty" {
+			presencePenalty = value
+		} else {
+			frequencyPenalty = value
+		}
+	}
+	if err := validateDeepSeekV4Penalties(presencePenalty, frequencyPenalty); err != nil {
 		return err
 	}
 	if request.Reasoning == nil {

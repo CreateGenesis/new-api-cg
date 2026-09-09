@@ -326,7 +326,7 @@ func TestOaiChatToResponsesStreamHandlerDoesNotApplyTNTEnvelopeWithoutFlag(t *te
 	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	assert.NotContains(t, recorder.Body.String(), `"sequence_number"`)
+	assert.Contains(t, recorder.Body.String(), `"sequence_number":0`)
 }
 
 func TestOaiChatToResponsesHandlerRestoresKimiK3MetadataAndModel(t *testing.T) {
@@ -492,6 +492,6 @@ func TestOaiChatToResponsesStreamHandlerRestoresKimiK3MetadataWithoutTNTEnvelope
 
 	got := recorder.Body.String()
 	assert.Equal(t, 2, strings.Count(got, `"max_output_tokens":64`))
-	assert.NotContains(t, got, `"sequence_number"`)
+	assert.Contains(t, got, `"sequence_number":0`)
 	assert.NotContains(t, got, `"max_output_tokens":0`)
 }

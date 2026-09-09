@@ -528,7 +528,7 @@ func HasRelayDebugFailures(c *gin.Context) bool {
 	return collector.failureCount > 0
 }
 
-func AppendRelayDebugAdminInfo(c *gin.Context, other map[string]interface{}) {
+func AppendRelayDebugAdminInfo(c *gin.Context, other *model.LogOther) {
 	collector := relayDebugFromContext(c)
 	if collector == nil || other == nil {
 		return
@@ -556,12 +556,7 @@ func AppendRelayDebugAdminInfo(c *gin.Context, other map[string]interface{}) {
 	if summary == nil {
 		return
 	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = map[string]interface{}{}
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["relay_retry"] = summary
+	other.SetAdmin("relay_retry", summary)
 }
 
 func finalizeRelayDebug(c *gin.Context, collector *relayDebugCollector) *RelayRetrySummary {

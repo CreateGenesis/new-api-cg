@@ -28,6 +28,7 @@ import type { SystemBackupImportPreview, SystemBackupSection } from '../types'
 const SECTION_LABELS: Record<SystemBackupSection, string> = {
   options: 'System settings',
   channels: 'Channels',
+  task_plugins: 'Task plugins',
   catalog: 'Vendors, models, and setup',
   oauth: 'Custom OAuth providers',
   authorization: 'Roles and authorization rules',

@@ -28,8 +28,14 @@ import {
   responseContentMatchModes,
 } from './response-content-retry-policy'
 
-export const channelTestModes = ['scheduled_all', 'passive_recovery'] as const
+export const channelTestModes = [
+  'scheduled_all',
+  'auto_ban_only',
+  'passive_recovery',
+] as const
 export type ChannelTestMode = (typeof channelTestModes)[number]
+
+export const MAX_CHANNEL_TEST_CONCURRENCY = 32
 
 const textEncoder = new TextEncoder()
 
@@ -73,6 +79,14 @@ export function createRoutingReliabilitySchema(t: TFunction) {
           .number()
           .int()
           .min(1, t('Interval must be at least 1 minute')),
+        channel_test_concurrency: z.coerce
+          .number()
+          .int(t('Enter a positive integer'))
+          .min(1, t('Channel test concurrency must be between 1 and 32'))
+          .max(
+            MAX_CHANNEL_TEST_CONCURRENCY,
+            t('Channel test concurrency must be between 1 and 32')
+          ),
         channel_test_mode: z.enum(channelTestModes),
       }),
       response_content_retry_policy: z.object({

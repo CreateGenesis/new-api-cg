@@ -17,8 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { constants, generateKeyPairSync, privateDecrypt } from 'node:crypto'
 
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+import { clearPasswordEncryptionCache } from '@/features/auth/lib/password-encryption'
+import { api } from '@/lib/api'
+
+import { verifySystemBackupPassword } from '../../api'
 import type { SystemBackupProof } from '../../types'
 import {
   getSystemBackupErrorMessage,
@@ -120,5 +126,68 @@ describe('full system backup API errors', () => {
 
     assert.equal(isSystemBackupProofError(error), false)
     assert.equal(getSystemBackupErrorMessage(error), 'invalid backup')
+  })
+})
+
+describe('full backup password verification transport', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    clearPasswordEncryptionCache()
+  })
+
+  test('uses encrypted credentials when required by the server', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+    })
+    vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+      data: {
+        success: true,
+        data:
+          url === '/api/verify/methods'
+            ? { password_encryption_enabled: true }
+            : {
+                kid: 'backup-key',
+                public_key: publicKey.export({ type: 'spki', format: 'pem' }),
+              },
+      },
+    }))
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true, data: importProof } })
+    await verifySystemBackupPassword({
+      username: 'root',
+      password: 'backup-password',
+      scope: importProof.scope,
+    })
+    const payload = post.mock.calls[0][1] as Record<string, string>
+    expect(payload).not.toHaveProperty('password')
+    expect(payload).toMatchObject({
+      username: 'root',
+      method: 'password',
+      scope: importProof.scope,
+      encryption_key_id: 'backup-key',
+    })
+    const decrypted = privateDecrypt(
+      {
+        key: privateKey,
+        padding: constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha256',
+      },
+      Buffer.from(payload.password_encrypted, 'base64')
+    )
+    expect(decrypted.toString()).toBe('backup-password')
+  })
+
+  test('does not submit credentials when verification requirements cannot be loaded', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: { success: false } })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({})
+    await expect(
+      verifySystemBackupPassword({
+        username: 'root',
+        password: 'backup-password',
+        scope: importProof.scope,
+      })
+    ).rejects.toThrow()
+    expect(post).not.toHaveBeenCalled()
   })
 })

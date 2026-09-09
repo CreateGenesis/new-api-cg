@@ -133,6 +133,7 @@ export function RedemptionsTable() {
     data: redemptions,
     columns,
     enableRowSelection: true,
+    getRowId: (row) => String(row.id),
     columnFilters,
     globalFilter,
     pagination,
@@ -171,6 +172,7 @@ export function RedemptionsTable() {
       applyHeaderSize
       toolbarProps={{
         searchPlaceholder: t('Filter by name or ID...'),
+        searchDebounceMs: 500,
         filters: [
           {
             columnId: 'status',

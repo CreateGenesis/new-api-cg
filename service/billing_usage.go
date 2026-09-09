@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 
@@ -59,28 +60,18 @@ func usageBillingPathForLog(isLocalCountTokens bool, usage *dto.Usage) string {
 	return usageBillingPathUpstream
 }
 
-func appendUsageBillingPathForLog(other map[string]interface{}, isLocalCountTokens bool, usage *dto.Usage) {
+func appendUsageBillingPathForLog(other *model.LogOther, isLocalCountTokens bool, usage *dto.Usage) {
 	if other == nil {
 		return
 	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = make(map[string]interface{})
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["usage_billing_path"] = usageBillingPathForLog(isLocalCountTokens, usage)
+	other.SetAdmin("usage_billing_path", usageBillingPathForLog(isLocalCountTokens, usage))
 }
 
-func AttachUsageNormalizationAudit(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}, normalization BillingUsageNormalization) {
+func AttachUsageNormalizationAudit(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther, normalization BillingUsageNormalization) {
 	if other == nil || !relayInfo.CacheUsageValidationSplitEnabled() {
 		return
 	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = make(map[string]interface{})
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["usage_normalization"] = normalization.Audit
+	other.SetAdmin("usage_normalization", normalization.Audit)
 
 	if normalization.Audit.Source != UsageNormalizationSourceFallback &&
 		normalization.Audit.Status != UsageNormalizationStatusMismatch {
@@ -120,20 +111,20 @@ func usageFromBillingUsage(usage *dto.Usage) (*dto.Usage, bool) {
 	source := strings.TrimSpace(billingUsage.Source)
 	semantic := strings.TrimSpace(billingUsage.Semantic)
 
-	if billingUsage.OpenAIUsage != nil &&
+	if dto.HasOpenAIUsageTokens(billingUsage.OpenAIUsage) &&
 		(strings.EqualFold(source, dto.BillingUsageSourceOAIChat) ||
 			strings.EqualFold(source, dto.BillingUsageSourceOAIResponses) ||
 			strings.EqualFold(semantic, dto.BillingUsageSemanticOpenAI)) {
 		return usageFromOpenAIBillingUsage(billingUsage), true
 	}
 
-	if billingUsage.ClaudeUsage != nil &&
+	if dto.HasClaudeUsageTokens(billingUsage.ClaudeUsage) &&
 		(strings.EqualFold(source, dto.BillingUsageSourceClaudeMessages) ||
 			strings.EqualFold(semantic, dto.BillingUsageSemanticAnthropic)) {
 		return usageFromClaudeBillingUsage(billingUsage), true
 	}
 
-	if billingUsage.GeminiUsageMetadata != nil &&
+	if dto.HasGeminiUsageMetadataTokens(billingUsage.GeminiUsageMetadata) &&
 		(strings.EqualFold(source, dto.BillingUsageSourceGeminiChat) ||
 			strings.EqualFold(semantic, dto.BillingUsageSemanticGemini)) {
 		return usageFromGeminiBillingUsage(billingUsage), true
@@ -143,25 +134,14 @@ func usageFromBillingUsage(usage *dto.Usage) (*dto.Usage, bool) {
 }
 
 func usageFromOpenAIBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
-	usage := *billingUsage.OpenAIUsage
-	if usage.PromptTokens == 0 && usage.InputTokens > 0 {
-		usage.PromptTokens = usage.InputTokens
+	canonical, ok := billingUsage.CanonicalUsage()
+	if !ok {
+		return nil
 	}
-	if usage.CompletionTokens == 0 && usage.OutputTokens > 0 {
-		usage.CompletionTokens = usage.OutputTokens
-	}
-	if usage.InputTokens == 0 && usage.PromptTokens > 0 {
-		usage.InputTokens = usage.PromptTokens
-	}
-	if usage.OutputTokens == 0 && usage.CompletionTokens > 0 {
-		usage.OutputTokens = usage.CompletionTokens
-	}
-	if usage.TotalTokens == 0 {
+	usage := *canonical
+	if billingUsage.OpenAIUsage.TotalTokens == 0 {
 		usage.TotalTokens = saturatingTokenAdd(usage.PromptTokens, usage.CompletionTokens)
 	}
-	usage.UsageSemantic = dto.BillingUsageSemanticOpenAI
-	usage.UsageSource = billingUsage.Source
-	usage.BillingUsage = dto.CloneBillingUsage(billingUsage)
 	return &usage
 }
 

@@ -38,7 +38,7 @@ func TestGenerateTextOtherInfoDoesNotExposeSimulatedCacheHit(t *testing.T) {
 
 	other := GenerateTextOtherInfo(c, info, 1, 1, 1, 50, 0.5, 0, 1)
 
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
 	assert.NotContains(t, adminInfo, "simulated_model_cache")
 }
@@ -62,7 +62,7 @@ func TestGenerateTextOtherInfoDoesNotExposeSimulatedCacheBypass(t *testing.T) {
 
 	other := GenerateTextOtherInfo(c, info, 1, 1, 1, 50, 0.5, 0, 1)
 
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
 	assert.NotContains(t, adminInfo, "simulated_model_cache")
 }
@@ -88,7 +88,7 @@ func TestGenerateTextOtherInfoRecordsUsageTokenLimitAudit(t *testing.T) {
 
 	other := GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1)
 
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
 	audit, ok := adminInfo["usage_token_limit"].(*relaycommon.UsageTokenLimitAudit)
 	require.True(t, ok)
@@ -128,9 +128,9 @@ func TestGenerateClaudeOtherInfoOmitsUnusedCacheCreationPricing(t *testing.T) {
 		1,
 	)
 
-	require.Equal(t, 100, other["cache_tokens"])
-	require.NotContains(t, other, "cache_creation_tokens")
-	require.NotContains(t, other, "cache_creation_ratio")
+	require.Equal(t, 100, other.Snapshot()["cache_tokens"])
+	require.NotContains(t, other.Snapshot(), "cache_creation_tokens")
+	require.NotContains(t, other.Snapshot(), "cache_creation_ratio")
 
 	other = GenerateClaudeOtherInfo(
 		c,
@@ -150,6 +150,6 @@ func TestGenerateClaudeOtherInfoOmitsUnusedCacheCreationPricing(t *testing.T) {
 		1,
 	)
 
-	require.Equal(t, 20, other["cache_creation_tokens"])
-	require.Equal(t, 1.25, other["cache_creation_ratio"])
+	require.Equal(t, 20, other.Snapshot()["cache_creation_tokens"])
+	require.Equal(t, 1.25, other.Snapshot()["cache_creation_ratio"])
 }

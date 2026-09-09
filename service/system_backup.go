@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service/authz"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -33,6 +34,7 @@ type SystemBackupFile struct {
 	Sensitive            bool                              `json:"sensitive"`
 	RestoreMode          string                            `json:"restore_mode"`
 	Options              []model.Option                    `json:"options"`
+	TaskPlugins          []SystemBackupTaskPlugin          `json:"task_plugins"`
 	Channels             []model.Channel                   `json:"channels"`
 	Vendors              []SystemBackupVendor              `json:"vendors"`
 	Models               []SystemBackupModel               `json:"models"`
@@ -51,6 +53,11 @@ type SystemBackupFile struct {
 	ExternalIdentities   []model.ExternalIdentityClaim     `json:"external_identities"`
 	OAuthBindings        []model.UserOAuthBinding          `json:"oauth_bindings"`
 	UserSubscriptions    []model.UserSubscription          `json:"user_subscriptions"`
+}
+
+type SystemBackupTaskPlugin struct {
+	model.TaskPlugin
+	Icon string `json:"icon,omitempty"`
 }
 
 type SystemBackupVendor struct {
@@ -74,36 +81,37 @@ type SystemBackupCustomOAuthProvider struct {
 }
 
 type SystemBackupUser struct {
-	ID              int        `json:"id"`
-	Username        string     `json:"username"`
-	Password        string     `json:"password"`
-	DisplayName     string     `json:"display_name"`
-	Role            int        `json:"role"`
-	Status          int        `json:"status"`
-	Email           string     `json:"email"`
-	GitHubID        string     `json:"github_id"`
-	DiscordID       string     `json:"discord_id"`
-	OIDCID          string     `json:"oidc_id"`
-	WeChatID        string     `json:"wechat_id"`
-	TelegramID      string     `json:"telegram_id"`
-	AccessToken     *string    `json:"access_token,omitempty"`
-	Quota           int        `json:"quota"`
-	UsedQuota       int        `json:"used_quota"`
-	RequestCount    int        `json:"request_count"`
-	Group           string     `json:"group"`
-	AffCode         string     `json:"aff_code"`
-	AffCount        int        `json:"aff_count"`
-	AffQuota        int        `json:"aff_quota"`
-	AffHistoryQuota int        `json:"aff_history_quota"`
-	InviterID       int        `json:"inviter_id"`
-	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
-	LinuxDOID       string     `json:"linux_do_id"`
-	Setting         string     `json:"setting"`
-	Remark          string     `json:"remark,omitempty"`
-	StripeCustomer  string     `json:"stripe_customer"`
-	CreatedAt       int64      `json:"created_at"`
-	LastLoginAt     int64      `json:"last_login_at"`
-	AuthVersion     int64      `json:"auth_version"`
+	ID                   int        `json:"id"`
+	Username             string     `json:"username"`
+	Password             string     `json:"password"`
+	DisplayName          string     `json:"display_name"`
+	Role                 int        `json:"role"`
+	Status               int        `json:"status"`
+	Email                string     `json:"email"`
+	GitHubID             string     `json:"github_id"`
+	DiscordID            string     `json:"discord_id"`
+	OIDCID               string     `json:"oidc_id"`
+	WeChatID             string     `json:"wechat_id"`
+	TelegramID           string     `json:"telegram_id"`
+	AccessToken          *string    `json:"access_token,omitempty"`
+	AccessTokenCreatedAt *int64     `json:"access_token_created_at,omitempty"`
+	Quota                int        `json:"quota"`
+	UsedQuota            int        `json:"used_quota"`
+	RequestCount         int        `json:"request_count"`
+	Group                string     `json:"group"`
+	AffCode              string     `json:"aff_code"`
+	AffCount             int        `json:"aff_count"`
+	AffQuota             int        `json:"aff_quota"`
+	AffHistoryQuota      int        `json:"aff_history_quota"`
+	InviterID            int        `json:"inviter_id"`
+	DeletedAt            *time.Time `json:"deleted_at,omitempty"`
+	LinuxDOID            string     `json:"linux_do_id"`
+	Setting              string     `json:"setting"`
+	Remark               string     `json:"remark,omitempty"`
+	StripeCustomer       string     `json:"stripe_customer"`
+	CreatedAt            int64      `json:"created_at"`
+	LastLoginAt          int64      `json:"last_login_at"`
+	AuthVersion          int64      `json:"auth_version"`
 }
 
 type SystemBackupToken struct {
@@ -206,6 +214,13 @@ func ExportSystemBackup() (*SystemBackupFile, error) {
 		return nil, err
 	}
 
+	var taskPlugins []model.TaskPlugin
+	if err := model.DB.Order("id asc").Find(&taskPlugins).Error; err != nil {
+		return nil, err
+	}
+	for _, plugin := range taskPlugins {
+		backup.TaskPlugins = append(backup.TaskPlugins, SystemBackupTaskPlugin{TaskPlugin: plugin, Icon: plugin.Icon})
+	}
 	var vendors []model.Vendor
 	if err := model.DB.Unscoped().Order("id asc").Find(&vendors).Error; err != nil {
 		return nil, err
@@ -423,6 +438,19 @@ func validateSystemBackup(backup *SystemBackupFile) error {
 	if err := validateSystemBackupUniqueKeys(backup); err != nil {
 		return err
 	}
+	for index, plugin := range backup.TaskPlugins {
+		if plugin.Id <= 0 || len(plugin.Source) > 1024*1024 || len(plugin.Icon) > 750000 {
+			return fmt.Errorf("task_plugins[%d] is invalid", index)
+		}
+		compiled, err := pluginruntime.CompilePlugin(plugin.Source, pluginruntime.Options{Key: plugin.Key, Version: plugin.Version})
+		if err != nil {
+			return fmt.Errorf("task_plugins[%d]: %w", index, err)
+		}
+		digest := sha256.Sum256([]byte(plugin.Source))
+		if compiled.Meta.Key != plugin.Key || compiled.Meta.Version != plugin.Version || compiled.Meta.APIVersion != plugin.APIVersion || hex.EncodeToString(digest[:]) != plugin.SourceHash {
+			return fmt.Errorf("task_plugins[%d] metadata or hash mismatch", index)
+		}
+	}
 	userIDs := make(map[int]struct{}, len(backup.Users))
 	hasRoot := false
 	for index := range backup.Users {
@@ -575,6 +603,19 @@ func validateSystemBackupUniqueKeys(backup *SystemBackupFile) error {
 			return err
 		}
 	}
+	for _, item := range backup.TaskPlugins {
+		if err := check("task_plugin", item.Id); err != nil {
+			return err
+		}
+		if err := check("task_plugin_version", item.Key+"\x00"+item.Version); err != nil {
+			return err
+		}
+		if item.Active {
+			if err := check("active_task_plugin", item.Key); err != nil {
+				return err
+			}
+		}
+	}
 	for _, item := range backup.Channels {
 		if err := check("channel", item.Id); err != nil {
 			return err
@@ -706,6 +747,7 @@ func buildSystemBackupImportPreview(backup *SystemBackupFile, hash string) (*Sys
 	}
 	preview.Sections["options"] = systemBackupRecordCounts(backup.Options, current.Options, func(item model.Option) string { return item.Key })
 	preview.Sections["channels"] = systemBackupRecordCounts(backup.Channels, current.Channels, func(item model.Channel) int { return item.Id })
+	preview.Sections["task_plugins"] = systemBackupRecordCounts(backup.TaskPlugins, current.TaskPlugins, func(item SystemBackupTaskPlugin) int64 { return item.Id })
 	preview.Sections["catalog"] = addSystemBackupCounts(
 		systemBackupRecordCounts(backup.Vendors, current.Vendors, func(item SystemBackupVendor) int { return item.Id }),
 		systemBackupRecordCounts(backup.Models, current.Models, func(item SystemBackupModel) int { return item.Id }),
@@ -742,7 +784,7 @@ func deleteSystemBackupRestoreData(tx *gorm.DB) error {
 		&model.TwoFABackupCode{}, &model.TwoFA{}, &model.Token{}, &model.Redemption{},
 		&model.UserSubscription{}, &model.CasbinRule{}, &model.AuthzRole{}, &model.User{},
 		&model.SubscriptionPlan{}, &model.CustomOAuthProvider{}, &model.Ability{},
-		&model.Channel{}, &model.Model{}, &model.Vendor{}, &model.PrefillGroup{},
+		&model.TaskPlugin{}, &model.Channel{}, &model.Model{}, &model.Vendor{}, &model.PrefillGroup{},
 		&model.Setup{}, &model.Option{},
 	}
 	for _, target := range targets {
@@ -768,6 +810,15 @@ func insertSystemBackupRestoreData(tx *gorm.DB, backup *SystemBackupFile) error 
 		return err
 	}
 	if err := createSystemBackupRecords(restoreTx, systemBackupPrefillGroupsToModels(backup.PrefillGroups)); err != nil {
+		return err
+	}
+	taskPlugins := make([]model.TaskPlugin, 0, len(backup.TaskPlugins))
+	for _, plugin := range backup.TaskPlugins {
+		value := plugin.TaskPlugin
+		value.Icon = plugin.Icon
+		taskPlugins = append(taskPlugins, value)
+	}
+	if err := createSystemBackupRecords(restoreTx, taskPlugins); err != nil {
 		return err
 	}
 	if err := createSystemBackupRecords(restoreTx, backup.Channels); err != nil {
@@ -825,7 +876,7 @@ func syncSystemBackupPostgresSequences(tx *gorm.DB) error {
 		"channels", "tokens", "users", "redemptions", "models", "vendors",
 		"prefill_groups", "setups", "two_fas", "two_fa_backup_codes", "subscription_plans",
 		"user_subscriptions", "custom_oauth_providers", "user_oauth_bindings", "passkey_credentials",
-		"external_identity_claims", "authz_roles", "casbin_rule",
+		"external_identity_claims", "authz_roles", "casbin_rule", "task_plugins",
 	}
 	for _, table := range tables {
 		query := fmt.Sprintf(
@@ -922,7 +973,7 @@ func addSystemBackupCounts(values ...SystemBackupChangeCounts) SystemBackupChang
 }
 
 func (backup SystemBackupFile) recordCount() int {
-	return len(backup.Options) + len(backup.Channels) + len(backup.Vendors) + len(backup.Models) +
+	return len(backup.Options) + len(backup.TaskPlugins) + len(backup.Channels) + len(backup.Vendors) + len(backup.Models) +
 		len(backup.PrefillGroups) + len(backup.Setups) + len(backup.CustomOAuthProviders) +
 		len(backup.SubscriptionPlans) + len(backup.AuthorizationRoles) + len(backup.AuthorizationRules) +
 		len(backup.Users) + len(backup.Tokens) + len(backup.Redemptions) + len(backup.TwoFA) +
@@ -950,7 +1001,7 @@ func (item SystemBackupUser) toModel() model.User {
 		Id: item.ID, Username: item.Username, Password: item.Password, DisplayName: item.DisplayName,
 		Role: item.Role, Status: item.Status, Email: item.Email, GitHubId: item.GitHubID,
 		DiscordId: item.DiscordID, OidcId: item.OIDCID, WeChatId: item.WeChatID,
-		TelegramId: item.TelegramID, AccessToken: item.AccessToken, Quota: item.Quota,
+		TelegramId: item.TelegramID, AccessToken: item.AccessToken, AccessTokenCreatedAt: item.AccessTokenCreatedAt, Quota: item.Quota,
 		UsedQuota: item.UsedQuota, RequestCount: item.RequestCount, Group: item.Group,
 		AffCode: item.AffCode, AffCount: item.AffCount, AffQuota: item.AffQuota,
 		AffHistoryQuota: item.AffHistoryQuota, InviterId: item.InviterID,
@@ -965,7 +1016,7 @@ func systemBackupUserFromModel(item model.User) SystemBackupUser {
 		ID: item.Id, Username: item.Username, Password: item.Password, DisplayName: item.DisplayName,
 		Role: item.Role, Status: item.Status, Email: item.Email, GitHubID: item.GitHubId,
 		DiscordID: item.DiscordId, OIDCID: item.OidcId, WeChatID: item.WeChatId,
-		TelegramID: item.TelegramId, AccessToken: item.AccessToken, Quota: item.Quota,
+		TelegramID: item.TelegramId, AccessToken: item.AccessToken, AccessTokenCreatedAt: item.AccessTokenCreatedAt, Quota: item.Quota,
 		UsedQuota: item.UsedQuota, RequestCount: item.RequestCount, Group: item.Group,
 		AffCode: item.AffCode, AffCount: item.AffCount, AffQuota: item.AffQuota,
 		AffHistoryQuota: item.AffHistoryQuota, InviterID: item.InviterId,

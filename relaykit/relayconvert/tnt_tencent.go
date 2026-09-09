@@ -206,10 +206,14 @@ func ConvertTNTTencentResponsesRequest(request *dto.OpenAIResponsesRequest) (*dt
 	prepared.PreviousResponseID = ""
 	prepared.Prompt = nil
 	prepared.ContextManagement = nil
+	prepared.Reasoning = nil
 
 	base, err := ResponsesRequestToChatCompletionsRequest(&prepared)
 	if err != nil {
 		return nil, err
+	}
+	if request.Reasoning != nil {
+		base.ReasoningEffort = request.Reasoning.Effort
 	}
 	stream := true
 	converted := &dto.GeneralOpenAIRequest{

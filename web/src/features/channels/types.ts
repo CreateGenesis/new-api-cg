@@ -164,6 +164,7 @@ export type Channel = z.infer<typeof channelSchema>
 // ============================================================================
 
 export interface ChannelSettings {
+  task_plugin_key?: string
   force_format?: boolean
   thinking_to_content?: boolean
   /** One proxy URL per line; requests prefer the least-active proxy. */
@@ -343,6 +344,7 @@ export interface ChannelBalanceResponse {
   message?: string
   balance?: number
   currency?: string
+  raw_response?: string
 }
 
 export interface FetchModelsResponse {

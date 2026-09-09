@@ -116,10 +116,13 @@ func NormalizeKimiK3ResponsesRequest(request *dto.OpenAIResponsesRequest) error 
 	if err := normalizeKimiK3ChatSampling(&request.Temperature, &request.TopP, nil, nil, nil); err != nil {
 		return err
 	}
-	chatRequest, err := ResponsesRequestToChatCompletionsRequest(request)
+	validationRequest := *request
+	validationRequest.Reasoning = nil
+	chatRequest, err := ResponsesRequestToChatCompletionsRequest(&validationRequest)
 	if err != nil {
 		return err
 	}
+	chatRequest.ReasoningEffort = request.Reasoning.Effort
 	if err := NormalizeKimiK3ChatRequest(chatRequest); err != nil {
 		return err
 	}

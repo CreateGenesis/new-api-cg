@@ -108,6 +108,7 @@ export function FullSystemBackupSection() {
       return response.data
     },
     onSuccess: setPreview,
+    onSettled: () => setImportProof(undefined),
     onError: (error) => {
       if (isSystemBackupProofError(error)) {
         setImportProof(undefined)

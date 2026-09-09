@@ -21,10 +21,14 @@ import { z } from 'zod'
 import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
 import {
+  CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
+  FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
+  OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../constants'
 import type { Channel } from '../types'
 import {
@@ -299,6 +303,7 @@ export const channelFormSchema = z
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
     type: z.number().min(0, ERROR_MESSAGES.REQUIRED_TYPE),
     base_url: z.string().optional(),
+    task_plugin_key: z.string().optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
@@ -463,7 +468,9 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_TASK_PLUGIN].includes(
+        data.type
+      ) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -471,6 +478,12 @@ export const channelFormSchema = z
         'base_url',
         'Base URL is required for this channel type'
       )
+    }
+    if (
+      data.type === CHANNEL_TYPE_TASK_PLUGIN &&
+      !data.task_plugin_key?.trim()
+    ) {
+      addRequiredIssue(ctx, 'task_plugin_key', 'Task plugin is required')
     }
 
     if (data.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
@@ -925,6 +938,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   name: '',
   type: 1,
   base_url: '',
+  task_plugin_key: '',
   key: '',
   openai_organization: '',
   models: '',
@@ -1045,6 +1059,7 @@ export function transformChannelToFormDefaults(
 ): ChannelFormValues {
   // Parse channel extra settings from setting field
   let extraSettings = {
+    task_plugin_key: '',
     force_format: false,
     thinking_to_content: false,
     proxy: '',
@@ -1066,6 +1081,7 @@ export function transformChannelToFormDefaults(
         parsed.http2_connection_shards
       )
       extraSettings = {
+        task_plugin_key: parsed.task_plugin_key || '',
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
@@ -1200,18 +1216,39 @@ export function transformChannelToFormDefaults(
       }
       cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
       retryZeroOutput = parsed.retry_zero_output === true
-      if (parsed.usage_estimation && typeof parsed.usage_estimation === 'object') {
-        const usageEstimation = parsed.usage_estimation as Record<string, unknown>
+      if (
+        parsed.usage_estimation &&
+        typeof parsed.usage_estimation === 'object'
+      ) {
+        const usageEstimation = parsed.usage_estimation as Record<
+          string,
+          unknown
+        >
         usageEstimationEnabled = usageEstimation.enabled === true
-        if (['glm', 'kimi', 'deepseek'].includes(String(usageEstimation.model_family))) {
-          usageEstimationModelFamily = usageEstimation.model_family as 'glm' | 'kimi' | 'deepseek'
+        if (
+          ['glm', 'kimi', 'deepseek'].includes(
+            String(usageEstimation.model_family)
+          )
+        ) {
+          usageEstimationModelFamily = usageEstimation.model_family as
+            | 'glm'
+            | 'kimi'
+            | 'deepseek'
         }
         const inputMultiplier = Number(usageEstimation.input_multiplier)
         const outputMultiplier = Number(usageEstimation.output_multiplier)
-        if (Number.isFinite(inputMultiplier) && inputMultiplier >= 0.01 && inputMultiplier <= 100) {
+        if (
+          Number.isFinite(inputMultiplier) &&
+          inputMultiplier >= 0.01 &&
+          inputMultiplier <= 100
+        ) {
           usageEstimationInputMultiplier = inputMultiplier
         }
-        if (Number.isFinite(outputMultiplier) && outputMultiplier >= 0.01 && outputMultiplier <= 100) {
+        if (
+          Number.isFinite(outputMultiplier) &&
+          outputMultiplier >= 0.01 &&
+          outputMultiplier <= 100
+        ) {
           usageEstimationOutputMultiplier = outputMultiplier
         }
       }
@@ -1570,6 +1607,10 @@ export function transformChannelToFormDefaults(
  */
 export function buildSettingJSON(formData: ChannelFormValues): string {
   const settingObj: Record<string, unknown> = {
+    task_plugin_key:
+      formData.type === CHANNEL_TYPE_TASK_PLUGIN
+        ? formData.task_plugin_key?.trim() || ''
+        : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
@@ -1657,21 +1698,21 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   }
 
   // Field passthrough controls:
-  // - OpenAI (type 1) and Anthropic (type 14): allow_service_tier
-  // - OpenAI only: disable_store, allow_safety_identifier
-  if (formData.type === 1 || formData.type === 14 || formData.type === 57) {
+  // - OpenAI, Anthropic, Codex, and New API: allow_service_tier
+  // - OpenAI request fields: OpenAI, Codex, and New API
+  // - Claude request fields: Anthropic and New API
+  if (FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.allow_service_tier = formData.allow_service_tier === true
   } else if ('allow_service_tier' in settingsObj) {
     delete settingsObj.allow_service_tier
   }
 
-  if (formData.type === 1 || formData.type === 57) {
+  if (OPENAI_FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.disable_store = formData.disable_store === true
     settingsObj.allow_safety_identifier =
       formData.allow_safety_identifier === true
     settingsObj.allow_include_obfuscation =
       formData.allow_include_obfuscation === true
-    settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
     if ('disable_store' in settingsObj) {
       delete settingsObj.disable_store
@@ -1682,15 +1723,25 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
     }
-    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
-      delete settingsObj.allow_inference_geo
-    }
   }
 
-  // Anthropic (type 14): claude_beta_query, allow_inference_geo, allow_speed
-  if (formData.type === 14) {
+  if (
+    OPENAI_FIELD_PASSTHROUGH_TYPES.has(formData.type) ||
+    CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)
+  ) {
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
+  } else if ('allow_inference_geo' in settingsObj) {
+    delete settingsObj.allow_inference_geo
+  }
+
+  if (CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.allow_speed = formData.allow_speed === true
+  } else if ('allow_speed' in settingsObj) {
+    delete settingsObj.allow_speed
+  }
+
+  // Only the Anthropic adaptor supports forcing the Claude beta query.
+  if (formData.type === 14) {
     settingsObj.claude_beta_query = formData.claude_beta_query === true
     if (formData.tnt_tencent_openai_conversion === true) {
       settingsObj.tnt_tencent_openai_conversion = true
