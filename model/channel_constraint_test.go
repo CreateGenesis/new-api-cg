@@ -7,8 +7,10 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestFilterCandidateIDs(t *testing.T) {
@@ -215,4 +217,22 @@ func TestChannelSatisfiesFilters(t *testing.T) {
 	}})
 	assert.False(t, ok)
 	assert.Equal(t, dto.FilterRequestPath, kind)
+}
+
+func TestVideoUnderstandingFilterFailsClosedWhenSettingsCannotBeLoaded(t *testing.T) {
+	originalDB := DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	DB = db
+	t.Cleanup(func() {
+		DB = originalDB
+		require.NoError(t, sqlDB.Close())
+	})
+	// The channels table is deliberately unavailable. Returning the original
+	// abilities here could admit a channel whose video setting is unknown.
+	abilities := []Ability{{ChannelId: 1, Enabled: true}}
+	assert.Empty(t, filterAbilitiesByConstraints(abilities, "video-model", []dto.ChannelFilter{{Kind: dto.FilterVideoUnderstanding}}))
+	assert.Equal(t, abilities, filterAbilitiesByConstraints(abilities, "text-model", []dto.ChannelFilter{{Kind: dto.FilterRequestPath}}))
 }

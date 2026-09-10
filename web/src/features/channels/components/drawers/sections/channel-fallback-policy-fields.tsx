@@ -156,6 +156,31 @@ export function ChannelFallbackPolicyFields(
             </FormItem>
           )}
         />
+        <FormField
+          control={props.control}
+          name='disable_video_understanding'
+          render={({ field }) => (
+            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+              <div className='space-y-0.5'>
+                <FormLabel className='text-sm'>
+                  {t('Disable video understanding requests')}
+                </FormLabel>
+                <FormDescription>
+                  {t(
+                    'Skip this channel for requests containing video content and route them to another eligible channel.'
+                  )}
+                </FormDescription>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value ?? false}
+                  disabled={props.sensitiveLocked}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+            </FormItem>
+          )}
+        />
       </div>
 
       <div className='grid gap-4 sm:grid-cols-2'>

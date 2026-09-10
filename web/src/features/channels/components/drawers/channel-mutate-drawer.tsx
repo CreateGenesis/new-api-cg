@@ -342,6 +342,7 @@ const SENSITIVE_FORM_FIELDS = [
   'usage_estimation_output_multiplier',
   'disable_stream',
   'disable_non_stream',
+  'disable_video_understanding',
   'usage_token_limit_input_tokens',
   'usage_token_limit_output_tokens',
   'simulated_model_cache_enabled',
@@ -428,6 +429,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.usage_estimation_enabled ||
     values.disable_stream ||
     values.disable_non_stream ||
+    values.disable_video_understanding ||
     (values.usage_token_limit_input_tokens ?? 0) > 0 ||
     (values.usage_token_limit_output_tokens ?? 0) > 0 ||
     values.simulated_model_cache_enabled ||
@@ -888,6 +890,9 @@ export function ChannelMutateDrawer({
   const currentUsageEstimationEnabled = form.watch('usage_estimation_enabled')
   const currentDisableStream = form.watch('disable_stream')
   const currentDisableNonStream = form.watch('disable_non_stream')
+  const currentDisableVideoUnderstanding = form.watch(
+    'disable_video_understanding'
+  )
   const currentUsageTokenLimitInputTokens = form.watch(
     'usage_token_limit_input_tokens'
   )
@@ -1276,6 +1281,7 @@ export function ChannelMutateDrawer({
     currentUsageEstimationEnabled ||
     currentDisableStream ||
     currentDisableNonStream ||
+    currentDisableVideoUnderstanding ||
     (currentUsageTokenLimitInputTokens ?? 0) > 0 ||
     (currentUsageTokenLimitOutputTokens ?? 0) > 0
   )

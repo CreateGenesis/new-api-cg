@@ -111,6 +111,7 @@ type ChannelOtherSettings struct {
 	RetryZeroOutput                       bool                               `json:"retry_zero_output,omitempty"`
 	DisableStream                         bool                               `json:"disable_stream,omitempty"`
 	DisableNonStream                      bool                               `json:"disable_non_stream,omitempty"`
+	DisableVideoUnderstanding             bool                               `json:"disable_video_understanding,omitempty"`
 	UsageTokenLimit                       *UsageTokenLimitSettings           `json:"usage_token_limit,omitempty"`
 	UsageEstimation                       *UsageEstimationSettings           `json:"usage_estimation,omitempty"`
 	MoonshotQuotaAutoDisable              *MoonshotQuotaAutoDisableSettings  `json:"moonshot_quota_auto_disable,omitempty"`

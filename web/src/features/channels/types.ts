@@ -210,6 +210,7 @@ export interface ChannelOtherSettings {
   }
   disable_stream?: boolean
   disable_non_stream?: boolean
+  disable_video_understanding?: boolean
   usage_token_limit?: {
     input_tokens?: number
     output_tokens?: number

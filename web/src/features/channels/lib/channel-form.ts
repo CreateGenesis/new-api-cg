@@ -431,6 +431,7 @@ export const channelFormSchema = z
       .optional(),
     disable_stream: z.boolean().optional(),
     disable_non_stream: z.boolean().optional(),
+    disable_video_understanding: z.boolean().optional(),
     usage_token_limit_input_tokens: z.number().optional(),
     usage_token_limit_output_tokens: z.number().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
@@ -1017,6 +1018,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   usage_estimation_output_multiplier: 1,
   disable_stream: false,
   disable_non_stream: false,
+  disable_video_understanding: false,
   usage_token_limit_input_tokens: 0,
   usage_token_limit_output_tokens: 0,
   simulated_model_cache_enabled: false,
@@ -1140,6 +1142,7 @@ export function transformChannelToFormDefaults(
   let usageEstimationOutputMultiplier = 1
   let disableStream = false
   let disableNonStream = false
+  let disableVideoUnderstanding = false
   let usageTokenLimitInputTokens = 0
   let usageTokenLimitOutputTokens = 0
   let simulatedModelCacheEnabled = false
@@ -1254,6 +1257,7 @@ export function transformChannelToFormDefaults(
       }
       disableStream = parsed.disable_stream === true
       disableNonStream = parsed.disable_non_stream === true
+      disableVideoUnderstanding = parsed.disable_video_understanding === true
       if (
         parsed.usage_token_limit &&
         typeof parsed.usage_token_limit === 'object'
@@ -1561,6 +1565,7 @@ export function transformChannelToFormDefaults(
     usage_estimation_output_multiplier: usageEstimationOutputMultiplier,
     disable_stream: disableStream,
     disable_non_stream: disableNonStream,
+    disable_video_understanding: disableVideoUnderstanding,
     usage_token_limit_input_tokens: usageTokenLimitInputTokens,
     usage_token_limit_output_tokens: usageTokenLimitOutputTokens,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
@@ -1862,6 +1867,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.disable_non_stream = true
   } else if ('disable_non_stream' in settingsObj) {
     delete settingsObj.disable_non_stream
+  }
+
+  if (formData.disable_video_understanding === true) {
+    settingsObj.disable_video_understanding = true
+  } else if ('disable_video_understanding' in settingsObj) {
+    delete settingsObj.disable_video_understanding
   }
   const usageTokenLimitInputTokens = Math.trunc(
     Number(formData.usage_token_limit_input_tokens) || 0

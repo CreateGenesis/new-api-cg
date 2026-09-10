@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { describe, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
 import type { Channel } from '../types'
 import {
@@ -1285,5 +1285,63 @@ describe('usage estimation settings', () => {
       usage_estimation_input_multiplier: 0.001,
     })
     assert.equal(invalid.success, false)
+  })
+})
+
+describe('video understanding channel setting', () => {
+  test('defaults off for new and existing channels without the setting', () => {
+    expect(CHANNEL_FORM_DEFAULT_VALUES.disable_video_understanding).toBe(false)
+    expect(
+      transformChannelToFormDefaults(testChannel('{}'))
+        .disable_video_understanding
+    ).toBe(false)
+  })
+
+  test.each([1, 14, 24, 58])(
+    'channel type %i preserves the setting when edited or copied',
+    (type) => {
+      const channel = testChannel(
+        JSON.stringify({
+          disable_video_understanding: true,
+          retry_zero_output: true,
+          custom_option: 'preserved',
+        })
+      )
+      channel.type = type
+      const form = transformChannelToFormDefaults(channel)
+      expect(form.disable_video_understanding).toBe(true)
+      const payload = transformFormDataToCreatePayload({
+        ...form,
+        name: 'copied',
+        key: 'test-key',
+      })
+      expect(JSON.parse(String(payload.channel.settings))).toMatchObject({
+        disable_video_understanding: true,
+        retry_zero_output: true,
+        custom_option: 'preserved',
+      })
+    }
+  )
+
+  test('turning the switch off removes only its setting', () => {
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        JSON.stringify({
+          disable_video_understanding: true,
+          retry_zero_output: true,
+          custom_option: 'preserved',
+        })
+      )
+    )
+    const payload = transformFormDataToCreatePayload({
+      ...form,
+      disable_video_understanding: false,
+    })
+    const settings = JSON.parse(String(payload.channel.settings))
+    expect(settings).not.toHaveProperty('disable_video_understanding')
+    expect(settings).toMatchObject({
+      retry_zero_output: true,
+      custom_option: 'preserved',
+    })
   })
 })

@@ -2,10 +2,13 @@ package middleware
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
@@ -199,4 +202,49 @@ func TestNoAvailableChannelMessageNamesClaimingTaskPlugin(t *testing.T) {
 	generic := noAvailableChannelMessage(plain, "default", "gpt-4o")
 	assert.NotContains(t, generic, "task plugin")
 	assert.Contains(t, generic, "gpt-4o")
+}
+
+func TestVideoUnderstandingDetectionPreservesBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		messages string
+		want     bool
+	}{
+		{"base64 string", `[{"role":"user","content":[{"type":"video_url","video_url":"data:video/mp4;base64,AAAA"}]}]`, true},
+		{"remote URL", `[{"role":"user","content":[{"type":"video_url","video_url":"https://example.com/video.mp4"}]}]`, true},
+		{"uploaded video", `[{"role":"user","content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
+		{"object value", `[{"role":"user","content":[{"type":"video_url","video_url":{"url":"https://example.com/video.mp4"}}]}]`, true},
+		{"duplicate content key", `[{"role":"user","content":"text","content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
+		{"duplicate type key", `[{"role":"user","content":[{"type":"text","type":"video_url","video_url":"ms://video"}]}]`, true},
+		{"case-insensitive envelope", `[{"role":"user","Content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
+		{"historical message", `[{"role":"user","content":[{"type":"video_url","video_url":"ms://video"}]},{"role":"assistant","content":"red"},{"role":"user","content":"explain"}]`, true},
+		{"type alone", `[{"role":"user","content":[{"type":"video_url"}]}]`, true},
+		{"plain text", `[{"role":"user","content":"type: video_url"}]`, false},
+		{"text block", `[{"role":"user","content":[{"type":"text","text":"video_url"}]}]`, false},
+		{"image", `[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]`, false},
+		{"nested text metadata", `[{"role":"user","content":[{"type":"text","metadata":{"type":"video_url"}}]}]`, false},
+		{"non-array content", `[{"role":"user","content":{"type":"video_url"}}]`, false},
+		{"non-array messages", `{"content":[{"type":"video_url"}]}`, false},
+		{"duplicate messages key", `[],"messages":[{"role":"user","content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
+
+		{"empty", `[]`, false},
+	}
+	for _, path := range []string{"/v1/chat/completions", "/pg/chat/completions", "/v1/videos", "/v1/images/generations"} {
+		for _, tc := range cases {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				body := `{"model":"video-test","group":"default","messages":` + tc.messages + `}`
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				ctx.Request.Header.Set("Content-Type", "application/json")
+				t.Cleanup(func() { common.CleanupBodyStorage(ctx) })
+				req, _, err := getModelRequest(ctx)
+				require.NoError(t, err)
+				want := tc.want && (path == "/v1/chat/completions" || path == "/pg/chat/completions")
+				assert.Equal(t, want, req.hasVideoUnderstanding)
+				remaining, err := io.ReadAll(ctx.Request.Body)
+				require.NoError(t, err)
+				assert.Equal(t, body, string(remaining))
+			})
+		}
+	}
 }

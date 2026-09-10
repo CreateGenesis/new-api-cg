@@ -28,8 +28,9 @@ import (
 )
 
 type ModelRequest struct {
-	Model string `json:"model"`
-	Group string `json:"group,omitempty"`
+	Model                 string `json:"model"`
+	Group                 string `json:"group,omitempty"`
+	hasVideoUnderstanding bool
 }
 
 func Distribute() func(c *gin.Context) {
@@ -45,6 +46,9 @@ func Distribute() func(c *gin.Context) {
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
+		}
+		if modelRequest.hasVideoUnderstanding {
+			constraints.AddFilter(taskdto.ChannelFilter{Kind: taskdto.FilterVideoUnderstanding})
 		}
 		if pin, found, overridden := constraints.ResolvedPin(); found {
 			for _, lost := range overridden {
@@ -343,9 +347,47 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	c.Request.Body = io.NopCloser(storage)
 
 	return &ModelRequest{
-		Model: model,
-		Group: group,
+		Model:                 model,
+		Group:                 group,
+		hasVideoUnderstanding: (c.Request.URL.Path == "/v1/chat/completions" || c.Request.URL.Path == "/pg/chat/completions") && containsVideoUnderstanding(requestBody),
 	}, nil
+}
+
+// containsVideoUnderstanding inspects content types only; video URLs and large
+// base64 payloads stay untouched, including videos in earlier messages.
+func containsVideoUnderstanding(body []byte) bool {
+	// Inspect every occurrence of the envelope keys so duplicate JSON keys
+	// cannot hide video blocks from selection while the relay sees them.
+	values := []gjson.Result{gjson.ParseBytes(body)}
+	for _, field := range []string{"messages", "content"} {
+		var next []gjson.Result
+		for _, object := range values {
+			if !object.IsObject() {
+				continue
+			}
+			object.ForEach(func(key, value gjson.Result) bool {
+				if strings.EqualFold(key.Str, field) && value.IsArray() {
+					next = append(next, value.Array()...)
+				}
+				return true
+			})
+		}
+		values = next
+	}
+	for _, part := range values {
+		if !part.IsObject() {
+			continue
+		}
+		found := false
+		part.ForEach(func(key, value gjson.Result) bool {
+			found = key.Str == "type" && value.Str == "video_url"
+			return !found
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 func countTopLevelJSONKey(data []byte, target string) int {
@@ -507,6 +549,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			return nil, false, err
 		}
 		modelRequest.Model = req.Model
+		modelRequest.hasVideoUnderstanding = req.hasVideoUnderstanding
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
 		//wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01
@@ -564,6 +607,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		}
 		modelRequest.Model = req.Model
 		modelRequest.Group = req.Group
+		modelRequest.hasVideoUnderstanding = req.hasVideoUnderstanding
 		common.SetContextKey(c, constant.ContextKeyTokenGroup, modelRequest.Group)
 	}
 

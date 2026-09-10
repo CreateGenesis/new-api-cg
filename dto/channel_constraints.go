@@ -38,6 +38,7 @@ type ChannelFilterKind string
 const (
 	FilterRequestPath        ChannelFilterKind = "request_path"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
+	FilterVideoUnderstanding ChannelFilterKind = "video_understanding"
 )
 
 type ChannelFilter struct {
