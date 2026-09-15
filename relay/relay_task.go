@@ -422,6 +422,11 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		return
 	}
 
+	defer func() {
+		if taskResp == nil {
+			respBody = service.TaskResponseModelInfo(originTask).RewriteResponseModelJSON(respBody)
+		}
+	}()
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
 
 	// Gemini/Vertex 支持实时查询：用户 fetch 时直接从上游拉取最新状态

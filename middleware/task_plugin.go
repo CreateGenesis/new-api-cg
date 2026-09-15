@@ -1226,7 +1226,12 @@ func renderTaskPluginQuery(
 		time.Since(renderStarted).Milliseconds(),
 	)
 	c.Abort()
-	c.JSON(http.StatusOK, result)
+	response, err := service.RewriteTaskResponseModels(result, tasks)
+	if err != nil {
+		abortTaskPluginRouteError(c, http.StatusInternalServerError)
+		return
+	}
+	c.Data(http.StatusOK, "application/json", response)
 }
 
 // RespondTaskPluginError gives a pinned plugin a sanitized error DTO and writes

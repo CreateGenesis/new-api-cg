@@ -196,6 +196,7 @@ import {
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import { ModelMappingEditor } from '../model-mapping-editor'
+import { ResponseModelMappingFields } from '../response-model-mapping-fields'
 import {
   ChannelAdvancedSection,
   ChannelApiAccessSection,
@@ -1174,7 +1175,10 @@ export function ChannelMutateDrawer({
     formErrors.azure_responses_version
   )
   const modelsHaveErrors = Boolean(
-    formErrors.models || formErrors.group || formErrors.model_mapping
+    formErrors.models ||
+    formErrors.group ||
+    formErrors.model_mapping ||
+    formErrors.response_model_mapping
   )
   const advancedHaveErrors =
     hasAdvancedSettingsErrors(formErrors) || Boolean(formErrors.advanced_custom)
@@ -4214,6 +4218,11 @@ export function ChannelMutateDrawer({
                               )}
                             />
                           </div>
+
+                          <ResponseModelMappingFields
+                            sourceModelOptions={currentModelsArray}
+                            disabled={isSubmitting || sensitiveLocked}
+                          />
 
                           <div className='border-border/60 rounded-lg border p-4'>
                             <FormField

@@ -1358,6 +1358,9 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if err := channelOtherSettings.ResponseModelMapping.Validate(); err != nil {
+		return err
+	}
 	if err := channelOtherSettings.ValidateToolLossPolicy(); err != nil {
 		return err
 	}

@@ -319,6 +319,7 @@ func serveTaskPluginProtocol(
 		protocolRequest.Stream,
 	)
 
+	defer relaycommon.WrapResponseModelWriter(c, outcome.RelayInfo).Finish()
 	createdAt := outcome.Task.CreatedAt
 	if createdAt == 0 {
 		createdAt = outcome.Task.SubmitTime
@@ -949,6 +950,7 @@ func retrieveTaskPluginResponse(c *gin.Context, deps pluginProtocolBridgeDeps) {
 		return
 	}
 
+	defer relaycommon.WrapResponseModelWriter(c, service.TaskResponseModelInfo(task)).Finish()
 	plugin, generation, ok := deps.resolvePlugin(task.Platform)
 	if !ok || plugin == nil {
 		writeTaskPluginResponseNotFound(c, responseID, "no_plugin")

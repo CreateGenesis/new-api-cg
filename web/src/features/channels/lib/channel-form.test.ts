@@ -1345,3 +1345,61 @@ describe('video understanding channel setting', () => {
     })
   })
 })
+
+describe('channel response model mapping settings', () => {
+  test('loads old channels as disabled and supports an empty enabled mapping', () => {
+    const form = transformChannelToFormDefaults(testChannel('{}'))
+    expect(form.response_model_mapping_enabled).toBe(false)
+    form.response_model_mapping_enabled = true
+    const payload = transformFormDataToCreatePayload(form)
+    expect(
+      JSON.parse(String(payload.channel.settings)).response_model_mapping
+    ).toEqual({ enabled: true, mapping: {} })
+  })
+
+  test('round-trips multiple mappings while disabled and preserves other settings', () => {
+    const configuration = {
+      enabled: false,
+      mapping: { foo: 'public-foo', bar: 'public-bar' },
+    }
+    const form = transformChannelToFormDefaults(
+      testChannel(
+        JSON.stringify({
+          response_model_mapping: configuration,
+          custom_extension: 'keep',
+        })
+      )
+    )
+    const payload = transformFormDataToCreatePayload(form)
+    const settings = JSON.parse(String(payload.channel.settings))
+    expect(settings.response_model_mapping).toEqual(configuration)
+    expect(settings.custom_extension).toBe('keep')
+    expect(form.response_model_mapping_enabled).toBe(false)
+  })
+
+  test.each([
+    '[]',
+    '{"foo":7}',
+    '{"foo":null}',
+    '{"foo":" "}',
+    '{" ":"bar"}',
+    '{',
+  ])('rejects invalid response mappings %s', (mapping) => {
+    const result = channelFormSchema.safeParse({
+      ...CHANNEL_FORM_DEFAULT_VALUES,
+      name: 'test',
+      models: 'foo',
+      key: 'test',
+      group: ['default'],
+      response_model_mapping: mapping,
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(
+        result.error.issues.some(
+          (issue) => issue.path[0] === 'response_model_mapping'
+        )
+      ).toBe(true)
+    }
+  })
+})

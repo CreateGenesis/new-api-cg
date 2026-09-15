@@ -74,7 +74,27 @@ const (
 	AwsKeyTypeApiKey AwsKeyType = "api_key"
 )
 
+// ResponseModelMappingSettings changes only the model identity returned to clients.
+// Mapping keys are original client request names, not upstream model names.
+type ResponseModelMappingSettings struct {
+	Enabled bool              `json:"enabled,omitempty"`
+	Mapping map[string]string `json:"mapping,omitempty"`
+}
+
+func (s *ResponseModelMappingSettings) Validate() error {
+	if s == nil {
+		return nil
+	}
+	for source, target := range s.Mapping {
+		if strings.TrimSpace(source) == "" || strings.TrimSpace(target) == "" {
+			return fmt.Errorf("response_model_mapping: model names must not be blank")
+		}
+	}
+	return nil
+}
+
 type ChannelOtherSettings struct {
+	ResponseModelMapping *ResponseModelMappingSettings `json:"response_model_mapping,omitempty"`
 	// ToolLossPolicy opts into conversion rejection: allow, safe, or strict.
 	ToolLossPolicy                        string                             `json:"tool_loss_policy,omitempty"`
 	AzureResponsesVersion                 string                             `json:"azure_responses_version,omitempty"`

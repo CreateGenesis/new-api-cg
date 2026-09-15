@@ -308,6 +308,29 @@ export const channelFormSchema = z
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
     group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
+    response_model_mapping_enabled: z.boolean().optional(),
+    response_model_mapping: z
+      .string()
+      .optional()
+      .refine((value) => {
+        if (!value?.trim()) return true
+        try {
+          const mapping: unknown = JSON.parse(value)
+          return (
+            mapping !== null &&
+            typeof mapping === 'object' &&
+            !Array.isArray(mapping) &&
+            Object.entries(mapping).every(
+              ([source, target]) =>
+                source.trim() !== '' &&
+                typeof target === 'string' &&
+                target.trim() !== ''
+            )
+          )
+        } catch {
+          return false
+        }
+      }, 'Response model mapping must be a JSON object with non-blank model names'),
     model_mapping: z
       .string()
       .optional()
@@ -944,6 +967,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   openai_organization: '',
   models: '',
   group: ['default'],
+  response_model_mapping_enabled: false,
+  response_model_mapping: '',
   model_mapping: '',
   priority: 0,
   weight: 0,
@@ -1117,6 +1142,8 @@ export function transformChannelToFormDefaults(
   }
 
   // Parse type-specific settings from settings field
+  let responseModelMappingEnabled = false
+  let responseModelMapping = ''
   let vertexKeyType: 'json' | 'api_key' = 'json'
   let azureResponsesVersion = ''
   let isEnterpriseAccount = false
@@ -1182,6 +1209,18 @@ export function transformChannelToFormDefaults(
   if (channel.settings) {
     try {
       const parsed = JSON.parse(channel.settings)
+      if (
+        parsed.response_model_mapping &&
+        typeof parsed.response_model_mapping === 'object'
+      ) {
+        responseModelMappingEnabled =
+          parsed.response_model_mapping.enabled === true
+        responseModelMapping = JSON.stringify(
+          parsed.response_model_mapping.mapping || {},
+          null,
+          2
+        )
+      }
       vertexKeyType = parsed.vertex_key_type || 'json'
       azureResponsesVersion = parsed.azure_responses_version || ''
       isEnterpriseAccount = parsed.openrouter_enterprise === true
@@ -1478,6 +1517,8 @@ export function transformChannelToFormDefaults(
     openai_organization: channel.openai_organization || '',
     models: channel.models || '',
     group: parseGroups(channel.group || 'default'),
+    response_model_mapping_enabled: responseModelMappingEnabled,
+    response_model_mapping: responseModelMapping,
     model_mapping: channel.model_mapping || '',
     priority: channel.priority || 0,
     weight: channel.weight || 0,
@@ -1672,6 +1713,16 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       // eslint-disable-next-line no-console
       console.error('Failed to parse existing settings:', error)
     }
+  }
+
+  const responseMapping = formData.response_model_mapping?.trim()
+  if (formData.response_model_mapping_enabled || responseMapping) {
+    settingsObj.response_model_mapping = {
+      enabled: formData.response_model_mapping_enabled === true,
+      mapping: responseMapping ? JSON.parse(responseMapping) : {},
+    }
+  } else {
+    delete settingsObj.response_model_mapping
   }
 
   // Add vertex_key_type for Vertex AI channels (type 41)

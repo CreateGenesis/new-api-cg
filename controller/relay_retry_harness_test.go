@@ -938,7 +938,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 	require.NoError(t, model.InitDB())
 	db := model.DB
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.User{}, &model.Log{}, &model.RelayDebugPayload{}))
 	common.MemoryCacheEnabled = false
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -953,6 +953,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
 	})
 
+	require.NoError(t, db.Create(&model.User{Id: 1, Username: "response-model-user", Group: "default"}).Error)
 	modelName := "kimi-retry-alias"
 	compatibleMapping := fmt.Sprintf(`{"%s":"kimi-k3"}`, modelName)
 	ordinaryMapping := fmt.Sprintf(`{"%s":"k3"}`, modelName)
@@ -977,7 +978,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 			ParamOverride: &compatibleOverride,
 			Priority:      &firstPriority,
 			AutoBan:       &autoBan,
-			OtherSettings: `{"kimi_k3_official_compatibility":true}`,
+			OtherSettings: `{"kimi_k3_official_compatibility":true,"response_model_mapping":{"enabled":true,"mapping":{"kimi-retry-alias":"wrong-first-channel"}}}`,
 		},
 		{
 			Id:            35,
@@ -992,7 +993,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 			ModelMapping:  &ordinaryMapping,
 			Priority:      &secondPriority,
 			AutoBan:       &autoBan,
-			OtherSettings: `{}`,
+			OtherSettings: `{"response_model_mapping":{"enabled":true,"mapping":{"kimi-retry-alias":"public-kimi"}}}`,
 		},
 	}
 	abilities := []model.Ability{
@@ -1027,6 +1028,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set(common.RequestIdKey, "kimi-compatibility-channel-switch")
+	common.SetContextKey(ctx, constant.ContextKeyUserId, 1)
 	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
@@ -1043,5 +1045,7 @@ func TestRelayRetryClearsKimiK3CompatibilityWhenSwitchingChannels(t *testing.T) 
 	assert.Equal(t, upstreamAttempt{Path: "/v1/chat/completions", Model: "k3", Authorization: "Bearer ordinary-channel"}, gotAttempts[1])
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"content":"ok"`)
+	assert.Contains(t, recorder.Body.String(), `"model":"public-kimi"`)
+	assert.NotContains(t, recorder.Body.String(), "wrong-first-channel")
 	assert.NotContains(t, recorder.Body.String(), "invalid_request")
 }

@@ -555,6 +555,9 @@ func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
 }
 
 func (info *RelayInfo) DownstreamModelName(fallback string) string {
+	if name := info.ResponseModelName(); name != "" {
+		return name
+	}
 	if info != nil && info.ChannelMeta != nil && info.IsModelMapped && strings.TrimSpace(info.OriginModelName) != "" {
 		return info.OriginModelName
 	}

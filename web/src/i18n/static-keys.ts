@@ -685,4 +685,5 @@ export const STATIC_I18N_KEYS = [
   'Vendor name and icon must not exceed 128 characters.',
   'Shown',
   'Not shown',
+  'Response model mapping must be a JSON object with non-blank model names',
 ] as const

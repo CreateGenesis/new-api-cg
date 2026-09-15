@@ -301,6 +301,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 
 			relayInfo.BeginUpstreamAttempt(c)
+			responseModelWriter := relaycommon.WrapResponseModelWriter(c, relayInfo)
 			service.BeginRelayDebugAttempt(c, "relay", relayDebugAttemptMeta(c, channel))
 			if modeErr := relaychannel.ValidateChannelRequestMode(relayInfo); modeErr != nil {
 				newAPIError = types.NewError(modeErr, types.ErrorCodeDoRequestFailed)
@@ -315,6 +316,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				default:
 					newAPIError = relayHandler(c, relayInfo)
 				}
+			}
+			if writeErr := responseModelWriter.Finish(); writeErr != nil && newAPIError == nil {
+				newAPIError = types.NewError(writeErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
 			if newAPIError != nil {
 				newAPIError = service.NormalizeViolationFeeError(newAPIError)
@@ -1592,6 +1596,7 @@ func executeTaskSubmissionWith(
 }
 
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
+	defer relaycommon.WrapResponseModelWriter(c, outcome.RelayInfo).Finish()
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	otherRatios := outcome.RelayInfo.PriceData.OtherRatios()
 	if otherRatios == nil {
