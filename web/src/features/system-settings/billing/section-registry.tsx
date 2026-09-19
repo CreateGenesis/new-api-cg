@@ -42,6 +42,7 @@ const getModelDefaults = (settings: BillingSettings) => ({
 
 const getGroupDefaults = (settings: BillingSettings) => ({
   TopupGroupRatio: settings.TopupGroupRatio,
+  GroupSchedulingTolerance: settings.GroupSchedulingTolerance,
   GroupRatio: settings.GroupRatio,
   UserUsableGroups: settings.UserUsableGroups,
   GroupGroupRatio: settings.GroupGroupRatio,

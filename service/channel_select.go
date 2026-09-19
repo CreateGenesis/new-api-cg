@@ -63,17 +63,20 @@ func (s *SameChannelRetryState) Increase() {
 }
 
 type ChannelSelectParam struct {
-	Ctx                 *gin.Context
-	TokenGroup          string
-	ModelName           string
-	RequestPath         string
-	InputTokenEstimates *kitdto.InputTokenEstimates
-	ExcludedChannelIDs  map[int]struct{}
-	MaxPriority         *int64
-	AutoGroupIndex      int
-	AutoGroupSelected   bool
-	ClientRequestMode   types.RequestMode
-	RequestModeFiltered bool
+	// Revalidation keeps the scheduling pool already chosen by distribution.
+	SchedulingAnchor      *model.Channel
+	SchedulingAnchorGroup string
+	Ctx                   *gin.Context
+	TokenGroup            string
+	ModelName             string
+	RequestPath           string
+	InputTokenEstimates   *kitdto.InputTokenEstimates
+	ExcludedChannelIDs    map[int]struct{}
+	MaxPriority           *int64
+	AutoGroupIndex        int
+	AutoGroupSelected     bool
+	ClientRequestMode     types.RequestMode
+	RequestModeFiltered   bool
 }
 
 func ChannelAcceptsRequestMode(channel *model.Channel, requestMode types.RequestMode) bool {
@@ -108,6 +111,15 @@ func (p *ChannelSelectParam) excludeSelectedChannel(channel *model.Channel) {
 	}
 	p.ExcludedChannelIDs[channel.Id] = struct{}{}
 	priority := channel.GetPriority()
+	if channel.SchedulingPriority != nil {
+		priority = *channel.SchedulingPriority
+	} else if p.Ctx != nil {
+		if value, ok := p.Ctx.Get("group_scheduling_decision"); ok {
+			if decision, ok := value.(GroupSchedulingDecision); ok && decision.ChannelID == channel.Id {
+				priority = decision.Priority
+			}
+		}
+	}
 	if p.MaxPriority == nil || priority < *p.MaxPriority {
 		p.MaxPriority = common.GetPointer(priority)
 	}
@@ -169,7 +181,7 @@ func cacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			autoGroup := autoGroups[i]
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s", autoGroup)
 
-			channel, err = model.GetRandomSatisfiedChannelExcludingPriority(autoGroup, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority, filters...)
+			channel, err = selectGroupScheduledChannel(param, autoGroup, filters)
 			if err != nil {
 				return nil, autoGroup, err
 			}
@@ -191,7 +203,7 @@ func cacheGetRandomSatisfiedChannel(param *ChannelSelectParam) (*model.Channel, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelExcludingPriority(param.TokenGroup, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority, filters...)
+		channel, err = selectGroupScheduledChannel(param, param.TokenGroup, filters)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

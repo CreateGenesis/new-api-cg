@@ -65,6 +65,7 @@ import { GroupRatioVisualEditor } from './group-ratio-visual-editor'
 import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
 
 type GroupFormValues = {
+  GroupSchedulingTolerance: string
   GroupRatio: string
   TopupGroupRatio: string
   UserUsableGroups: string
@@ -164,6 +165,58 @@ export const GroupRatioForm = memo(function GroupRatioForm({
             {isSaving ? t('Saving...') : t('Save group ratios')}
           </Button>
         </SettingsPageActionsPortal>
+        <FormField
+          control={form.control}
+          name='GroupSchedulingTolerance'
+          render={({ field }) => {
+            const thresholds = safeJsonParse<Record<string, number>>(
+              field.value,
+              { fallback: {}, silent: true }
+            )
+            return (
+              <FormItem>
+                <FormLabel>{t('Group scheduling thresholds')}</FormLabel>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Channels within this difference from the fastest channel are compared by cost. Default: 5 seconds.'
+                  )}
+                </p>
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  {groupNames.map((group) => (
+                    <div key={group}>
+                      <label
+                        htmlFor={`scheduling-threshold-${group}`}
+                        className='text-sm'
+                      >
+                        {group} · {t('Seconds')}
+                      </label>
+                      <Input
+                        id={`scheduling-threshold-${group}`}
+                        type='number'
+                        min={0}
+                        max={600}
+                        step={0.001}
+                        value={(thresholds[group] ?? 5000) / 1000}
+                        disabled={isSaving}
+                        onChange={(event) =>
+                          field.onChange(
+                            JSON.stringify({
+                              ...thresholds,
+                              [group]: Math.round(
+                                Number(event.target.value) * 1000
+                              ),
+                            })
+                          )
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+                <FormMessage />
+              </FormItem>
+            )
+          }}
+        />
         {editMode === 'visual' ? (
           <div className='space-y-6'>
             <GroupRatioVisualEditor

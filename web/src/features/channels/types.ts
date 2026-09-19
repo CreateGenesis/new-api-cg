@@ -237,6 +237,14 @@ export interface ChannelOtherSettings {
     retry_interval_ms?: number
     status_codes?: string
   }
+  group_scheduling?: {
+    enabled: boolean
+    groups: string[]
+    cost_factor?: number
+    probe_models: string[]
+    interval_seconds?: number
+    timeout_seconds?: number
+  }
   input_token_routing?: {
     enabled?: boolean
     glm_5_2_mode?: boolean

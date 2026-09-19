@@ -318,6 +318,11 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case operation_setting.GroupSchedulingToleranceKey:
+		if err := operation_setting.ValidateGroupSchedulingTolerance(option.Value.(string)); err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
 	case "GroupRatio":
 		err = ratio_setting.CheckGroupRatio(option.Value.(string))
 		if err != nil {

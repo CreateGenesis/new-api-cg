@@ -141,6 +141,9 @@ func Distribute() func(c *gin.Context) {
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for groupIndex, g := range autoGroups {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+									if model.GroupSchedulingApplies(preferred, g, modelRequest.Model) {
+										break
+									}
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									common.SetContextKey(c, constant.ContextKeyAutoGroupIndex, groupIndex)
@@ -150,7 +153,7 @@ func Distribute() func(c *gin.Context) {
 									break
 								}
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) && !model.GroupSchedulingApplies(preferred, usingGroup, modelRequest.Model) {
 							channel = preferred
 							selectGroup = usingGroup
 							affinityUsable = true
@@ -200,6 +203,14 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+		probeGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+		if probeGroup == "auto" {
+			probeGroup = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+		}
+		if !model.GroupSchedulingAvailable(channel, probeGroup, modelRequest.Model) {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "channel model probe is unavailable", types.ErrorCodeGetChannelFailed)
+			return
+		}
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {

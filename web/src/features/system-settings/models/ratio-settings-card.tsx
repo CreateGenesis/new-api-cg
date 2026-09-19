@@ -131,6 +131,22 @@ const createModelSchema = (t: Translate) =>
 
 const createGroupSchema = (t: Translate) =>
   z.object({
+    GroupSchedulingTolerance: createJsonStringField(t, {
+      predicate: (parsed) =>
+        parsed !== null &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        Object.entries(parsed).every(
+          ([key, value]) =>
+            key.trim() &&
+            typeof value === 'number' &&
+            Number.isInteger(value) &&
+            value >= 0 &&
+            value <= 600000
+        ),
+      predicateMessage:
+        'Group thresholds must be between 0 and 600000 milliseconds',
+    }),
     GroupRatio: createJsonStringField(t),
     TopupGroupRatio: createJsonStringField(t),
     UserUsableGroups: createJsonStringField(t),
@@ -238,6 +254,9 @@ export function RatioSettingsCard({
   )
 
   const groupNormalizedDefaults = useRef({
+    GroupSchedulingTolerance: normalizeJsonString(
+      groupDefaults.GroupSchedulingTolerance
+    ),
     GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
     TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
     UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
@@ -277,6 +296,9 @@ export function RatioSettingsCard({
     mode: 'onChange',
     defaultValues: {
       ...groupDefaults,
+      GroupSchedulingTolerance: formatJsonForTextarea(
+        groupDefaults.GroupSchedulingTolerance
+      ),
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
@@ -325,6 +347,9 @@ export function RatioSettingsCard({
 
   useEffect(() => {
     groupNormalizedDefaults.current = {
+      GroupSchedulingTolerance: normalizeJsonString(
+        groupDefaults.GroupSchedulingTolerance
+      ),
       GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
       TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
       UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
@@ -339,6 +364,9 @@ export function RatioSettingsCard({
 
     groupForm.reset({
       ...groupDefaults,
+      GroupSchedulingTolerance: formatJsonForTextarea(
+        groupDefaults.GroupSchedulingTolerance
+      ),
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
@@ -402,6 +430,9 @@ export function RatioSettingsCard({
   const saveGroupRatios = useCallback(
     async (values: GroupFormValues) => {
       const normalized = {
+        GroupSchedulingTolerance: normalizeJsonString(
+          values.GroupSchedulingTolerance
+        ),
         GroupRatio: normalizeJsonString(values.GroupRatio),
         TopupGroupRatio: normalizeJsonString(values.TopupGroupRatio),
         UserUsableGroups: normalizeJsonString(values.UserUsableGroups),

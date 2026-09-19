@@ -89,6 +89,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'status_code_retry_status_codes',
   'response_header_timeout_enabled',
   'response_header_timeout_seconds',
+  'group_scheduling',
   'input_token_routing_enabled',
   'input_token_routing_estimation_mode',
   'input_token_routing_ranges',

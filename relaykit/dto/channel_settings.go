@@ -94,6 +94,7 @@ func (s *ResponseModelMappingSettings) Validate() error {
 }
 
 type ChannelOtherSettings struct {
+	GroupScheduling      *GroupSchedulingSettings      `json:"group_scheduling,omitempty"`
 	ResponseModelMapping *ResponseModelMappingSettings `json:"response_model_mapping,omitempty"`
 	// ToolLossPolicy opts into conversion rejection: allow, safe, or strict.
 	ToolLossPolicy                        string                             `json:"tool_loss_policy,omitempty"`

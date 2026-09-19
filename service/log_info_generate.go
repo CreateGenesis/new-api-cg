@@ -97,6 +97,9 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		other.SetAdmin("local_count_tokens", true)
 	}
 
+	if value, exists := ctx.Get("group_scheduling_decision"); exists && value != nil {
+		other.SetAdmin("group_scheduling", value)
+	}
 	AppendChannelAffinityAdminInfo(ctx, other)
 }
 

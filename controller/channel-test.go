@@ -37,6 +37,7 @@ import (
 )
 
 type testResult struct {
+	ttft        time.Duration
 	context     *gin.Context
 	localErr    error
 	newAPIError *types.NewAPIError
@@ -71,6 +72,10 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, keyIndex *int) testResult {
+	return runChannelTest(ctx, channel, testUserID, testModel, endpointType, isStream, keyIndex, false)
+}
+
+func runChannelTest(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, keyIndex *int, schedulingProbe bool) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -234,6 +239,11 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	if schedulingProbe {
+		if err := prepareGroupProbeRequest(request); err != nil {
+			return testResult{localErr: err}
+		}
+	}
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -297,15 +307,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	//// 创建一个用于日志的 info 副本，移除 ApiKey
 	//logInfo := info
-	//logInfo.ApiKey = ""
-	common.SysLog(fmt.Sprintf("testing channel %d with model %s , info %+v ", channel.Id, testModel, info.ToString()))
-
-	priceData, err := helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
-	if err != nil {
-		return testResult{
-			context:     c,
-			localErr:    err,
-			newAPIError: types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest)),
+	var priceData hosttypes.PriceData
+	if !schedulingProbe {
+		common.SysLog(fmt.Sprintf("testing channel %d with model %s , info %+v ", channel.Id, testModel, info.ToString()))
+		priceData, err = helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
+		if err != nil {
+			return testResult{context: c, localErr: err, newAPIError: types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))}
 		}
 	}
 
@@ -500,6 +507,18 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			localErr:    bodyErr,
 			newAPIError: types.NewOpenAIError(bodyErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
 		}
+	}
+	if schedulingProbe {
+		if err := ctx.Err(); err != nil {
+			return testResult{localErr: err}
+		}
+		if info.StreamStatus.IsInterrupted() {
+			return testResult{localErr: errors.New("probe stream did not complete successfully")}
+		}
+		if !info.HasSendResponse() {
+			return testResult{localErr: errors.New("probe did not receive a first stream response")}
+		}
+		return testResult{ttft: info.FirstResponseTime.Sub(info.StartTime)}
 	}
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens

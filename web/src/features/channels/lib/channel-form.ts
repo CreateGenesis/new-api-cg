@@ -298,6 +298,23 @@ function overloadPayload(
   }
 }
 
+export const groupSchedulingSchema = z.object({
+  enabled: z.boolean(),
+  groups: z.array(z.string()),
+  cost_factor: z.number().finite().min(0),
+  probe_models: z.array(z.string()),
+  interval_seconds: z.number().int().min(1).max(86400),
+  timeout_seconds: z.number().int().min(1).max(600),
+})
+export const defaultGroupScheduling: z.infer<typeof groupSchedulingSchema> = {
+  enabled: false,
+  groups: [],
+  cost_factor: 1,
+  probe_models: [],
+  interval_seconds: 30,
+  timeout_seconds: 30,
+}
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -308,6 +325,7 @@ export const channelFormSchema = z
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
     group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
+    group_scheduling: groupSchedulingSchema.optional(),
     response_model_mapping_enabled: z.boolean().optional(),
     response_model_mapping: z
       .string()
@@ -491,6 +509,33 @@ export const channelFormSchema = z
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    const scheduling = data.group_scheduling
+    if (scheduling?.enabled) {
+      if (
+        !scheduling.groups.length ||
+        scheduling.groups.some((group) => !data.group.includes(group))
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['group_scheduling', 'groups'],
+          message: 'Select groups assigned to this channel',
+        })
+      }
+      const models = new Set(
+        data.models.split(',').map((model) => model.trim())
+      )
+      if (
+        !scheduling.probe_models.length ||
+        scheduling.probe_models.some((model) => !models.has(model))
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['group_scheduling', 'probe_models'],
+          message: 'Select probe models supported by this channel',
+        })
+      }
+    }
+
     if (
       [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_TASK_PLUGIN].includes(
         data.type
@@ -967,6 +1012,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   openai_organization: '',
   models: '',
   group: ['default'],
+  group_scheduling: defaultGroupScheduling,
   response_model_mapping_enabled: false,
   response_model_mapping: '',
   model_mapping: '',
@@ -1204,11 +1250,20 @@ export function transformChannelToFormDefaults(
   let deepSeekV4RequestSanitizationEnabled = false
   let moonshotQuotaAutoDisableEnabled = false
   let moonshotMonthlyNoSubscriptionEnabled = false
+  let groupScheduling = defaultGroupScheduling
   let advancedCustom = ''
 
   if (channel.settings) {
     try {
       const parsed = JSON.parse(channel.settings)
+      const scheduling = groupSchedulingSchema.safeParse({
+        ...defaultGroupScheduling,
+        ...parsed.group_scheduling,
+        cost_factor: parsed.group_scheduling?.cost_factor ?? 1,
+        interval_seconds: parsed.group_scheduling?.interval_seconds || 30,
+        timeout_seconds: parsed.group_scheduling?.timeout_seconds || 30,
+      })
+      if (scheduling.success) groupScheduling = scheduling.data
       if (
         parsed.response_model_mapping &&
         typeof parsed.response_model_mapping === 'object'
@@ -1517,6 +1572,7 @@ export function transformChannelToFormDefaults(
     openai_organization: channel.openai_organization || '',
     models: channel.models || '',
     group: parseGroups(channel.group || 'default'),
+    group_scheduling: groupScheduling,
     response_model_mapping_enabled: responseModelMappingEnabled,
     response_model_mapping: responseModelMapping,
     model_mapping: channel.model_mapping || '',
@@ -1715,6 +1771,10 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
+  if (formData.group_scheduling?.enabled || settingsObj.group_scheduling) {
+    settingsObj.group_scheduling =
+      formData.group_scheduling ?? defaultGroupScheduling
+  }
   const responseMapping = formData.response_model_mapping?.trim()
   if (formData.response_model_mapping_enabled || responseMapping) {
     settingsObj.response_model_mapping = {

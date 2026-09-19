@@ -19,6 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
+  'Select groups assigned to this channel',
+  'Select probe models supported by this channel',
+  'Group thresholds must be between 0 and 600000 milliseconds',
   'Account deletion',
   // Model management and metadata synchronization
   'No matching channels',

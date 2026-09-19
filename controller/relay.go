@@ -642,6 +642,24 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *servic
 					return selectChannelByInputTokenRouting(c, info, selectParam)
 				}
 			}
+			if selectParam != nil && !requestPinsChannel(c) {
+				group := selectParam.TokenGroup
+				if group == "auto" {
+					group = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+				}
+				if model.GroupSchedulingApplies(currentChannel, group, selectParam.ModelName) {
+					anchor := *currentChannel
+					if value, ok := c.Get("group_scheduling_decision"); ok {
+						if decision, ok := value.(service.GroupSchedulingDecision); ok && decision.ChannelID == anchor.Id {
+							anchor.SchedulingPriority = common.GetPointer(decision.Priority)
+						}
+					}
+					selectParam.SchedulingAnchor, selectParam.SchedulingAnchorGroup = &anchor, group
+					channel, channelErr := selectChannelByInputTokenRouting(c, info, selectParam)
+					selectParam.SchedulingAnchor = nil
+					return channel, channelErr
+				}
+			}
 			if selectParam == nil || selectParam.InputTokenEstimates == nil {
 				return currentChannel, nil
 			}
@@ -676,6 +694,18 @@ func getEligibleChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam
 				return nil, channelRequestModeError(info.ClientRequestMode, false)
 			}
 			return channel, channelErr
+		}
+		group := selectParam.TokenGroup
+		if group == "auto" {
+			group = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+		}
+		if !model.GroupSchedulingAvailable(channel, group, selectParam.ModelName) {
+			if requestPinsChannel(c) {
+				return nil, types.NewErrorWithStatusCode(errors.New("channel model probe is unavailable"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+			}
+			selectParam.ExcludeUnavailableChannel(channel)
+			service.ClearRequestChannelAffinitySelection(c)
+			continue
 		}
 		if info.ClientRequestMode == types.RequestModeUnknown || service.ChannelAcceptsRequestMode(channel, info.ClientRequestMode) {
 			return channel, nil

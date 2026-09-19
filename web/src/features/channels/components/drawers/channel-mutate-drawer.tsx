@@ -207,6 +207,7 @@ import {
   ChannelModelsSection,
   SimulatedModelCacheFields,
 } from './sections'
+import { ChannelGroupSchedulingSection } from './sections/channel-group-scheduling-section'
 
 type ChannelMutateDrawerProps = {
   open: boolean
@@ -364,6 +365,7 @@ const SENSITIVE_FORM_FIELDS = [
   'status_code_retry_status_codes',
   'response_header_timeout_enabled',
   'response_header_timeout_seconds',
+  'group_scheduling',
   'input_token_routing_enabled',
   'input_token_routing_estimation_mode',
   'input_token_routing_ranges',
@@ -406,6 +408,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     hasConfiguredOverrideValue(values.status_code_mapping) ||
     values.tag?.trim() ||
     values.remark?.trim() ||
+    values.group_scheduling?.enabled ||
     values.priority ||
     values.weight ||
     values.proxy?.trim() ||
@@ -4382,6 +4385,12 @@ export function ChannelMutateDrawer({
                               )}
                             />
                           </div>
+
+                          <ChannelGroupSchedulingSection
+                            form={form}
+                            channelId={channelId}
+                            disabled={sensitiveLocked || isSubmitting}
+                          />
 
                           <div className='flex scroll-mt-4 flex-col gap-4 border-t pt-4'>
                             <SubHeading
