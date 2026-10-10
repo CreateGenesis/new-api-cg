@@ -80,12 +80,67 @@ type ChannelSelectParam struct {
 	ModelName             string
 	RequestPath           string
 	InputTokenEstimates   *kitdto.InputTokenEstimates
-	ExcludedChannelIDs    map[int]struct{}
-	MaxPriority           *int64
-	AutoGroupIndex        int
-	AutoGroupSelected     bool
-	ClientRequestMode     types.RequestMode
-	RequestModeFiltered   bool
+	// PrepareCandidate runs outside model cache locks, before routing admission.
+	PrepareCandidate    func(*model.Channel) (*kitdto.InputTokenEstimates, error)
+	ExcludedChannelIDs  map[int]struct{}
+	MaxPriority         *int64
+	AutoGroupIndex      int
+	AutoGroupSelected   bool
+	ClientRequestMode   types.RequestMode
+	RequestModeFiltered bool
+}
+
+func (p *ChannelSelectParam) RoutingEstimates() *kitdto.InputTokenEstimates {
+	if p.PrepareCandidate != nil {
+		return nil
+	}
+	return p.InputTokenEstimates
+}
+
+// CandidatePreparationError distinguishes local request preparation from selection failures.
+type CandidatePreparationError struct {
+	Err error
+}
+
+func (e *CandidatePreparationError) Error() string { return e.Err.Error() }
+func (e *CandidatePreparationError) Unwrap() error { return e.Err }
+
+func (p *ChannelSelectParam) CandidateAcceptsInput(channel *model.Channel) (bool, error) {
+	estimates := p.InputTokenEstimates
+	if p.PrepareCandidate != nil {
+		var err error
+		estimates, err = p.PrepareCandidate(channel)
+		if err != nil {
+			return false, &CandidatePreparationError{Err: err}
+		}
+	}
+	return channel.MatchesInputTokenRouting(estimates), nil
+}
+
+// selectPreparedRandomChannel prepares only candidates at the active priority.
+// No decode or image encoding happens while a model cache lock is held.
+func (p *ChannelSelectParam) selectPreparedRandomChannel(group string, excluded map[int]struct{}, filters []dto.ChannelFilter) (*model.Channel, error) {
+	for {
+		channel, err := model.GetRandomSatisfiedChannelExcludingPriority(group, p.ModelName, 0, p.RequestPath, p.RoutingEstimates(), excluded, p.MaxPriority, filters...)
+		if err != nil || channel == nil || p.PrepareCandidate == nil {
+			return channel, err
+		}
+		if !ChannelAcceptsRequestMode(channel, p.ClientRequestMode) {
+			p.RequestModeFiltered = true
+		} else {
+			accepted, err := p.CandidateAcceptsInput(channel)
+			if err != nil {
+				return nil, err
+			}
+			if accepted {
+				return channel, nil
+			}
+		}
+		if excluded == nil {
+			excluded = make(map[int]struct{})
+		}
+		excluded[channel.Id] = struct{}{}
+	}
 }
 
 func (p *ChannelSelectParam) GetRetry() int {
@@ -287,6 +342,7 @@ func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []strin
 // a NewAPIError. Message is set instead of MessageID when the text is a fixed
 // error code that clients match on.
 type ChannelSelectError struct {
+	Cause      error
 	StatusCode int
 	Code       types.ErrorCode
 	MessageID  string
@@ -342,12 +398,19 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			affinitySatisfied := false
 			if _, excluded := retry.ExcludedChannelIDs[preferredChannelID]; !excluded && err == nil && preferred != nil &&
 				preferred.Status == common.ChannelStatusEnabled && ChannelAcceptsRequestMode(preferred, retry.ClientRequestMode) &&
-				preferred.MatchesInputTokenRouting(retry.InputTokenEstimates) {
+				(retry.PrepareCandidate != nil || preferred.MatchesInputTokenRouting(retry.InputTokenEstimates)) {
 				filters := constraints.Filters
 				if retry.RequestPath != "" {
 					filters = append(append([]dto.ChannelFilter{}, filters...), dto.ChannelFilter{Kind: dto.FilterRequestPath, RequestPath: retry.RequestPath})
 				}
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, filters)
+			}
+			if affinitySatisfied && retry.PrepareCandidate != nil {
+				accepted, prepareErr := retry.CandidateAcceptsInput(preferred)
+				if prepareErr != nil {
+					return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Message: prepareErr.Error(), Cause: prepareErr}
+				}
+				affinitySatisfied = accepted
 			}
 			if affinitySatisfied {
 				if usingGroup == "auto" {
@@ -390,7 +453,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 			}
 			return nil, selectGroup, &ChannelSelectError{
-				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorGetChannelFailed,
+				Cause: err, StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorGetChannelFailed,
 				Params: map[string]any{"Group": showGroup, "Model": modelName, "Error": err.Error()},
 			}
 		}

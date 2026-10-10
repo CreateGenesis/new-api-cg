@@ -1,0 +1,77 @@
+{
+  "binary_sha256": "6418481df3680b908cc281e0308a443352ed98bf3b08a2bc255d4bba83c0a2a1",
+  "scope": "integrated gateway -> FFprobe/FFmpeg -> real K3",
+  "gateway_exit_code": 0,
+  "success": true,
+  "disposable_ram_database_removed": true,
+  "checks": [
+    {
+      "name": "final binary RootAuth monitoring and atomic settings update",
+      "version_before": 1,
+      "version_after": 2
+    },
+    {
+      "name": "gateway video transformed and answered by real Kimi",
+      "status": 200,
+      "object": "chat.completion",
+      "model": "k3",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 10654,
+        "completion_tokens": 710,
+        "total_tokens": 11364,
+        "cached_tokens": 10654,
+        "completion_tokens_details": {
+          "reasoning_tokens": 451
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 10654
+        }
+      },
+      "seconds": 21.776,
+      "exact_codes": 32,
+      "ground_truth_codes": 32
+    },
+    {
+      "name": "gateway real Kimi incremental SSE",
+      "status": 200,
+      "object": "chat.completion.chunk",
+      "chunk_count": 18,
+      "done": true,
+      "content": "OK",
+      "usage": {
+        "prompt_tokens": 10623,
+        "completion_tokens": 41,
+        "total_tokens": 10664,
+        "cached_tokens": 10623,
+        "completion_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 10623
+        }
+      },
+      "first_event_seconds": 7.069,
+      "total_seconds": 8.917
+    },
+    {
+      "name": "integrated extraction and full resource release"
+    },
+    {
+      "name": "one consume log per request with upstream tokens",
+      "rows": 2,
+      "tokens_and_quota": [
+        [
+          10654,
+          710,
+          11364
+        ],
+        [
+          10623,
+          41,
+          10664
+        ]
+      ]
+    }
+  ]
+}

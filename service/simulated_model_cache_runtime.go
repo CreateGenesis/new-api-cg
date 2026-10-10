@@ -139,6 +139,7 @@ type SimulatedModelCachePartialMatchResult struct {
 }
 
 type SimulatedModelCacheRoutingPreparation struct {
+	BodyDigest [32]byte
 	ChannelID  int
 	Model      string
 	PromptText string

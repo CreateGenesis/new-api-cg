@@ -1407,6 +1407,17 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("status_code_retry.status_codes: %w", err)
 		}
 	}
+	if video := channelOtherSettings.VideoCompatibility; video != nil {
+		if err := video.Validate(); err != nil {
+			return err
+		}
+		if video.Enabled && channelOtherSettings.DisableVideoUnderstanding {
+			return fmt.Errorf("video_compatibility cannot be enabled when video understanding is disabled")
+		}
+		if video.Enabled && channel.Type == constant.ChannelTypeTaskPlugin {
+			return fmt.Errorf("video_compatibility is unavailable for task plugin channels")
+		}
+	}
 	if channelOtherSettings.ResponseHeaderTimeout != nil {
 		if err := channelOtherSettings.ResponseHeaderTimeout.Validate(); err != nil {
 			return fmt.Errorf("response_header_timeout.%w", err)

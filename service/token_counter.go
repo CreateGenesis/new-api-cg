@@ -28,8 +28,8 @@ func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, strea
 	img := tokenkit.Image{Detail: fileMeta.Detail}
 	// Reading the size may download a URL image; operators can turn that off,
 	// and the estimate then assumes a typical image size.
-	measure := constant.GetMediaToken && (stream || constant.GetMediaTokenNotStream)
-	if !measure || !tokenkit.ImageNeedsSize(model, img.Detail) {
+	measure := c.GetBool("video_effective_images") || constant.GetMediaToken && (stream || constant.GetMediaTokenNotStream)
+	if !measure || !c.GetBool("video_effective_images") && !tokenkit.ImageNeedsSize(model, img.Detail) {
 		return tokenkit.ImageTokens(model, img), nil
 	}
 

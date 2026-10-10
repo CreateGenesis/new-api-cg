@@ -1,22 +1,34 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 // Claude Sonnet-style tiered expression: standard vs long-context
@@ -516,6 +528,218 @@ func TestBillingSessionReserveWalletTopUpDecrementsBalance(t *testing.T) {
 	userQuota, err := model.GetUserQuota(userID, false)
 	require.NoError(t, err)
 	assert.Equal(t, 450_000, userQuota)
+}
+
+func TestBillingSessionStrictMediaDatabaseMatrix(t *testing.T) {
+	previousTrust := operation_setting.GetQuotaSetting().TrustQuotaUSD
+	operation_setting.GetQuotaSetting().TrustQuotaUSD = .00001
+	t.Cleanup(func() { operation_setting.GetQuotaSetting().TrustQuotaUSD = previousTrust })
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := setupStrictMediaBillingDB(t, dialect)
+			for caseIndex, test := range []struct {
+				name         string
+				subscription bool
+				available    int
+				tokenQuota   int
+				initialTrust bool
+				force        bool
+				reserveFails bool
+				settle       bool
+				rejectRefund bool
+			}{
+				{name: "wallet refund", available: 1000, tokenQuota: 1000},
+				{name: "wallet token rollback", available: 1000, tokenQuota: 130, reserveFails: true},
+				{name: "wallet insufficient", available: 120, tokenQuota: 1000, reserveFails: true},
+				{name: "wallet settlement", available: 1000, tokenQuota: 1000, settle: true},
+				{name: "trusted native becomes strict", available: 1000, tokenQuota: 1000, initialTrust: true},
+				{name: "forced task reservation", available: 1000, tokenQuota: 1000, force: true},
+				{name: "subscription refund", subscription: true, available: 1000, tokenQuota: 1000},
+				{name: "subscription refund transaction", subscription: true, available: 1000, tokenQuota: 1000, rejectRefund: true},
+				{name: "subscription token rollback", subscription: true, available: 1000, tokenQuota: 130, reserveFails: true},
+				{name: "subscription insufficient", subscription: true, available: 120, tokenQuota: 1000, reserveFails: true},
+				{name: "subscription settlement", subscription: true, available: 1000, tokenQuota: 1000, settle: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					user := model.User{Username: fmt.Sprintf("strict-media-%d", caseIndex), AffCode: fmt.Sprintf("strict-media-%d", caseIndex), Quota: test.available, Group: "default"}
+					require.NoError(t, db.Create(&user).Error)
+					token := model.Token{UserId: user.Id, Key: fmt.Sprintf("strict-media-token-%d", caseIndex), RemainQuota: test.tokenQuota}
+					require.NoError(t, db.Create(&token).Error)
+					var subscription model.UserSubscription
+					if test.subscription {
+						plan := model.SubscriptionPlan{Title: "Strict media", TotalAmount: int64(test.available), QuotaResetPeriod: model.SubscriptionResetNever}
+						require.NoError(t, db.Create(&plan).Error)
+						subscription = model.UserSubscription{UserId: user.Id, PlanId: plan.Id, AmountTotal: int64(test.available), Status: "active", StartTime: time.Now().Unix(), EndTime: time.Now().Add(time.Hour).Unix()}
+						require.NoError(t, db.Create(&subscription).Error)
+					}
+					context, _ := gin.CreateTestContext(httptest.NewRecorder())
+					context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+					context.Set("token_quota", test.tokenQuota)
+					info := &relaycommon.RelayInfo{
+						UserId: user.Id, TokenId: token.Id, TokenKey: token.Key,
+						RequestId:       fmt.Sprintf("strict-media-%s-%d", dialect, caseIndex),
+						OriginModelName: "video-model", Request: &dto.GeneralOpenAIRequest{},
+						StrictPreConsume: !test.initialTrust && !test.force, ForcePreConsume: test.force,
+					}
+					info.UserSetting.BillingPreference = "wallet_only"
+					if test.subscription {
+						info.UserSetting.BillingPreference = "subscription_only"
+					}
+					session, apiErr := NewBillingSession(context, info, 100)
+					require.Nil(t, apiErr)
+					initialHeld := 100
+					if test.initialTrust {
+						initialHeld = 0
+						info.StrictPreConsume = true
+					}
+					assert.Equal(t, initialHeld, session.GetPreConsumedQuota(), "strict media and forced tasks bypass trust only when explicitly requested")
+					err := session.Reserve(160)
+					held := 160
+					if test.reserveFails {
+						require.Error(t, err)
+						if test.tokenQuota == 130 {
+							assert.Contains(t, err.Error(), "token remain quota: "+logger.FormatQuota(30), "insufficient token reservation reports its real stored balance")
+						}
+						held = initialHeld
+					} else {
+						require.NoError(t, err)
+					}
+					assert.Equal(t, held, session.GetPreConsumedQuota())
+					assert.Equal(t, held, info.FinalPreConsumedQuota)
+					require.NoError(t, db.First(&user, user.Id).Error)
+					require.NoError(t, db.First(&token, token.Id).Error)
+					assert.Equal(t, test.tokenQuota-held, token.RemainQuota)
+					assert.Equal(t, held, token.UsedQuota)
+					if test.subscription {
+						require.NoError(t, db.First(&subscription, subscription.Id).Error)
+						assert.Equal(t, int64(held), subscription.AmountUsed)
+						assert.Equal(t, test.available, user.Quota, "subscription reservation leaves the wallet unchanged")
+					} else {
+						assert.Equal(t, test.available-held, user.Quota, "a failed funding or token increment keeps the previous wallet reservation")
+					}
+					actual := 0
+					if test.rejectRefund {
+						require.NoError(t, db.Callback().Update().Before("gorm:update").Register("reject_subscription_refund", func(tx *gorm.DB) {
+							if record, ok := tx.Statement.Dest.(*model.SubscriptionPreConsumeRecord); ok && record.Status == "refunded" {
+								tx.AddError(errors.New("refund record write rejected"))
+							}
+						}))
+						assert.Error(t, model.RefundSubscriptionPreConsume(info.RequestId))
+						require.NoError(t, db.Callback().Update().Remove("reject_subscription_refund"))
+						require.NoError(t, db.First(&subscription, subscription.Id).Error)
+						assert.Equal(t, int64(held), subscription.AmountUsed, "a failed refund record also rolls back the subscription delta")
+						var record model.SubscriptionPreConsumeRecord
+						require.NoError(t, db.Where("request_id = ?", info.RequestId).First(&record).Error)
+						assert.Equal(t, "consumed", record.Status)
+					}
+					if test.settle {
+						require.NoError(t, session.Reserve(120))
+						assert.Equal(t, 160, session.GetPreConsumedQuota(), "a smaller next variant retains the reservation high-water mark")
+						require.NoError(t, session.Settle(120))
+						require.NoError(t, session.Settle(120))
+						actual = 120
+					}
+					session.Refund(context)
+					session.Refund(context)
+					require.EventuallyWithT(t, func(collect *assert.CollectT) {
+						var wallet model.User
+						var account model.Token
+						if !assert.NoError(collect, db.First(&wallet, user.Id).Error) || !assert.NoError(collect, db.First(&account, token.Id).Error) {
+							return
+						}
+						assert.Equal(collect, test.tokenQuota-actual, account.RemainQuota)
+						assert.Equal(collect, actual, account.UsedQuota)
+						walletActual := actual
+						if test.subscription {
+							walletActual = 0
+							var sub model.UserSubscription
+							if assert.NoError(collect, db.First(&sub, subscription.Id).Error) {
+								assert.Equal(collect, int64(actual), sub.AmountUsed)
+							}
+							if actual == 0 {
+								var record model.SubscriptionPreConsumeRecord
+								if assert.NoError(collect, db.Where("request_id = ?", info.RequestId).First(&record).Error) {
+									assert.Equal(collect, "refunded", record.Status)
+								}
+							}
+						}
+						assert.Equal(collect, test.available-walletActual, wallet.Quota, "failure refunds every increment; settled requests are charged exactly once")
+					}, 5*time.Second, 10*time.Millisecond)
+				})
+			}
+		})
+	}
+}
+
+func setupStrictMediaBillingDB(t *testing.T, dialect string) *gorm.DB {
+	t.Helper()
+	var driver gorm.Dialector
+	databaseDSN := "local"
+	switch dialect {
+	case "mysql":
+		if os.Getenv("TEST_MYSQL_DSN") == "" {
+			t.Skip("TEST_MYSQL_DSN not configured")
+		}
+		databaseDSN = os.Getenv("TEST_MYSQL_DSN")
+		driver = mysql.Open(databaseDSN)
+	case "postgres":
+		if os.Getenv("TEST_POSTGRES_DSN") == "" {
+			t.Skip("TEST_POSTGRES_DSN not configured")
+		}
+		databaseDSN = os.Getenv("TEST_POSTGRES_DSN")
+		driver = postgres.New(postgres.Config{DSN: databaseDSN, PreferSimpleProtocol: true})
+	default:
+		driver = sqlite.Open(filepath.Join(t.TempDir(), "strict-media.db"))
+	}
+	db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: fmt.Sprintf("strict_media_%x_", time.Now().UnixNano())}})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	previousDB := model.DB
+	previousType := common.MainDatabaseType()
+	previousLogType := common.LogDatabaseType()
+	previousMaster, previousSQLitePath := common.IsMasterNode, common.SQLitePath
+	columnStatePath := filepath.Join(t.TempDir(), "database-columns.db")
+	t.Setenv("SQL_DSN", databaseDSN)
+	t.Setenv("LOG_SQL_DSN", "local")
+	common.IsMasterNode = false
+	common.SQLitePath = columnStatePath
+	// InitDB also initializes dialect-specific reserved column names used when
+	// reporting insufficient token balances; swapping model.DB alone does not.
+	require.NoError(t, model.InitDB())
+	columnStateDB, err := model.DB.DB()
+	require.NoError(t, err)
+	require.NoError(t, columnStateDB.Close())
+	previousRedis, previousBatch := common.RedisEnabled, common.BatchUpdateEnabled
+	model.DB = db
+	common.SetMainDatabaseType(common.DatabaseType(dialect))
+	common.RedisEnabled, common.BatchUpdateEnabled = false, false
+	models := []any{&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}}
+	t.Cleanup(func() {
+		require.NoError(t, db.Migrator().DropTable(models...))
+		// The service TestMain database is SQLite. Initialize its column names
+		// again before restoring that connection and the captured settings.
+		t.Setenv("SQL_DSN", "local")
+		require.NoError(t, model.InitDB())
+		restoredColumnDB, err := model.DB.DB()
+		require.NoError(t, err)
+		require.NoError(t, restoredColumnDB.Close())
+		model.DB = previousDB
+		common.SetDatabaseTypes(previousType, previousLogType)
+		common.IsMasterNode, common.SQLitePath = previousMaster, previousSQLitePath
+		common.RedisEnabled, common.BatchUpdateEnabled = previousRedis, previousBatch
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(models...))
+	var version string
+	query := "SELECT version()"
+	if dialect == "sqlite" {
+		query = "SELECT sqlite_version()"
+	}
+	require.NoError(t, db.Raw(query).Scan(&version).Error)
+	t.Logf("database version: %s", version)
+	return db
 }
 
 func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {

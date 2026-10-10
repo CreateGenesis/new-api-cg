@@ -616,3 +616,36 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelVideoCompatibilityServerValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*dto.VideoCompatibilitySettings)
+		disabled bool
+		kind     int
+		invalid  bool
+	}{
+		{name: "defaults", kind: constant.ChannelTypeOpenAI},
+		{name: "fps step", mutate: func(s *dto.VideoCompatibilitySettings) { s.FPS = .15 }, invalid: true},
+		{name: "frame budget", mutate: func(s *dto.VideoCompatibilitySettings) { s.MaxFrames = 513 }, invalid: true},
+		{name: "pixels", mutate: func(s *dto.VideoCompatibilitySettings) { s.PixelPercent = 0 }, invalid: true},
+		{name: "quality", mutate: func(s *dto.VideoCompatibilitySettings) { s.JPEGQuality = 101 }, invalid: true},
+		{name: "disable video", disabled: true, invalid: true},
+		{name: "task plugin", kind: constant.ChannelTypeTaskPlugin, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := dto.DefaultVideoCompatibilitySettings()
+			settings.Enabled = true
+			if tc.mutate != nil {
+				tc.mutate(&settings)
+			}
+			channel := &Channel{Type: tc.kind}
+			channel.SetOtherSettings(dto.ChannelOtherSettings{VideoCompatibility: &settings, DisableVideoUnderstanding: tc.disabled})
+			if tc.invalid {
+				require.Error(t, channel.ValidateSettings())
+			} else {
+				require.NoError(t, channel.ValidateSettings())
+			}
+		})
+	}
+}

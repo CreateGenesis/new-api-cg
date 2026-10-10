@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -79,4 +80,66 @@ func RefundFailedRequestBilling(c *gin.Context, info *relaycommon.RelayInfo, api
 	}
 	service.ChargeViolationFeeIfNeeded(c, info, apiErr)
 	return apiErr
+}
+
+// RefreshVariantBilling preserves the frozen prices and the one billing session,
+// while reserving only the additional amount needed for this effective body.
+func RefreshVariantBilling(c *gin.Context, info *relaycommon.RelayInfo, tokens int) *types.NewAPIError {
+	info.SetEstimatePromptTokens(tokens)
+	group := helper.HandleGroupRatio(c, info)
+	info.PriceData.GroupRatioInfo = group
+	var quota int
+	var err error
+	if snap := info.TieredBillingSnapshot; snap != nil {
+		request := billingexpr.RequestInput{}
+		if info.BillingRequestInput != nil {
+			request = *info.BillingRequestInput
+		}
+		cost, trace, runErr := billingexpr.RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, billingexpr.TokenParams{P: float64(tokens), RawP: float64(tokens), Len: float64(tokens)}, request)
+		if runErr != nil {
+			return types.NewError(runErr, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+		}
+		before := cost / 1_000_000 * snap.QuotaPerUnit
+		if trace.BillingUnit != billingexpr.BillingUnitRequest {
+			multiplier := snap.PreConsumeMultiplier
+			if multiplier <= 0 {
+				multiplier = 1
+			}
+			before *= multiplier
+		}
+		quota, err = billingexpr.QuotaRoundStrict(before * group.GroupRatio)
+		if err == nil {
+			snap.EstimatedPromptTokens = tokens
+			snap.EstimatedQuotaBeforeGroup = before
+			snap.EstimatedQuotaAfterGroup = quota
+			snap.GroupRatio = group.GroupRatio
+			snap.EstimatedTier = trace.MatchedTier
+			snap.EstimatedBillingUnit = trace.BillingUnit
+			snap.EstimatedFixedPrice = trace.FixedPrice
+		}
+	} else if info.PriceData.UsePrice {
+		quota, err = common.QuotaFromFloatStrict(info.PriceData.ApplyOtherRatiosToFloat(info.PriceData.ModelPrice * common.QuotaPerUnit * group.GroupRatio))
+	} else {
+		multiplier := info.InputReservationMultiplier
+		if multiplier == 0 {
+			multiplier = 1
+		}
+		quota, err = common.QuotaFromFloatStrict(float64(tokens) * multiplier * info.PriceData.ModelRatio * group.GroupRatio)
+	}
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	info.PriceData.QuotaToPreConsume = quota
+	if info.Billing == nil {
+		if quota == 0 {
+			return nil
+		}
+		info.PriceData.FreeModel = false
+		return service.PreConsumeBilling(c, quota, info)
+	}
+	if err := info.Billing.Reserve(quota); err != nil {
+		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	info.FinalPreConsumedQuota = info.Billing.GetPreConsumedQuota()
+	return nil
 }

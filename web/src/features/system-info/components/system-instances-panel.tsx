@@ -55,8 +55,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { usePageVisible } from '@/hooks/use-page-visible'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatTimestampRelative, formatTimestampToDate } from '@/lib/format'
+import {
+  formatNumber,
+  formatTimestampRelative,
+  formatTimestampToDate,
+} from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -256,6 +261,9 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
             <TableHead className='h-9 w-[96px] text-xs'>
               {t('Storage')}
             </TableHead>
+            <TableHead className='h-9 min-w-[190px] text-xs'>
+              {t('Video processing pool')}
+            </TableHead>
             <TableHead className='h-9 w-[100px] text-xs'>
               {t('Version')}
             </TableHead>
@@ -420,6 +428,45 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
                     }
                   />
                 </TableCell>
+                <TableCell className='py-2.5 align-middle text-xs'>
+                  {instance.info?.extra?.video_pool ? (
+                    <div className='space-y-1'>
+                      <div>
+                        {t('Running media tasks')}:{' '}
+                        {formatNumber(
+                          instance.info.extra.video_pool.running,
+                          toIntlLocale(i18n.language)
+                        )}{' '}
+                        /{' '}
+                        {formatNumber(
+                          instance.info.extra.video_pool.config.max_concurrency,
+                          toIntlLocale(i18n.language)
+                        )}
+                      </div>
+                      <div>
+                        {t('Waiting media tasks')}:{' '}
+                        {formatNumber(
+                          instance.info.extra.video_pool.queued,
+                          toIntlLocale(i18n.language)
+                        )}
+                      </div>
+                      <div className='font-mono break-all'>
+                        {t('Configuration version')}:{' '}
+                        {instance.info.extra.video_pool.config_version ?? '-'}
+                      </div>
+                      <div className='text-muted-foreground'>
+                        {t('Resource sample')}:{' '}
+                        {formatTimestampToDate(
+                          Date.parse(
+                            instance.info.extra.video_pool.system.sampled_at
+                          ) / 1000
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    '-'
+                  )}
+                </TableCell>
                 <TableCell className='py-2.5 align-middle'>
                   <div className='truncate font-mono text-xs'>
                     {instance.info?.runtime?.version || '-'}
@@ -497,6 +544,7 @@ export function SystemInstancesPanel() {
   const [deleteTarget, setDeleteTarget] = useState<SystemInstance | null>(null)
   const [deleteAllConfirmOpen, setDeleteAllConfirmOpen] = useState(false)
   const [deletingNodeName, setDeletingNodeName] = useState<string | null>(null)
+  const visible = usePageVisible()
   const instancesQuery = useQuery({
     queryKey: ['system-info', 'instances'],
     queryFn: async () => {
@@ -508,7 +556,8 @@ export function SystemInstancesPanel() {
     },
     staleTime: 30 * 1000,
     retry: false,
-    refetchInterval: INSTANCE_POLL_INTERVAL_MS,
+    enabled: visible,
+    refetchInterval: visible ? INSTANCE_POLL_INTERVAL_MS : false,
   })
 
   const instances = instancesQuery.data ?? []

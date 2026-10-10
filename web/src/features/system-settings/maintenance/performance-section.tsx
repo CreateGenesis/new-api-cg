@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -50,8 +51,10 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
+import { usePageVisible } from '@/hooks/use-page-visible'
 import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import {
   SettingsForm,
@@ -61,6 +64,8 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import { VideoPoolStats } from '../operations/video-pool-stats'
+import type { VideoPoolStats as VideoStats } from '../operations/video-pool-types'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 
 /**
@@ -185,6 +190,7 @@ interface Props {
 }
 
 type PerformanceStats = {
+  video_pool?: VideoStats
   cache_stats?: {
     current_disk_usage_bytes: number
     disk_cache_max_bytes: number
@@ -220,7 +226,19 @@ type PerformanceStats = {
 export function PerformanceSection(props: Props) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
-  const [stats, setStats] = useState<PerformanceStats | null>(null)
+  const visible = usePageVisible()
+  const statsQuery = useQuery({
+    queryKey: ['performance', 'runtime-stats'],
+    queryFn: async () => {
+      const response = await api.get('/api/performance/stats')
+      return requireServerSuccess(response.data).data as PerformanceStats
+    },
+    enabled: visible,
+    refetchInterval: visible ? 5000 : false,
+    retry: false,
+  })
+  const stats = statsQuery.data
+  const fetchStats = () => statsQuery.refetch()
 
   const formDefaults = useMemo(
     () => buildFormDefaults(props.defaultValues),
@@ -244,23 +262,6 @@ export function PerformanceSection(props: Props) {
     baselineSerializedRef.current = serialized
     form.reset(buildFormDefaults(props.defaultValues))
   }, [props.defaultValues, form])
-
-  const fetchStats = useCallback(async () => {
-    try {
-      const res = await api.get('/api/performance/stats')
-      if (res.data.success) {
-        setStats(res.data.data)
-      } else {
-        handleServerError(res.data)
-      }
-    } catch (error) {
-      handleServerError(error)
-    }
-  }, [])
-
-  useEffect(() => {
-    fetchStats()
-  }, [fetchStats])
 
   const onSubmit = async (values: PerfFormValues) => {
     const normalized = normalizeFormValues(values)
@@ -706,6 +707,8 @@ export function PerformanceSection(props: Props) {
             {t('Run GC')}
           </Button>
         </div>
+
+        {stats?.video_pool && <VideoPoolStats stats={stats.video_pool} />}
 
         {stats && (
           <>

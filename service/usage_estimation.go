@@ -52,8 +52,19 @@ func EstimateModelFamilyInputTokens(family dto.UsageEstimationModelFamily, forma
 	switch family {
 	case dto.UsageEstimationModelFamilyKimi:
 		for _, file := range meta.Files {
-			if file != nil {
-				return saturatingTokenAdd(tokens, 5001)
+			if file == nil {
+				continue
+			}
+			if file.FileType == types.FileTypeImage {
+				width, height := 0, 0
+				if file.Source != nil && file.Source.HasCache() {
+					if cached := file.Source.GetCache(); cached != nil && cached.ImageConfig != nil {
+						width, height = cached.ImageConfig.Width, cached.ImageConfig.Height
+					}
+				}
+				tokens = saturatingTokenAdd(tokens, tokenkit.KimiK3ImageTokens(width, height))
+			} else {
+				tokens = saturatingTokenAdd(tokens, 5001)
 			}
 		}
 	default:

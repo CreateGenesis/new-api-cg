@@ -457,6 +457,7 @@ export type BillingSettings = {
 }
 
 export type OperationsSettings = {
+  'video_processing_setting.config': string
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean

@@ -1,6 +1,13 @@
 package service
 
 import (
+	"bytes"
+	"encoding/base64"
+	"github.com/gin-gonic/gin"
+	"image"
+	"image/jpeg"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -57,4 +64,26 @@ func TestApplyMissingUsageEstimatesPreservesValidInputAndRepairsBillingOutput(t 
 	normalized := NormalizeUsageForBilling(usage)
 	assert.Equal(t, 17748, normalized.InputTokens.TotalInputTokens)
 	assert.Equal(t, 23, normalized.OutputTokens)
+}
+
+func TestKimiFrameEstimatesAndBase64CacheIsolation(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	var encoded []string
+	var files []*types.FileMeta
+	for _, size := range []image.Point{{1024, 576}, {512, 288}} {
+		var buffer bytes.Buffer
+		require.NoError(t, jpeg.Encode(&buffer, image.NewGray(image.Rect(0, 0, size.X, size.Y)), nil))
+		data := base64.StdEncoding.EncodeToString(buffer.Bytes())
+		source := types.NewBase64FileSource(data, "image/jpeg")
+		config, _, err := GetImageConfig(c, source)
+		require.NoError(t, err)
+		assert.Equal(t, size.X, config.Width)
+		assert.Equal(t, size.Y, config.Height)
+		encoded = append(encoded, data)
+		files = append(files, &types.FileMeta{FileType: types.FileTypeImage, Source: source})
+	}
+	assert.Equal(t, encoded[0][:128], encoded[1][:128], "fixture shares JPEG/base64 prefix")
+	assert.NotEqual(t, getBase64ContextCacheKey(strings.Repeat("a", 128)+"a", "image/jpeg"), getBase64ContextCacheKey(strings.Repeat("a", 128)+"b", "image/jpeg"))
+	tokens := EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyKimi, types.RelayFormatClaude, &types.TokenCountMeta{Files: files})
+	assert.Equal(t, (37*21+16)+(19*11+16), tokens)
 }

@@ -22,7 +22,11 @@ func applyChannelUsageEstimation(c *gin.Context, info *relaycommon.RelayInfo, us
 	normalized := service.NormalizeUsageForBilling(usage)
 	inputBase := 0
 	if info.Request != nil {
-		inputBase = service.EstimateModelFamilyInputTokens(settings.ModelFamily, info.RelayFormat, info.Request.GetTokenCountMeta())
+		meta := info.EffectiveTokenCountMeta
+		if meta == nil {
+			meta = info.Request.GetTokenCountMeta()
+		}
+		inputBase = service.EstimateModelFamilyInputTokens(settings.ModelFamily, info.RelayFormat, meta)
 	}
 	if inputBase <= 0 {
 		inputBase = info.GetEstimatePromptTokens()

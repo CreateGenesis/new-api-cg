@@ -122,3 +122,12 @@ func TestImageNeedsSize(t *testing.T) {
 	assert.False(t, ImageNeedsSize("gemini-3.7-flash", ""))
 	assert.False(t, ImageNeedsSize("deepseek-v4", ""))
 }
+
+func TestKimiK3ImagesUseActualPixelsWithoutQualityDiscount(t *testing.T) {
+	for _, model := range []string{"k3", "kimi-k3", "moonshot/kimi-k3-latest"} {
+		assert.True(t, ImageNeedsSize(model, "auto"))
+		assert.Equal(t, 37*21+16, ImageTokens(model, Image{Width: 1024, Height: 576}))
+		assert.Equal(t, 19*11+16, ImageTokens(model, Image{Width: 512, Height: 288}))
+	}
+	assert.Equal(t, 520, ImageTokens("kimi-k2.5", Image{Width: 512, Height: 288}))
+}

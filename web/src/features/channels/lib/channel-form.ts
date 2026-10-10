@@ -50,6 +50,11 @@ import {
   type InputTokenRoutingRange,
 } from './input-token-routing'
 import { supportsResponsesWebSocket } from './responses-websocket'
+import {
+  VIDEO_COMPATIBILITY_DEFAULTS,
+  readVideoCompatibility,
+  videoCompatibilitySchema,
+} from './video-compatibility'
 
 // ============================================================================
 // Form Validation Schema
@@ -482,6 +487,7 @@ export const channelFormSchema = z
     disable_stream: z.boolean().optional(),
     disable_non_stream: z.boolean().optional(),
     disable_video_understanding: z.boolean().optional(),
+    video_compatibility: videoCompatibilitySchema.optional(),
     usage_token_limit_input_tokens: z.number().optional(),
     usage_token_limit_output_tokens: z.number().optional(),
     simulated_model_cache_enabled: z.boolean().optional(),
@@ -767,6 +773,26 @@ export const channelFormSchema = z
     const simulatedModelCacheRuntimeActive =
       data.simulated_model_cache_enabled ||
       data.multi_key_type === 'cache_affinity_least_requests'
+    if (
+      data.type === CHANNEL_TYPE_TASK_PLUGIN &&
+      data.video_compatibility?.enabled
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['video_compatibility', 'enabled'],
+        message: 'video_compatibility is unavailable for task plugin channels',
+      })
+    }
+    if (data.disable_video_understanding && data.video_compatibility?.enabled) {
+      const message =
+        'Video compatibility cannot be enabled when video understanding is disabled.'
+      addRequiredIssue(ctx, 'disable_video_understanding', message)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['video_compatibility', 'enabled'],
+        message,
+      })
+    }
     if (data.disable_stream && data.disable_non_stream) {
       const message =
         'Stream and non-stream request disabling cannot both be enabled.'
@@ -1110,6 +1136,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_stream: false,
   disable_non_stream: false,
   disable_video_understanding: false,
+  video_compatibility: { ...VIDEO_COMPATIBILITY_DEFAULTS },
   usage_token_limit_input_tokens: 0,
   usage_token_limit_output_tokens: 0,
   simulated_model_cache_enabled: false,
@@ -1244,6 +1271,7 @@ export function transformChannelToFormDefaults(
   let disableStream = false
   let disableNonStream = false
   let disableVideoUnderstanding = false
+  let videoCompatibility = { ...VIDEO_COMPATIBILITY_DEFAULTS }
   let usageTokenLimitInputTokens = 0
   let usageTokenLimitOutputTokens = 0
   let simulatedModelCacheEnabled = false
@@ -1381,6 +1409,7 @@ export function transformChannelToFormDefaults(
       disableStream = parsed.disable_stream === true
       disableNonStream = parsed.disable_non_stream === true
       disableVideoUnderstanding = parsed.disable_video_understanding === true
+      videoCompatibility = readVideoCompatibility(parsed.video_compatibility)
       if (
         parsed.usage_token_limit &&
         typeof parsed.usage_token_limit === 'object'
@@ -1693,6 +1722,7 @@ export function transformChannelToFormDefaults(
     disable_stream: disableStream,
     disable_non_stream: disableNonStream,
     disable_video_understanding: disableVideoUnderstanding,
+    video_compatibility: videoCompatibility,
     usage_token_limit_input_tokens: usageTokenLimitInputTokens,
     usage_token_limit_output_tokens: usageTokenLimitOutputTokens,
     simulated_model_cache_enabled: simulatedModelCacheEnabled,
@@ -2034,6 +2064,17 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.disable_video_understanding = true
   } else if ('disable_video_understanding' in settingsObj) {
     delete settingsObj.disable_video_understanding
+  }
+  if (
+    formData.video_compatibility &&
+    (formData.video_compatibility.enabled ||
+      'video_compatibility' in settingsObj ||
+      JSON.stringify(formData.video_compatibility) !==
+        JSON.stringify(VIDEO_COMPATIBILITY_DEFAULTS))
+  ) {
+    settingsObj.video_compatibility = { ...formData.video_compatibility }
+  } else {
+    delete settingsObj.video_compatibility
   }
   const usageTokenLimitInputTokens = Math.trunc(
     Number(formData.usage_token_limit_input_tokens) || 0

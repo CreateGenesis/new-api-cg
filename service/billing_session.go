@@ -162,7 +162,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	imageRequest := false
 	if s.relayInfo != nil {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
-		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
+		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0 || s.relayInfo.StrictPreConsume
 	}
 	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
 		return nil
@@ -320,7 +320,7 @@ func (s *BillingSession) reserveToken(delta int) error {
 // shouldTrust 统一信任额度检查，适用于钱包和订阅。
 func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 	// 异步任务（ForcePreConsume=true）必须预扣全额，不允许信任旁路
-	if s.relayInfo.ForcePreConsume {
+	if s.relayInfo.ForcePreConsume || s.relayInfo.StrictPreConsume {
 		return false
 	}
 

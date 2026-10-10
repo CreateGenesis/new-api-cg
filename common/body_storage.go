@@ -303,6 +303,17 @@ func CreateBodyStorage(data []byte) (BodyStorage, error) {
 	return newMemoryStorage(data), nil
 }
 
+// NewFileBodyStorage explicitly uses a bounded temporary file regardless of cache settings.
+func NewFileBodyStorage(reader io.Reader, maxBytes int64) (BodyStorage, error) {
+	if maxBytes < 0 {
+		return nil, ErrRequestBodyTooLarge
+	}
+	return newDiskStorageFromReader(reader, maxBytes, "")
+}
+
+// NewMemoryBodyStorage borrows immutable bytes without making another copy.
+func NewMemoryBodyStorage(data []byte) BodyStorage { return newMemoryStorage(data) }
+
 // CreateBodyStorageFromReader 从 Reader 创建存储（用于大请求的流式处理）
 func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes int64) (BodyStorage, error) {
 	threshold := GetDiskCacheThresholdBytes()

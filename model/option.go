@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/pkg/videocompat"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -36,6 +37,11 @@ func AllOption() ([]*Option, error) {
 func InitOptionMap() {
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = make(map[string]string)
+	videoDefaults, err := common.Marshal(videocompat.DefaultConfig())
+	if err != nil {
+		panic(err)
+	}
+	common.OptionMap[VideoProcessingConfigOptionKey] = string(videoDefaults)
 	common.OptionMap[operation_setting.GroupSchedulingToleranceKey] = "{}"
 
 	// 添加原有的系统配置
@@ -206,6 +212,8 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
+	videoProcessingOptionMutex.Lock()
+	defer videoProcessingOptionMutex.Unlock()
 	requestPolicyOptionMutex.Lock()
 	defer requestPolicyOptionMutex.Unlock()
 	defer func() {
@@ -215,9 +223,31 @@ func loadOptionsFromDatabase() {
 	}()
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
-	options, _ := AllOption()
+	options, err := AllOption()
+	if err != nil {
+		common.SysError(common.LogText("failed to load options: %s", err.Error()))
+		return
+	}
+	videoDefaults, err := common.Marshal(videocompat.DefaultConfig())
+	if err != nil {
+		common.SysError(common.LogText("invalid video processing settings: %s", err.Error()))
+		return
+	}
+	videoOptions := map[string]string{VideoProcessingConfigOptionKey: string(videoDefaults)}
+	for _, option := range options {
+		if isVideoProcessingOption(option.Key) {
+			videoOptions[option.Key] = option.Value
+		}
+	}
+	_, videoConfigValue, videoErr := prepareVideoProcessingOptions(videoOptions)
+	if videoErr != nil {
+		common.SysError(common.LogText("invalid video processing settings: %s", videoErr.Error()))
+	}
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
+		if option.Key == VideoProcessingConfigOptionKey || videoErr != nil && isVideoProcessingOption(option.Key) {
+			continue
+		}
 		if IsPasskeyDomainOption(option.Key) {
 			passkeyOptions[option.Key] = option.Value
 			continue
@@ -225,6 +255,11 @@ func loadOptionsFromDatabase() {
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog(common.LogText("failed to update option map: %s", err.Error()))
+		}
+	}
+	if videoErr == nil {
+		if err := updateOptionMap(VideoProcessingConfigOptionKey, videoConfigValue); err != nil {
+			common.SysError(common.LogText("invalid video processing settings: %s", err.Error()))
 		}
 	}
 	applyPasskeyDomainOptions(passkeyOptions)
@@ -258,6 +293,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if isVideoProcessingOption(key) {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -294,6 +332,22 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for key := range values {
+		if !isVideoProcessingOption(key) {
+			continue
+		}
+		videoProcessingOptionMutex.Lock()
+		defer videoProcessingOptionMutex.Unlock()
+		_, canonical, err := prepareVideoProcessingOptions(values)
+		if err != nil {
+			return err
+		}
+		if canonical != "" {
+			values = maps.Clone(values)
+			values[VideoProcessingConfigOptionKey] = canonical
+		}
+		break
 	}
 	for key := range values {
 		if IsPasskeyDomainOption(key) {
@@ -343,7 +397,15 @@ func UpdateOptionsBulk(values map[string]string) error {
 		return err
 	}
 	for k, v := range values {
+		if k == VideoProcessingConfigOptionKey {
+			continue
+		}
 		if err := updateOptionMap(k, v); err != nil {
+			return err
+		}
+	}
+	if value, exists := values[VideoProcessingConfigOptionKey]; exists {
+		if err := updateOptionMap(VideoProcessingConfigOptionKey, value); err != nil {
 			return err
 		}
 	}
@@ -354,6 +416,19 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == VideoProcessingConfigOptionKey {
+		config, canonical, err := parseVideoProcessingConfig(value)
+		if err != nil {
+			return err
+		}
+		common.OptionMapRWMutex.Lock()
+		defer common.OptionMapRWMutex.Unlock()
+		if err := videocompat.SetConfig(config); err != nil {
+			return err
+		}
+		common.OptionMap[key] = canonical
+		return nil
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

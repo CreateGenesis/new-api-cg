@@ -115,6 +115,7 @@ const CONFIGURATION_BLOCKS = {
       'disable_stream',
       'disable_non_stream',
       'disable_video_understanding',
+      'video_compatibility',
       'usage_token_limit_input_tokens',
       'usage_token_limit_output_tokens',
       'stream_interruption_billing_mode',
@@ -243,6 +244,7 @@ export function getChannelConfigurationState(
       values.disable_stream ||
       values.disable_non_stream ||
       values.disable_video_understanding ||
+      values.video_compatibility?.enabled ||
       (values.usage_token_limit_input_tokens ?? 0) > 0 ||
       (values.usage_token_limit_output_tokens ?? 0) > 0 ||
       values.status_code_retry_enabled ||

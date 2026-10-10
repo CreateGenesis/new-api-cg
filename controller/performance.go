@@ -12,11 +12,13 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/videocompat"
 	"github.com/gin-gonic/gin"
 )
 
 // PerformanceStats 性能统计信息
 type PerformanceStats struct {
+	VideoPool videocompat.PoolStats `json:"video_pool"`
 	// 缓存统计
 	CacheStats common.DiskCacheStats `json:"cache_stats"`
 	// 系统内存统计
@@ -119,6 +121,7 @@ func GetPerformanceStats(c *gin.Context) {
 	diskSpaceInfo = common.GetDiskSpaceInfo()
 
 	stats := PerformanceStats{
+		VideoPool:  videocompat.Stats(),
 		CacheStats: cacheStats,
 		MemoryStats: MemoryStats{
 			Alloc:        memStats.Alloc,

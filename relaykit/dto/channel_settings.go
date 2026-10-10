@@ -130,6 +130,7 @@ func (s *ResponseModelMappingSettings) Validate() error {
 }
 
 type ChannelOtherSettings struct {
+	VideoCompatibility   *VideoCompatibilitySettings   `json:"video_compatibility,omitempty"`
 	GroupScheduling      *GroupSchedulingSettings      `json:"group_scheduling,omitempty"`
 	ResponseModelMapping *ResponseModelMappingSettings `json:"response_model_mapping,omitempty"`
 	// ToolLossPolicy opts into conversion rejection: allow, safe, or strict; empty allows conversion.
@@ -173,6 +174,36 @@ type ChannelOtherSettings struct {
 	UsageEstimation                       *UsageEstimationSettings           `json:"usage_estimation,omitempty"`
 	OllamaOpenAIChat                      bool                               `json:"ollama_openai_chat,omitempty"`
 	MoonshotQuotaAutoDisable              *MoonshotQuotaAutoDisableSettings  `json:"moonshot_quota_auto_disable,omitempty"`
+}
+
+// VideoCompatibilitySettings converts inline video blocks to timestamped images.
+type VideoCompatibilitySettings struct {
+	Enabled      bool    `json:"enabled"`
+	FPS          float64 `json:"fps"`
+	MaxFrames    int     `json:"max_frames"`
+	MaxSide      int     `json:"max_side"`
+	PixelPercent int     `json:"pixel_percent"`
+	JPEGQuality  int     `json:"jpeg_quality"`
+}
+
+func DefaultVideoCompatibilitySettings() VideoCompatibilitySettings {
+	return VideoCompatibilitySettings{FPS: 8, MaxFrames: 256, MaxSide: 1024, PixelPercent: 100, JPEGQuality: 100}
+}
+
+func (s VideoCompatibilitySettings) Validate() error {
+	if math.IsNaN(s.FPS) || math.IsInf(s.FPS, 0) || s.FPS < .1 || s.FPS > 8 || math.Abs(s.FPS*10-math.Round(s.FPS*10)) > 1e-8 {
+		return fmt.Errorf("video_compatibility fps must be 0.1–8 in steps of 0.1")
+	}
+	if s.MaxFrames < 1 || s.MaxFrames > 512 {
+		return fmt.Errorf("video_compatibility max_frames must be 1–512")
+	}
+	if s.MaxSide < 256 || s.MaxSide > 2048 {
+		return fmt.Errorf("video_compatibility max_side must be 256–2048")
+	}
+	if s.PixelPercent < 1 || s.PixelPercent > 100 || s.JPEGQuality < 1 || s.JPEGQuality > 100 {
+		return fmt.Errorf("video_compatibility pixel_percent and jpeg_quality must be 1–100")
+	}
+	return nil
 }
 
 // MoonshotQuotaAutoDisableSettings controls quota-window handling for

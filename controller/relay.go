@@ -148,7 +148,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
+	var videoVariants *videoRequestVariants
+	if c.GetBool("video_compatibility_deferred") {
+		videoVariants, err = newVideoRequestVariants(c, relayFormat)
+		if err != nil {
+			newAPIError = videoRequestError(err)
+			return
+		}
+		defer videoVariants.Close()
+		relayInfo.StrictPreConsume = true
+		// Freeze request probes before binding a channel-specific transformed body.
+		input, inputErr := helper.ResolveIncomingBillingExprRequestInput(c, relayInfo)
+		if inputErr != nil {
+			newAPIError = videoRequestError(inputErr)
+			return
+		}
+		relayInfo.BillingRequestInput = &input
+	} else if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
 	}
 	tokens := relayInfo.GetEstimatePromptTokens()
@@ -170,6 +186,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		AutoGroupIndex:      common.GetContextKeyInt(c, constant.ContextKeyAutoGroupIndex),
 		AutoGroupSelected:   relayInfo.TokenGroup == "auto" && common.GetContextKeyString(c, constant.ContextKeyAutoGroup) != "",
 		ClientRequestMode:   relayInfo.ClientRequestMode,
+	}
+	if videoVariants != nil {
+		selectParam.PrepareCandidate = func(channel *model.Channel) (*dto.InputTokenEstimates, error) {
+			variant, prepareErr := videoVariants.prepare(c, relayInfo, channel)
+			if prepareErr != nil {
+				return nil, prepareErr
+			}
+			return variant.estimates, nil
+		}
 	}
 	interChannelRetryState := &service.InterChannelRetryState{}
 	inputTokenRoutingUpgrades := 0
@@ -199,6 +224,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		inputTokenRoutingUpgraded := false
 
 		for {
+			if bindErr := bindSelectedVideoVariant(c, relayInfo, channel, selectParam); bindErr != nil {
+				newAPIError = bindErr
+				break
+			}
 			internalRetry := layeredRetryEnabled && actualChannelID != 0
 			selectedChannel, overloadLease, acquireErr := acquireRelayOverloadLease(c, relayInfo, selectParam, channel, internalRetry)
 			if acquireErr != nil {
@@ -231,6 +260,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			service.ConfirmChannelAffinitySelection(c, selectedGroup, channel.Id)
 			service.SetChannelOverloadLease(c, overloadLease)
+			if billingErr := prepareSelectedVideoBilling(c, relayInfo); billingErr != nil {
+				releaseOverloadLease(overloadLease)
+				service.ClearChannelOverloadLease(c)
+				newAPIError = billingErr
+				break
+			}
 			if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 				releaseOverloadLease(overloadLease)
 				service.ClearChannelOverloadLease(c)
@@ -390,12 +425,19 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 			selectParam.ExcludeUnavailableChannel(channel)
 			next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(selectParam)
 			if selectErr != nil {
+				var prepareErr *service.CandidatePreparationError
+				if errors.As(selectErr, &prepareErr) {
+					return channel, nil, videoRequestError(prepareErr)
+				}
 				return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
 			}
 			if next == nil {
 				return channel, nil, channelRequestModeError(selectParam.ClientRequestMode, false)
 			}
 			service.ClearRequestChannelAffinitySelection(c)
+			if bindErr := bindSelectedVideoVariant(c, info, next, selectParam); bindErr != nil {
+				return channel, nil, bindErr
+			}
 			if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.UpstreamAttemptModelName()); setupErr != nil {
 				return channel, nil, setupErr
 			}
@@ -436,12 +478,19 @@ func acquireRelayOverloadLease(c *gin.Context, info *relaycommon.RelayInfo, sele
 		selectParam.ExcludeUnavailableChannel(channel)
 		next, selectGroup, selectErr := service.CacheGetRandomSatisfiedChannel(selectParam)
 		if selectErr != nil {
+			var prepareErr *service.CandidatePreparationError
+			if errors.As(selectErr, &prepareErr) {
+				return channel, nil, videoRequestError(prepareErr)
+			}
 			return channel, nil, types.NewError(selectErr, types.ErrorCodeGetChannelFailed)
 		}
 		if next == nil {
 			return channel, nil, channelOverloadedError()
 		}
 		service.ClearRequestChannelAffinitySelection(c)
+		if bindErr := bindSelectedVideoVariant(c, info, next, selectParam); bindErr != nil {
+			return channel, nil, bindErr
+		}
 		if setupErr := middleware.SetupContextForSelectedChannel(c, next, info.UpstreamAttemptModelName()); setupErr != nil {
 			return channel, nil, setupErr
 		}
@@ -575,6 +624,11 @@ func relayRetryPolicyFromContext(c *gin.Context) relayRetryPolicy {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam) (*model.Channel, *types.NewAPIError) {
+	if selectParam != nil && selectParam.PrepareCandidate != nil {
+		selectParam.SetRetry(info.RetryIndex)
+		return selectChannelByInputTokenRouting(c, info, selectParam)
+	}
+
 	if info.ChannelMeta == nil {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
@@ -709,7 +763,26 @@ func prepareMultiKeyChannelRetry(c *gin.Context, channel *model.Channel, info *r
 }
 
 func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInfo, selectParam *service.ChannelSelectParam) (*model.Channel, *types.NewAPIError) {
-	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(selectParam)
+	var channel *model.Channel
+	var selectGroup string
+	var err error
+	if selectParam.PrepareCandidate != nil {
+		var selectErr *service.ChannelSelectError
+		channel, selectGroup, selectErr = service.SelectChannelForRequest(c, info.UpstreamAttemptModelName(), selectParam)
+		if selectErr != nil {
+			var prepareErr *service.CandidatePreparationError
+			if errors.As(selectErr.Cause, &prepareErr) {
+				return nil, videoRequestError(prepareErr)
+			}
+			message := selectErr.Message
+			if selectErr.MessageID != "" {
+				message = i18n.T(c, selectErr.MessageID, selectErr.Params)
+			}
+			return nil, types.NewErrorWithStatusCode(errors.New(message), types.ErrorCodeGetChannelFailed, selectErr.StatusCode, types.ErrOptionWithSkipRetry())
+		}
+	} else {
+		channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(selectParam)
+	}
 
 	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 	if err != nil {
@@ -722,6 +795,9 @@ func selectChannelByInputTokenRouting(c *gin.Context, info *relaycommon.RelayInf
 		return nil, types.NewError(errors.New(i18n.T(c, i18n.MsgRelayRetryNoAvailableChannel, map[string]any{"Group": selectGroup, "Model": info.OriginModelName})), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
+	if bindErr := bindSelectedVideoVariant(c, info, channel, selectParam); bindErr != nil {
+		return nil, bindErr
+	}
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.UpstreamAttemptModelName())
 	if newAPIError != nil {
 		return nil, newAPIError

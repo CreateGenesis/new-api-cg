@@ -653,7 +653,7 @@ func TestGLM52InputTokensForRoutingUsesUnicodeCharactersAndExistingOverhead(t *t
 	assert.Equal(t, 781, glm52InputTokensForRouting(types.RelayFormatClaude, meta))
 }
 
-func TestKimiK3InputTokensForRoutingUsesScriptRatiosAndSingleMediaOverhead(t *testing.T) {
+func TestKimiK3InputTokensForRoutingAccumulatesEveryMediaBlock(t *testing.T) {
 	meta := &types.TokenCountMeta{
 		CombineText:   strings.Repeat("a", 31) + "中文日",
 		MessagesCount: 2,
@@ -666,9 +666,10 @@ func TestKimiK3InputTokensForRoutingUsesScriptRatiosAndSingleMediaOverhead(t *te
 	}
 
 	// 31 Latin characters become 10 tokens and three CJK characters become
-	// two. OpenAI framing adds 20, while all media adds 5001 only once.
-	assert.Equal(t, 5033, kimiK3InputTokensForRouting(types.RelayFormatOpenAI, meta))
-	assert.Equal(t, 5013, kimiK3InputTokensForRouting(types.RelayFormatClaude, meta))
+	// two. OpenAI framing adds 20. Unknown-size image grid: 37*37+16.
+	// The native video conservatively adds 5001 independently.
+	assert.Equal(t, 6418, kimiK3InputTokensForRouting(types.RelayFormatOpenAI, meta))
+	assert.Equal(t, 6398, kimiK3InputTokensForRouting(types.RelayFormatClaude, meta))
 }
 
 func TestUpgradeInputTokenRoutingAfterUpstream400(t *testing.T) {

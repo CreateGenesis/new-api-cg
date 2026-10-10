@@ -39,6 +39,7 @@ import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../../../lib'
 import { isRequestModeSwitchDisabled } from '../../../lib/channel-request-mode-policy'
+import { VideoCompatibilityFields } from './video-compatibility-fields'
 
 type ChannelFallbackPolicyFieldsProps = {
   control: Control<ChannelFormValues>
@@ -56,6 +57,10 @@ export function ChannelFallbackPolicyFields(
   const disableNonStream = useWatch({
     control: props.control,
     name: 'disable_non_stream',
+  })
+  const videoCompatibilityEnabled = useWatch({
+    control: props.control,
+    name: 'video_compatibility.enabled',
   })
   const usageEstimationEnabled = useWatch({
     control: props.control,
@@ -174,7 +179,10 @@ export function ChannelFallbackPolicyFields(
               <FormControl>
                 <Switch
                   checked={field.value ?? false}
-                  disabled={props.sensitiveLocked}
+                  disabled={
+                    props.sensitiveLocked ||
+                    Boolean(videoCompatibilityEnabled && !field.value)
+                  }
                   onCheckedChange={field.onChange}
                 />
               </FormControl>
@@ -182,6 +190,11 @@ export function ChannelFallbackPolicyFields(
           )}
         />
       </div>
+
+      <VideoCompatibilityFields
+        control={props.control}
+        sensitiveLocked={props.sensitiveLocked}
+      />
 
       <div className='grid gap-4 sm:grid-cols-2'>
         <FormField

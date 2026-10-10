@@ -37,12 +37,12 @@ func selectGroupScheduledChannel(param *ChannelSelectParam, group string, filter
 	if revalidating {
 		anchor = param.SchedulingAnchor
 	} else {
-		anchor, err = model.GetRandomSatisfiedChannelExcludingPriority(group, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority, filters...)
+		anchor, err = param.selectPreparedRandomChannel(group, param.ExcludedChannelIDs, filters)
 	}
 	if err != nil || anchor == nil || !model.GroupSchedulingApplies(anchor, group, param.ModelName) {
 		return anchor, err
 	}
-	candidates, err := model.GroupSchedulingCandidates(group, param.ModelName, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, filters)
+	candidates, err := model.GroupSchedulingCandidates(group, param.ModelName, param.RequestPath, param.RoutingEstimates(), param.ExcludedChannelIDs, filters)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func selectGroupScheduledChannel(param *ChannelSelectParam, group string, filter
 		}
 	}
 	if len(participating) == 0 {
-		return model.GetRandomSatisfiedChannelExcludingPriority(group, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, param.ExcludedChannelIDs, param.MaxPriority, filters...)
+		return anchor, nil
 	}
 	states := model.GroupProbeStates(participating, param.ModelName)
 	excluded := make(map[int]struct{}, len(param.ExcludedChannelIDs))
@@ -67,11 +67,19 @@ func selectGroupScheduledChannel(param *ChannelSelectParam, group string, filter
 				param.RequestModeFiltered = true
 			}
 		} else {
+			accepted, prepareErr := param.CandidateAcceptsInput(candidate)
+			if prepareErr != nil {
+				return nil, prepareErr
+			}
+			if !accepted {
+				excluded[candidate.Id] = struct{}{}
+				continue
+			}
 			healthy = append(healthy, candidate)
 		}
 	}
 	if _, unavailable := excluded[anchor.Id]; unavailable && (!revalidating || len(healthy) == 0) {
-		anchor, err = model.GetRandomSatisfiedChannelExcludingPriority(group, param.ModelName, 0, param.RequestPath, param.InputTokenEstimates, excluded, param.MaxPriority, filters...)
+		anchor, err = param.selectPreparedRandomChannel(group, excluded, filters)
 	}
 	if err != nil || anchor == nil || !model.GroupSchedulingApplies(anchor, group, param.ModelName) {
 		return anchor, err

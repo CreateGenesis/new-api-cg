@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -133,6 +134,17 @@ func Distribute() func(c *gin.Context) {
 		}
 		if !model.GroupSchedulingAvailable(channel, probeGroup, modelRequest.Model) {
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "channel model probe is unavailable", types.ErrorCodeGetChannelFailed)
+			return
+		}
+		if modelRequest.hasVideoUnderstanding && shouldSelectChannel && c.GetString("expected_task_plugin_key") == "" {
+			// Media preparation and effective token admission precede channel keys/leases.
+			c.Set("video_compatibility_deferred", true)
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, modelRequest.Model)
+			common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+			c.Next()
+			if c.Writer.Status() < http.StatusBadRequest {
+				service.RecordChannelAffinity(c, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+			}
 			return
 		}
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
@@ -298,39 +310,42 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	return &ModelRequest{
 		Model:                 model,
 		Group:                 group,
-		hasVideoUnderstanding: (c.Request.URL.Path == "/v1/chat/completions" || c.Request.URL.Path == "/pg/chat/completions") && containsVideoUnderstanding(requestBody),
+		hasVideoUnderstanding: (strings.HasSuffix(c.Request.URL.Path, "/chat/completions") || strings.HasSuffix(c.Request.URL.Path, "/responses") || strings.HasSuffix(c.Request.URL.Path, "/messages")) && containsVideoUnderstanding(requestBody),
 	}, nil
 }
 
 // containsVideoUnderstanding inspects content types only; video URLs and large
 // base64 payloads stay untouched, including videos in earlier messages.
 func containsVideoUnderstanding(body []byte) bool {
-	// Inspect every occurrence of the envelope keys so duplicate JSON keys
-	// cannot hide video blocks from selection while the relay sees them.
-	values := []gjson.Result{gjson.ParseBytes(body)}
-	for _, field := range []string{"messages", "content"} {
-		var next []gjson.Result
-		for _, object := range values {
-			if !object.IsObject() {
-				continue
-			}
-			object.ForEach(func(key, value gjson.Result) bool {
-				if strings.EqualFold(key.Str, field) && value.IsArray() {
-					next = append(next, value.Array()...)
-				}
-				return true
-			})
+	root := gjson.ParseBytes(body)
+	var pending []gjson.Result
+	// Limit detection to protocol content envelopes, including tool results.
+	root.ForEach(func(key, value gjson.Result) bool {
+		if (strings.EqualFold(key.Str, "messages") || strings.EqualFold(key.Str, "input")) && value.IsArray() {
+			pending = append(pending, value)
 		}
-		values = next
-	}
-	for _, part := range values {
-		if !part.IsObject() {
+		return true
+	})
+	for len(pending) > 0 {
+		value := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if value.IsArray() {
+			pending = append(pending, value.Array()...)
+			continue
+		}
+		if !value.IsObject() {
 			continue
 		}
 		found := false
-		part.ForEach(func(key, value gjson.Result) bool {
-			found = key.Str == "type" && value.Str == "video_url"
-			return !found
+		value.ForEach(func(key, part gjson.Result) bool {
+			if key.Str == "type" && (part.Str == "video_url" || part.Str == "input_video" || part.Str == "video") {
+				found = true
+				return false
+			}
+			if (strings.EqualFold(key.Str, "content") || strings.EqualFold(key.Str, "output")) && part.IsArray() {
+				pending = append(pending, part)
+			}
+			return true
 		})
 		if found {
 			return true
@@ -773,11 +788,6 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	if c == nil || channel == nil {
 		return nil
 	}
-	if existing, ok := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey); ok {
-		if preparation, valid := existing.(*service.SimulatedModelCacheRoutingPreparation); valid && preparation.ChannelID == channel.Id && preparation.Model == modelName {
-			return preparation
-		}
-	}
 	format := simulatedModelCacheRequestFormat(c.Request.URL.Path)
 	if format == "" {
 		return nil
@@ -789,6 +799,12 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	body, err := storage.Bytes()
 	if err != nil {
 		return nil
+	}
+	digest := sha256.Sum256(body)
+	if existing, ok := c.Get(service.SimulatedModelCacheRoutingPreparationContextKey); ok {
+		if preparation, valid := existing.(*service.SimulatedModelCacheRoutingPreparation); valid && preparation.ChannelID == channel.Id && preparation.Model == modelName && preparation.BodyDigest == digest {
+			return preparation
+		}
 	}
 	keys := channel.GetKeys()
 	allowed := make(map[string]struct{}, len(keys))
@@ -835,6 +851,7 @@ func prepareSimulatedModelCacheRouting(c *gin.Context, channel *model.Channel, m
 	}
 	cancel()
 	preparation := &service.SimulatedModelCacheRoutingPreparation{
+		BodyDigest: digest,
 		ChannelID:  channel.Id,
 		Model:      modelName,
 		PromptText: prompt.Text,

@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/videocompat"
 
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -92,6 +93,7 @@ func ReportCurrentSystemInstance() error {
 	diskInfo := common.GetDiskSpaceInfo()
 	info := SystemInstanceInfo{
 		SchemaVersion: 1,
+		Extra:         map[string]any{"video_pool": videocompat.Stats()},
 		Node:          identity,
 		Role: SystemInstanceRoleInfo{
 			IsMaster: common.IsMasterNode,

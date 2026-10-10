@@ -16,9 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { VideoPoolStats } from '../system-settings/operations/video-pool-types'
+
 export type SystemInstanceStatus = 'online' | 'stale'
 
 export type SystemInstanceInfo = {
+  extra?: { video_pool?: VideoPoolStats; [key: string]: unknown }
   schema_version?: number
   node?: {
     name?: string

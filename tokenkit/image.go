@@ -38,6 +38,9 @@ func ImageTokens(model string, img Image) int {
 		w, h = fitWithin(w, h, maxImageSide)
 	}
 
+	if IsKimiK3(model) {
+		return KimiK3ImageTokens(w, h)
+	}
 	switch ModelFamily(model) {
 	case FamilyOpenAI:
 		return openAIImageRuleFor(model, img.Detail).tokens(w, h)
@@ -63,6 +66,9 @@ func ImageTokens(model string, img Image) int {
 // for model and detail. When it returns false, callers can skip reading the
 // image.
 func ImageNeedsSize(model, detail string) bool {
+	if IsKimiK3(model) {
+		return true
+	}
 	switch ModelFamily(model) {
 	case FamilyOpenAI:
 		rule := openAIImageRuleFor(model, detail)
@@ -287,4 +293,24 @@ func shrinkShortSide(w, h, limit int) (int, int) {
 
 func ceilDiv(a, b int) int {
 	return (a + b - 1) / b
+}
+
+// IsKimiK3 confines the measured image rule to the K3 family.
+func IsKimiK3(model string) bool {
+	model = strings.ToLower(model)
+	if slash := strings.LastIndexByte(model, '/'); slash >= 0 {
+		model = model[slash+1:]
+	}
+	return model == "k3" || model == "kimi-k3" || strings.HasPrefix(model, "kimi-k3-")
+}
+
+// KimiK3ImageTokens uses the merged 28px image grid plus conservative framing.
+// JPEG quality does not change the token estimate.
+func KimiK3ImageTokens(width, height int) int {
+	if width <= 0 || height <= 0 {
+		width, height = unknownImageSide, unknownImageSide
+	}
+	width, height = fitWithin(width, height, 7168)
+	patches := ceilDiv(width, 28) * ceilDiv(height, 28)
+	return min(patches, 16384) + 16
 }

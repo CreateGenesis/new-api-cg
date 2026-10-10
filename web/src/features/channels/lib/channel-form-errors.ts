@@ -72,6 +72,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'disable_stream',
   'disable_non_stream',
   'disable_video_understanding',
+  'video_compatibility',
   'usage_token_limit_input_tokens',
   'usage_token_limit_output_tokens',
   'simulated_model_cache_enabled',

@@ -76,7 +76,10 @@ export type SafeNumberFieldProps = {
 export function safeNumberFieldProps<
   TFieldValues extends FieldValues,
   TName extends FieldPath<TFieldValues>,
->(field: ControllerRenderProps<TFieldValues, TName>): SafeNumberFieldProps {
+>(
+  field: ControllerRenderProps<TFieldValues, TName>,
+  options?: { allowEmpty?: boolean }
+): SafeNumberFieldProps {
   const raw = field.value as unknown
   const display: number | '' =
     typeof raw === 'number' && Number.isFinite(raw) ? raw : ''
@@ -84,6 +87,12 @@ export function safeNumberFieldProps<
   return {
     value: display,
     onChange: (event) => {
+      // New forms may keep an empty draft so users can clear and replace a number.
+      // Their numeric schema still rejects it when submitted.
+      if (options?.allowEmpty && event.target.value === '') {
+        field.onChange('')
+        return
+      }
       const next = event.target.valueAsNumber
       if (Number.isFinite(next)) {
         ;(field.onChange as (value: number) => void)(next)

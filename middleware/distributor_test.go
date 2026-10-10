@@ -281,6 +281,7 @@ func TestVideoUnderstandingDetectionPreservesBody(t *testing.T) {
 		{"duplicate content key", `[{"role":"user","content":"text","content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
 		{"duplicate type key", `[{"role":"user","content":[{"type":"text","type":"video_url","video_url":"ms://video"}]}]`, true},
 		{"case-insensitive envelope", `[{"role":"user","Content":[{"type":"video_url","video_url":"ms://video"}]}]`, true},
+		{"case-sensitive content type", `[{"role":"user","Content":[{"type":"VIDEO_URL","video_url":"ms://video"}]}]`, false},
 		{"historical message", `[{"role":"user","content":[{"type":"video_url","video_url":"ms://video"}]},{"role":"assistant","content":"red"},{"role":"user","content":"explain"}]`, true},
 		{"type alone", `[{"role":"user","content":[{"type":"video_url"}]}]`, true},
 		{"plain text", `[{"role":"user","content":"type: video_url"}]`, false},
@@ -297,6 +298,9 @@ func TestVideoUnderstandingDetectionPreservesBody(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
 				body := `{"model":"video-test","group":"default","messages":` + tc.messages + `}`
+				if tc.name == "case-insensitive envelope" {
+					body = strings.Replace(body, `"messages":`, `"Messages":`, 1)
+				}
 				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 				ctx.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 				ctx.Request.Header.Set("Content-Type", "application/json")

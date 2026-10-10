@@ -26,6 +26,7 @@ import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { VideoProcessingSettingsSection } from './video-processing-settings-section'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -103,6 +104,15 @@ const OPERATIONS_SECTIONS = [
         defaultRelayDebugTextLimitMB={Number(
           settings.RelayDebugLogTextLimitMB ?? 16
         )}
+      />
+    ),
+  },
+  {
+    id: 'video-processing',
+    titleKey: 'Video processing',
+    build: (settings: OperationsSettings) => (
+      <VideoProcessingSettingsSection
+        defaultValue={settings['video_processing_setting.config']}
       />
     ),
   },
