@@ -1221,6 +1221,38 @@ func TestPatchSimulatedModelCacheResponseBodyPreservesResponsesModelInSSE(t *tes
 	require.Contains(t, got, `data: [DONE]`)
 }
 
+func TestPatchUsageResponseBodyFillsResponsesTerminalUsage(t *testing.T) {
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 8, TotalTokens: 108}
+	ApplySimulatedModelCacheUsageRewrite(usage, SimulatedModelCacheUsageRewrite{MatchRatio: 0.25})
+	for _, eventType := range []string{"response.completed", "response.incomplete", "response.failed", "response.done", "response.cancelled", "response.canceled", "response.created", "response.in_progress"} {
+		t.Run(eventType, func(t *testing.T) {
+			body := []byte(`data: {"type":"` + eventType + `","response":{"id":"resp_test","model":"alias","usage":null}}` + "\n\n")
+			patched := PatchUsageResponseBody(types.RelayFormatOpenAIResponses, "text/event-stream", body, usage, "", true)
+			var payload struct {
+				Response struct {
+					ID    string     `json:"id"`
+					Model string     `json:"model"`
+					Usage *dto.Usage `json:"usage"`
+				} `json:"response"`
+				Usage *dto.Usage `json:"usage"`
+			}
+			require.NoError(t, common.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(string(patched), "data:"))), &payload))
+			assert.Equal(t, "resp_test", payload.Response.ID)
+			assert.Equal(t, "alias", payload.Response.Model)
+			assert.Nil(t, payload.Usage, "Responses usage must stay inside response")
+			if eventType == "response.created" || eventType == "response.in_progress" {
+				assert.Nil(t, payload.Response.Usage, "usage is filled only when the response ends")
+				return
+			}
+			require.NotNil(t, payload.Response.Usage)
+			assert.Equal(t, 100, payload.Response.Usage.InputTokens)
+			assert.Equal(t, 8, payload.Response.Usage.OutputTokens)
+			assert.Equal(t, 108, payload.Response.Usage.TotalTokens)
+			assert.Equal(t, 25, payload.Response.Usage.InputTokensDetails.CachedTokens)
+		})
+	}
+}
+
 func TestPatchSimulatedModelCacheResponseBodyUpdatesClaudeUsage(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     100,

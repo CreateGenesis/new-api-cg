@@ -59,7 +59,7 @@ test('editing the group tolerance preserves edit mode and saves milliseconds', a
   expect(
     screen.getByRole('button', { name: 'Switch to JSON' })
   ).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Save group ratios' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save group settings' }))
   await waitFor(() => expect(onSave).toHaveBeenCalled())
   expect(onSave.mock.calls[0][0].GroupSchedulingTolerance).toBe(
     '{"default":2500}'

@@ -49,6 +49,8 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { formatQuota } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
+import { getServerMessage } from '@/lib/server-error-message'
 
 import {
   getAdminPlans,
@@ -137,10 +139,18 @@ export function UserSubscriptionsDialog(props: Props) {
         getAdminPlans(),
         getUserSubscriptions(props.user.id),
       ])
-      if (plansRes.success) setPlans(plansRes.data || [])
-      if (subsRes.success) setSubs(subsRes.data || [])
-    } catch {
-      toast.error(t('Loading failed'))
+      if (plansRes.success) {
+        setPlans(plansRes.data || [])
+      } else {
+        handleServerError(plansRes)
+      }
+      if (subsRes.success) {
+        setSubs(subsRes.data || [])
+      } else {
+        handleServerError(subsRes)
+      }
+    } catch (error) {
+      handleServerError(error, t('Loading failed'))
     } finally {
       setLoading(false)
     }
@@ -164,13 +174,15 @@ export function UserSubscriptionsDialog(props: Props) {
         plan_id: Number(selectedPlanId),
       })
       if (res.success) {
-        toast.success(res.data?.message || t('Added successfully'))
+        toast.success(getServerMessage(res.data) || t('Added successfully'))
         setSelectedPlanId('')
         await loadData()
         props.onSuccess?.()
+      } else {
+        handleServerError(res)
       }
-    } catch {
-      toast.error(t('Request failed'))
+    } catch (error) {
+      handleServerError(error, t('Request failed'))
     } finally {
       setCreating(false)
     }
@@ -182,9 +194,11 @@ export function UserSubscriptionsDialog(props: Props) {
       if (confirmAction.type === 'invalidate') {
         const res = await invalidateUserSubscription(confirmAction.subId)
         if (res.success) {
-          toast.success(res.data?.message || t('Has been invalidated'))
+          toast.success(getServerMessage(res.data) || t('Has been invalidated'))
           await loadData()
           props.onSuccess?.()
+        } else {
+          handleServerError(res)
         }
       } else {
         const res = await deleteUserSubscription(confirmAction.subId)
@@ -192,10 +206,12 @@ export function UserSubscriptionsDialog(props: Props) {
           toast.success(t('Deleted'))
           await loadData()
           props.onSuccess?.()
+        } else {
+          handleServerError(res)
         }
       }
-    } catch {
-      toast.error(t('Operation failed'))
+    } catch (error) {
+      handleServerError(error, t('Operation failed'))
     } finally {
       setConfirmAction(null)
     }
@@ -217,9 +233,11 @@ export function UserSubscriptionsDialog(props: Props) {
         )
         await loadData()
         props.onSuccess?.()
+      } else {
+        handleServerError(res)
       }
-    } catch {
-      toast.error(t('Operation failed'))
+    } catch (error) {
+      handleServerError(error, t('Operation failed'))
     } finally {
       setResetting(false)
       setResetAction(null)

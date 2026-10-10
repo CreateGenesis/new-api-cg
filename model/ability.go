@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +62,36 @@ func GetAllEnableAbilities() []Ability {
 
 func GetChannel(group string, model string, retry int, filters []dto.ChannelFilter) (*Channel, error) {
 	return GetChannelExcludingPriority(group, model, retry, "", nil, nil, nil, filters...)
+}
+
+func getPriority(group string, model string, retry int) (int, error) {
+
+	var priorities []int
+	err := DB.Model(&Ability{}).
+		Select("DISTINCT(priority)").
+		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
+		Order("priority DESC").              // 按优先级降序排序
+		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
+
+	if err != nil {
+		// 处理错误
+		return 0, err
+	}
+
+	if len(priorities) == 0 {
+		// 如果没有查询到优先级，则返回错误
+		return 0, errors.New("database consistency is broken")
+	}
+
+	// 确定要使用的优先级
+	var priorityToUse int
+	if retry >= len(priorities) {
+		// 如果重试次数大于优先级数，则使用最小的优先级
+		priorityToUse = priorities[len(priorities)-1]
+	} else {
+		priorityToUse = priorities[retry]
+	}
+	return priorityToUse, nil
 }
 
 func GetChannelExcluding(group string, model string, retry int, requestPath string, inputTokenEstimates *kitdto.InputTokenEstimates, excluded map[int]struct{}) (*Channel, error) {
@@ -163,7 +192,7 @@ func GetChannelExcludingPriority(group string, model string, retry int, requestP
 
 // filterAbilitiesByConstraints applies the same ChannelSatisfiesFilters
 // predicate used by the memory-cache path. A failed channel lookup fails
-// closed when task-plugin identity or video understanding settings are required.
+// closed when task-plugin identity or video or WebSocket settings are required.
 func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) []Ability {
 	if len(abilities) == 0 {
 		return nil
@@ -185,7 +214,7 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 			return nil
 		}
 		for _, filter := range filters {
-			if filter.Kind == dto.FilterVideoUnderstanding {
+			if filter.Kind == dto.FilterVideoUnderstanding || filter.Kind == dto.FilterResponsesWebSocket {
 				return nil
 			}
 		}
@@ -393,7 +422,7 @@ var fixLock = sync.Mutex{}
 func FixAbility() (int, int, error) {
 	lock := fixLock.TryLock()
 	if !lock {
-		return 0, 0, errors.New("已经有一个修复任务在运行中，请稍后再试")
+		return 0, 0, common.NewMessage("A repair task is already running. Please try again later")
 	}
 	defer fixLock.Unlock()
 
@@ -401,13 +430,13 @@ func FixAbility() (int, int, error) {
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		err := DB.Exec("DELETE FROM abilities").Error
 		if err != nil {
-			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
+			common.SysLog(common.LogText("Delete abilities failed: %s", err.Error()))
 			return 0, 0, err
 		}
 	} else {
 		err := DB.Exec("TRUNCATE TABLE abilities").Error
 		if err != nil {
-			common.SysLog(fmt.Sprintf("Truncate abilities failed: %s", err.Error()))
+			common.SysLog(common.LogText("Truncate abilities failed: %s", err.Error()))
 			return 0, 0, err
 		}
 	}
@@ -427,7 +456,7 @@ func FixAbility() (int, int, error) {
 		// Delete all abilities of this channel
 		err = DB.Where("channel_id IN ?", ids).Delete(&Ability{}).Error
 		if err != nil {
-			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
+			common.SysLog(common.LogText("Delete abilities failed: %s", err.Error()))
 			failCount += len(chunk)
 			continue
 		}
@@ -435,7 +464,7 @@ func FixAbility() (int, int, error) {
 		for _, channel := range chunk {
 			err = channel.AddAbilities(nil)
 			if err != nil {
-				common.SysLog(fmt.Sprintf("Add abilities for channel %d failed: %s", channel.Id, err.Error()))
+				common.SysLog(common.LogText("Add abilities for channel %d failed: %s", channel.Id, err.Error()))
 				failCount++
 			} else {
 				successCount++

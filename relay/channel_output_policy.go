@@ -679,7 +679,7 @@ func isChannelOutputStreamTailEvent(format types.RelayFormat, event []byte) bool
 		choices, _ := payload["choices"].([]any)
 		return hasUsage && len(choices) == 0
 	case types.RelayFormatOpenAIResponses:
-		return eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed"
+		return eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "response.cancelled" || eventType == "response.canceled"
 	case types.RelayFormatClaude:
 		return eventType == "message_delta" || eventType == "message_stop"
 	case types.RelayFormatGemini:

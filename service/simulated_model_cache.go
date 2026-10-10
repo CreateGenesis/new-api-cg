@@ -171,7 +171,8 @@ func patchSimulatedModelCacheJSONBody(format types.RelayFormat, body []byte, usa
 			patched = true
 		}
 	}
-	if _, exists := payload["usage"]; !exists && ensureUsage && format != types.RelayFormatGemini &&
+	_, hasResponse := payload["response"].(map[string]any)
+	if _, exists := payload["usage"]; !exists && !hasResponse && ensureUsage && format != types.RelayFormatGemini &&
 		shouldEnsurePatchedUsage(format, payload, stream) {
 		usageMap := map[string]any{}
 		payload["usage"] = usageMap
@@ -214,7 +215,12 @@ func shouldEnsurePatchedUsage(format types.RelayFormat, payload map[string]any, 
 	case types.RelayFormatClaude:
 		return eventType == "message_delta"
 	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
-		return eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed"
+		switch eventType {
+		case "response.completed", "response.incomplete", "response.failed", "response.done", "response.cancelled", "response.canceled":
+			return true
+		default:
+			return false
+		}
 	case types.RelayFormatGemini:
 		_, hasCandidates := payload["candidates"]
 		return hasCandidates

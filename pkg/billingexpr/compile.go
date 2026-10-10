@@ -8,6 +8,7 @@ import (
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/ast"
+	"github.com/expr-lang/expr/parser"
 	"github.com/expr-lang/expr/vm"
 )
 
@@ -114,6 +115,7 @@ type cachedEntry struct {
 	usedUsageKeys map[string]bool
 	requestRules  []RequestRuleTrace
 	version       int
+	fixedPricing  bool
 }
 
 var (
@@ -162,6 +164,9 @@ var compileEnvPrototypeV1 = map[string]any{
 	"_trace":             func(int, bool, float64) float64 { return 1 },
 	"_trace_int":         func(int, bool, int) int { return 1 },
 	"u":                  func(string) any { return nil },
+	"image_count":        float64(1),
+	"img_cr":             float64(0),
+	"fixed":              func(float64) float64 { return 0 },
 }
 
 func getCompileEnv(version int) map[string]any {
@@ -201,6 +206,21 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 
 	version, body := ParseExprVersion(exprStr)
 	body = canonicalizeDirectOverrideExpr(body)
+	// Validate before optimization so unreachable fixed-price branches cannot
+	// bypass validation or a host's unsupported-protocol checks.
+	tree, err := parser.Parse(body)
+	if err != nil {
+		return nil, fmt.Errorf("expr compile error: %w", err)
+	}
+	fixedPricing := ast.Find(tree.Node, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.IdentifierNode)
+		return ok && identifier.Value == "fixed"
+	}) != nil
+	if fixedPricing {
+		if err := validateFixedPricingTree(tree.Node); err != nil {
+			return nil, fmt.Errorf("expr compile error: %w", err)
+		}
+	}
 	patcher := &requestRulePatcher{}
 	prog, err := expr.Compile(body, expr.Env(getCompileEnv(version)), expr.Patch(patcher), expr.AsFloat64())
 	if patcher.restrictedIdentifier != "" {
@@ -216,6 +236,7 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 		usedUsageKeys: extractUsedUsageKeys(prog),
 		requestRules:  patcher.requestRules,
 		version:       version,
+		fixedPricing:  fixedPricing,
 	}
 	cacheMu.Lock()
 	if len(cache) >= maxCacheSize {
@@ -284,10 +305,14 @@ func extractUsedUsageKeys(prog *vm.Program) map[string]bool {
 // UsedVars returns the set of identifier names referenced by an expression.
 // The result is cached alongside the compiled program. Returns nil for empty input.
 func UsedVars(exprStr string) map[string]bool {
+	return UsedVarsByHash(exprStr, ExprHashString(exprStr))
+}
+
+// UsedVarsByHash reuses the digest captured by the host's billing snapshot.
+func UsedVarsByHash(exprStr, hash string) map[string]bool {
 	if exprStr == "" {
 		return nil
 	}
-	hash := ExprHashString(exprStr)
 	cacheMu.RLock()
 	if entry, ok := cache[hash]; ok {
 		cacheMu.RUnlock()

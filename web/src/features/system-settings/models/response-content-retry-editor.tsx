@@ -43,18 +43,11 @@ import {
   SettingsSwitchContent,
   SettingsSwitchItem,
 } from '../components/settings-form-layout'
+import type { RoutingPolicyFormValues } from '../request-policies/routing-form'
 import { RESPONSE_CONTENT_RETRY_MAX_RULES } from './response-content-retry-policy'
-import type {
-  RoutingReliabilityFormInput,
-  RoutingReliabilityFormValues,
-} from './routing-reliability-schema'
 
 type ResponseContentRetryEditorProps = {
-  form: UseFormReturn<
-    RoutingReliabilityFormInput,
-    unknown,
-    RoutingReliabilityFormValues
-  >
+  form: UseFormReturn<RoutingPolicyFormValues>
   disabled: boolean
 }
 

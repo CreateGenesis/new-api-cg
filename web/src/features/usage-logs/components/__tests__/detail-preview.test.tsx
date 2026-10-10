@@ -22,7 +22,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterAll, afterEach, beforeEach, expect, test, vi } from 'vitest'
@@ -47,12 +47,12 @@ vi.hoisted(() => {
 })
 afterAll(() => vi.unstubAllGlobals())
 
-function makeLog(other: LogOtherData): UsageLog {
+function makeLog(other: LogOtherData, type = 2): UsageLog {
   return {
     id: 1,
     user_id: 1,
     created_at: 1,
-    type: 2,
+    type,
     content: '',
     username: 'user',
     token_name: 'token',
@@ -73,9 +73,13 @@ function makeLog(other: LogOtherData): UsageLog {
   }
 }
 
-function DetailPreview(props: { other: LogOtherData; isAdmin: boolean }) {
+function DetailPreview(props: {
+  other: LogOtherData
+  isAdmin: boolean
+  type?: number
+}) {
   const table = useReactTable({
-    data: [makeLog(props.other)],
+    data: [makeLog(props.other, props.type)],
     columns: useCommonLogsColumns(props.isAdmin, false),
     getCoreRowModel: getCoreRowModel(),
   })
@@ -116,18 +120,58 @@ afterEach(() => {
   client.clear()
   useSystemConfigStore.getState().setConfig(previousConfig)
 })
-function renderPreview(other: LogOtherData, isAdmin = true) {
+function renderPreview(other: LogOtherData, isAdmin = true, type?: number) {
   render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={client}>
-        <DetailPreview other={other} isAdmin={isAdmin} />
+        <DetailPreview other={other} isAdmin={isAdmin} type={type} />
       </QueryClientProvider>
     </I18nextProvider>
   )
   return screen.getByRole('button', { name: /./ })
 }
 
+test('keeps log details open when the parent refreshes with unchanged data', async () => {
+  const other = { model_price: 0.25 }
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </I18nextProvider>
+  )
+  const { rerender } = render(<DetailPreview other={other} isAdmin />, {
+    wrapper,
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Per-call · $0.25' }))
+  expect(await screen.findByRole('dialog')).toBeVisible()
+  rerender(<DetailPreview other={other} isAdmin />)
+  expect(screen.getByRole('dialog')).toBeVisible()
+})
+
 test.each([
+  {
+    name: 'fixed expression zero price',
+    other: {
+      billing_mode: 'tiered_expr',
+      billing_unit: 'request' as const,
+      fixed_price: 0,
+      matched_tier: 'free',
+      expr_b64: btoa('tier("free", fixed(0))'),
+    },
+    expected: 'free · Per-call $0/request',
+  },
+  {
+    name: 'fixed expression trace outside the display grammar',
+    other: {
+      billing_mode: 'tiered_expr',
+      billing_unit: 'request' as const,
+      fixed_price: 0.01,
+      matched_tier: 'priority',
+      expr_b64: btoa(
+        'param("fast") == true ? tier("priority", fixed(0.01)) : tier("tokens", p * 2)'
+      ),
+    },
+    expected: 'priority · Per-call $0.01/request',
+  },
   {
     name: 'per-call',
     other: { model_price: 0.25 },
@@ -150,6 +194,29 @@ test.each([
     admin_info: { task_plugin: plugin },
   })
   expect(preview.textContent).toBe(expected)
+})
+
+test('top-up content_parts render in the viewer language', async () => {
+  i18n.addResourceBundle('zh', 'translation', {
+    'Online top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}':
+      '在线充值成功，充值额度：{{quota}}，支付金额：{{amount}}',
+  })
+  await i18n.changeLanguage('zh')
+  const preview = renderPreview(
+    {
+      content_parts: [
+        {
+          key: 'Online top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}',
+          params: { quota: '$10.000000', amount: '10.00' },
+        },
+      ],
+    },
+    false,
+    1
+  )
+  expect(preview.textContent).toBe(
+    '在线充值成功，充值额度：$10.000000，支付金额：10.00'
+  )
 })
 
 test('quota saturation remains first and only billing adds to the counter', () => {
@@ -247,6 +314,71 @@ test.each([
     expect(preview.textContent).toBe(expected)
   }
 )
+
+test('task log prices use localized unit labels from pricing metadata', async () => {
+  client.setQueryData(['pricing'], {
+    data: [
+      {
+        model_name: 'wan2.5-i2v-preview',
+        billing_usage_schema: {
+          images: {
+            type: 'number',
+            unit: 'count',
+            unitLabel: { en: 'image', zh: '张' },
+          },
+        },
+      },
+    ],
+    vendors: [],
+  })
+  const preview = renderPreview({
+    is_task: true,
+    billing_mode: 'tiered_expr',
+    expr_b64: btoa('tier("images", u("images") * 0.25)'),
+    matched_tier: 'images',
+  })
+  expect(preview).toHaveTextContent('images · images $0.25/image')
+  await act(() => i18n.changeLanguage('zh-CN'))
+  expect(
+    screen.getByRole('button', { name: /images · images/ })
+  ).toHaveTextContent('images · images $0.25/张')
+})
+
+test('task log prices select the executing provider’s schema', () => {
+  client.setQueryData(['pricing'], {
+    data: [
+      {
+        model_name: 'wan2.5-i2v-preview',
+        billing_usage_schema: { seconds: { type: 'number', unit: 'second' } },
+        billing_plugin_variants: [
+          {
+            plugin_key: 'beta',
+            plugin_name: 'Beta',
+            billing_expr: 'tier("images", u("images") * 0.25)',
+            billing_usage_schema: {
+              images: {
+                type: 'number',
+                unit: 'count',
+                unitLabel: { en: 'image' },
+              },
+            },
+          },
+        ],
+      },
+    ],
+    vendors: [],
+  })
+  const preview = renderPreview({
+    is_task: true,
+    billing_mode: 'tiered_expr',
+    expr_b64: btoa('tier("images", u("images") * 0.25)'),
+    matched_tier: 'images',
+    admin_info: {
+      task_plugin: { key: 'beta', name: 'Beta', version: '1.0.0' },
+    },
+  })
+  expect(preview).toHaveTextContent('images · images $0.25/image')
+})
 
 test.each(['missing schema', 'unsupported expression', 'unknown tier'])(
   'task pricing with %s shows an explicit unavailable summary',

@@ -3,6 +3,7 @@ package service
 import (
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -21,16 +22,17 @@ type TieredResultWrapper = billingexpr.TieredResult
 // When cacheUsageValidationSplit is enabled, P starts from canonical total
 // input for every upstream protocol. Otherwise this preserves the legacy
 // protocol-semantic behavior.
-func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool, cacheUsageValidationSplit bool) billingexpr.TokenParams {
+func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool, splitOptions ...bool) billingexpr.TokenParams {
+	cacheUsageValidationSplit := len(splitOptions) > 0 && splitOptions[0]
 	semantic := UsageSemanticOpenAI
 	if usage != nil && (usage.UsageSemantic == UsageSemanticAnthropic ||
 		usage.UsageSemantic == "" && isClaudeUsageSemantic) {
 		semantic = UsageSemanticAnthropic
 	}
 
-	var normalizedUsage dto.Usage
 	var input NormalizedInputTokens
 	var p, c, img, ai, imgO, ao float64
+	cacheDetailsUsage := usage
 	if cacheUsageValidationSplit {
 		normalized := NormalizeUsageForBilling(usage)
 		input = normalized.InputTokens
@@ -40,34 +42,70 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		ai = float64(normalized.InputAudioTokens)
 		imgO = float64(normalized.OutputImageTokens)
 		ao = float64(normalized.OutputAudioTokens)
+		if billingUsage, ok := usageFromBillingUsage(usage); ok {
+			cacheDetailsUsage = billingUsage
+		}
 	} else {
-		normalizedUsage = NormalizeUsageForSemantic(usage, semantic)
-		input = NormalizeInputTokens(&normalizedUsage)
-		p = float64(normalizedUsage.PromptTokens)
-		c = float64(normalizedUsage.CompletionTokens)
-		img = float64(normalizedUsage.PromptTokensDetails.ImageTokens)
-		ai = float64(normalizedUsage.PromptTokensDetails.AudioTokens)
-		imgO = float64(normalizedUsage.CompletionTokenDetails.ImageTokens)
-		ao = float64(normalizedUsage.CompletionTokenDetails.AudioTokens)
+		normalized := NormalizeUsageForSemantic(usage, semantic)
+		input = NormalizeInputTokens(&normalized)
+		p = float64(normalized.PromptTokens)
+		c = float64(normalized.CompletionTokens)
+		img = float64(normalized.PromptTokensDetails.ImageTokens)
+		ai = float64(normalized.PromptTokensDetails.AudioTokens)
+		imgO = float64(normalized.CompletionTokenDetails.ImageTokens)
+		ao = float64(normalized.CompletionTokenDetails.AudioTokens)
 	}
 	cacheCreation5m, cacheCreation1h := NormalizeCacheCreationSplit(
 		input.CacheCreationInputTokens,
 		input.CacheCreation5mInputTokens,
 		input.CacheCreation1hInputTokens,
 	)
-
 	cr := float64(input.CacheReadInputTokens)
 	cc5m := float64(cacheCreation5m)
 	cc1h := float64(cacheCreation1h)
-
 	inputLen := float64(input.TotalInputTokens)
-	// Direct-price overrides use the canonical total so their own explicitly
-	// priced cache/media categories can be subtracted exactly once. The legacy
-	// Claude p value remains uncached input for the base expression.
-	rawP := inputLen
-	rawC := c
+	// Direct overrides price their own categories from canonical totals.
+	rawP, rawC := inputLen, c
 
-	if cacheUsageValidationSplit || semantic != UsageSemanticAnthropic {
+	imgCR := float64(0)
+	if usedVars["img_cr"] && semantic != UsageSemanticAnthropic && cacheDetailsUsage != nil {
+		details := cacheDetailsUsage.PromptTokensDetails.CachedTokensDetails
+		if details != nil && details.ImageTokens != nil {
+			cachedImage := *details.ImageTokens
+			cached := cacheDetailsUsage.PromptTokensDetails.CachedTokens
+			image := cacheDetailsUsage.PromptTokensDetails.ImageTokens
+			valid := cachedImage >= 0 && cached >= cachedImage && image >= cachedImage &&
+				cached <= input.TotalInputTokens && image <= input.TotalInputTokens-(cached-cachedImage) &&
+				float64(cachedImage) <= cr && float64(cachedImage) <= img
+			if valid {
+				remaining := cached - cachedImage
+				for _, count := range []*int{details.TextTokens, details.AudioTokens} {
+					if count == nil {
+						continue
+					}
+					if *count < 0 || *count > remaining {
+						valid = false
+						break
+					}
+					remaining -= *count
+				}
+			}
+			if valid {
+				imgCR = float64(cachedImage)
+				cr -= imgCR
+				img -= imgCR
+			} else {
+				common.SysError(common.LogText("invalid image cache token breakdown; using aggregate cache billing"))
+			}
+		}
+	}
+
+	if !cacheUsageValidationSplit && semantic == UsageSemanticAnthropic {
+		// Anthropic input excludes cache reads; fold them into p unless priced separately.
+		if !usedVars["cr"] {
+			p += cr
+		}
+	} else {
 		if usedVars["cr"] {
 			p -= cr
 		}
@@ -80,6 +118,9 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		if usedVars["img"] {
 			p -= img
 		}
+		if usedVars["img_cr"] {
+			p -= imgCR
+		}
 		if usedVars["ai"] {
 			p -= ai
 		}
@@ -90,29 +131,12 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 			c -= ao
 		}
 	}
-
-	// OpenAI cache-write usage reports unadjusted prefix counts, so cr + cc can
-	// exceed the prompt and drive the remainder negative. Clamp at zero.
-	if p < 0 {
-		p = 0
-	}
-	if c < 0 {
-		c = 0
-	}
-
+	// Provider cache-write prefix counts can exceed the reported prompt.
+	p, c = max(p, 0), max(c, 0)
 	return billingexpr.TokenParams{
-		P:    p,
-		C:    c,
-		RawP: rawP,
-		RawC: rawC,
-		Len:  inputLen,
-		CR:   cr,
-		CC:   cc5m,
-		CC1h: cc1h,
-		Img:  img,
-		ImgO: imgO,
-		AI:   ai,
-		AO:   ao,
+		P: p, C: c, RawP: rawP, RawC: rawC, Len: inputLen,
+		CR: cr, CC: cc5m, CC1h: cc1h, Img: img, ImgCR: imgCR,
+		ImgO: imgO, AI: ai, AO: ao,
 	}
 }
 
@@ -192,6 +216,11 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	if relayInfo.BillingRequestInput != nil {
 		requestInput = *relayInfo.BillingRequestInput
 	}
+	if relayInfo.BillingImageCount != nil {
+		requestInput.ImageCount = relayInfo.BillingImageCount
+	} else if snap.EstimatedImageCount != nil {
+		requestInput.ImageCount = snap.EstimatedImageCount
+	}
 
 	tr, err := billingexpr.ComputeTieredQuotaWithRequest(snap, params, requestInput)
 	if err != nil {
@@ -208,4 +237,14 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	noteQuotaClamp(relayInfo, tr.Clamp)
 
 	return true, tr.ActualQuotaAfterGroup, &tr
+}
+
+// A failed evaluation retains the reservation and its estimated billing unit.
+// Successful evaluations always use the actual branch, including zero prices.
+func isFixedPriceSettlement(info *relaycommon.RelayInfo, result *billingexpr.TieredResult) bool {
+	if result != nil {
+		return result.BillingUnit == billingexpr.BillingUnitRequest
+	}
+	snap := info.TieredBillingSnapshot
+	return snap != nil && snap.BillingMode == "tiered_expr" && snap.EstimatedBillingUnit == billingexpr.BillingUnitRequest
 }

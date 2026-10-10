@@ -79,6 +79,7 @@ import {
 } from '@/components/ui/tooltip'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { updateChannel } from '../../api'
 import {
@@ -792,14 +793,10 @@ function ChannelTestDialogContent({
         refreshChannelLists()
         setIsDeleteFailedDialogOpen(false)
       } else {
-        toast.error(response.message || t('Failed to delete failed models'))
+        handleServerError(response, t('Failed to delete failed models'))
       }
     } catch (error: unknown) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : t('Failed to delete failed models')
-      )
+      handleServerError(error, t('Failed to delete failed models'))
     } finally {
       setIsDeletingFailed(false)
     }
@@ -972,7 +969,7 @@ function ChannelTestDialogContent({
             <span className='min-w-0 truncate'>{currentRow.name}</span>
           </span>
         }
-        contentClassName='max-h-[90vh] overflow-hidden sm:max-w-4xl'
+        contentClassName='max-h-[min(90dvh,var(--dialog-available-height))] overflow-y-auto sm:max-w-4xl'
         contentHeight='auto'
         bodyClassName='space-y-4'
         footer={

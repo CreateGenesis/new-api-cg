@@ -8,7 +8,39 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/tokenkit"
 )
+
+// InputTokenEstimatesForRouting shares conservative request sizing between HTTP
+// and WebSocket relays before selecting a channel with an input range.
+func InputTokenEstimatesForRouting(format types.RelayFormat, tokens int, meta *types.TokenCountMeta, modelName string) *dto.InputTokenEstimates {
+	tokens = max(tokens, 0)
+	if meta != nil {
+		conservative := usageEstimationFramingOverhead(format, meta)
+		for _, file := range meta.Files {
+			if file == nil {
+				continue
+			}
+			switch file.FileType {
+			case types.FileTypeImage:
+				conservative = saturatingTokenAdd(conservative, 520)
+			case types.FileTypeAudio:
+				conservative = saturatingTokenAdd(conservative, 256)
+			case types.FileTypeVideo:
+				conservative = saturatingTokenAdd(conservative, 8192)
+			case types.FileTypeFile:
+				conservative = saturatingTokenAdd(conservative, 4096)
+			}
+		}
+		textTokens := max(tokenkit.Count(modelName, meta.CombineText), (len(meta.CombineText)+3)/4)
+		tokens = max(tokens, saturatingTokenAdd(conservative, textTokens))
+	}
+	return &dto.InputTokenEstimates{
+		Default: tokens,
+		GLM52:   EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyGLM, format, meta),
+		KimiK3:  EstimateModelFamilyInputTokens(dto.UsageEstimationModelFamilyKimi, format, meta),
+	}
+}
 
 func EstimateModelFamilyInputTokens(family dto.UsageEstimationModelFamily, format types.RelayFormat, meta *types.TokenCountMeta) int {
 	if meta == nil {

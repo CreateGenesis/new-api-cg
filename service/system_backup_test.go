@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,22 +13,55 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/utils/tests"
 )
 
-func setupSystemBackupTest(t *testing.T) *gorm.DB {
+func setupSystemBackupTest(t *testing.T, dialectOptions ...string) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	dialect := "sqlite"
+	if len(dialectOptions) > 0 {
+		dialect = dialectOptions[0]
+	}
+	var driver gorm.Dialector
+	databaseType := common.DatabaseTypeSQLite
+	switch dialect {
+	case "mysql":
+		dsn := os.Getenv("TEST_MYSQL_DSN")
+		if dsn == "" {
+			t.Skip("TEST_MYSQL_DSN not configured")
+		}
+		driver = mysql.Open(dsn)
+		databaseType = common.DatabaseTypeMySQL
+	case "postgres":
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN not configured")
+		}
+		driver = postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true})
+		databaseType = common.DatabaseTypePostgreSQL
+	default:
+		driver = sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name()))
+	}
+	db, err := gorm.Open(driver, &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(
+	models := []any{
 		&model.Option{}, &model.Channel{}, &model.Ability{}, &model.Vendor{}, &model.Model{},
 		&model.PrefillGroup{}, &model.Setup{}, &model.CustomOAuthProvider{}, &model.SubscriptionPlan{},
 		&model.TaskPlugin{}, &model.AuthzRole{}, &model.CasbinRule{}, &model.User{}, &model.Token{}, &model.Redemption{},
 		&model.TwoFA{}, &model.TwoFABackupCode{}, &model.PasskeyCredential{},
 		&model.ExternalIdentityClaim{}, &model.UserOAuthBinding{}, &model.UserSubscription{},
-		&model.UserSession{}, &model.AuthFlow{}, &model.SubscriptionPreConsumeRecord{}, &model.Log{},
-	))
+		&model.UserAccessToken{}, &model.UserSession{}, &model.AuthFlow{}, &model.SubscriptionPreConsumeRecord{}, &model.Log{},
+	}
+	if dialect != "sqlite" {
+		for _, item := range models {
+			require.NoError(t, db.Migrator().DropTable(item))
+		}
+	}
+	require.NoError(t, db.AutoMigrate(models...))
 
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
@@ -40,7 +74,7 @@ func setupSystemBackupTest(t *testing.T) *gorm.DB {
 	common.OptionMapRWMutex.Unlock()
 	model.DB = db
 	model.LOG_DB = db
-	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	common.SetMainDatabaseType(databaseType)
 	common.RedisEnabled = false
 	common.MemoryCacheEnabled = false
 	t.Cleanup(func() {
@@ -66,8 +100,8 @@ func seedSystemBackupSource(t *testing.T, db *gorm.DB) {
  export function buildQueryRequest(){return {url:"https://example.com/query"};}
  export function parseTaskResult(){return {status:"SUCCESS"};}`
 	digest := sha256.Sum256([]byte(pluginSource))
-	require.NoError(t, db.Create(&model.TaskPlugin{Id: 25, Key: "backup-plugin", APIVersion: 1, Version: "1.0.0", Source: pluginSource, SourceHash: hex.EncodeToString(digest[:]), Enabled: true, Active: true, Icon: "data:image/svg+xml;base64,PHN2Zy8+"}).Error)
-	accessToken := "source-admin-access-token"
+	require.NoError(t, db.Create(&model.TaskPlugin{Id: 25, Key: "backup-plugin", APIVersion: 1, Version: "1.0.0", Source: model.LongText(pluginSource), SourceHash: hex.EncodeToString(digest[:]), Enabled: true, Active: true, Icon: "data:image/svg+xml;base64,PHN2Zy8+"}).Error)
+	accessToken := "source-admin-access-tokenxxxxxxx"
 	require.NoError(t, db.Create(&model.Option{Key: "custom.integration_secret", Value: "option-secret"}).Error)
 	require.NoError(t, db.Create(&model.Vendor{Id: 10, Name: "Source vendor", Status: 1}).Error)
 	require.NoError(t, db.Create(&model.Model{Id: 20, ModelName: "source-model", VendorID: 10, Status: 1}).Error)
@@ -136,7 +170,13 @@ func TestSystemBackupPostgresSequenceSyncSkipsAbilities(t *testing.T) {
 }
 
 func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
-	db := setupSystemBackupTest(t)
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) { testSystemBackupRoundTrip(t, dialect) })
+	}
+}
+
+func testSystemBackupRoundTrip(t *testing.T, dialect string) {
+	db := setupSystemBackupTest(t, dialect)
 	seedSystemBackupSource(t, db)
 
 	backup, err := ExportSystemBackup()
@@ -145,7 +185,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "option-secret")
 	assert.Contains(t, string(raw), "sk-channel-secret")
-	assert.Contains(t, string(raw), "source-admin-access-token")
+	assert.Contains(t, string(raw), "source-admin-access-tokenxxxxxxx")
 	assert.Contains(t, string(raw), "source-api-token")
 	assert.Contains(t, string(raw), "oauth-secret")
 	assert.Contains(t, string(raw), "totp-secret")
@@ -153,7 +193,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	assert.NotContains(t, string(raw), "original_password")
 	assert.NotContains(t, string(raw), "verification_code")
 
-	require.NoError(t, db.Model(&model.Option{}).Where("key = ?", "custom.integration_secret").Update("value", "target-secret").Error)
+	require.NoError(t, db.Model(&model.Option{}).Where(clause.Eq{Column: "key", Value: "custom.integration_secret"}).Update("value", "target-secret").Error)
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 30).Update("key", "target-channel-key").Error)
 	require.NoError(t, db.Model(&model.CustomOAuthProvider{}).Where("id = ?", 40).Update("client_secret", "target-oauth-secret").Error)
 	targetPassword, err := common.Password2Hash("TargetPassword123")
@@ -169,6 +209,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 		RefreshHash: "refresh-hash", LoginMethod: "password", CreatedAt: 1, LastActiveAt: 1, ExpiresAt: 9999999999,
 	}).Error)
 
+	require.NoError(t, db.Create(&model.UserAccessToken{UserId: 50, Name: "target-dashboard-token", TokenHash: strings.Repeat("a", 64), TokenHint: "aaaaaaaa", Scopes: `["admin:read"]`}).Error)
 	preview, err := PreviewSystemBackupImport(raw)
 	require.NoError(t, err)
 	assert.Equal(t, 2, preview.Sections["users"].Delete+preview.Sections["tokens"].Delete)
@@ -179,7 +220,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	require.NoError(t, err)
 
 	var restoredOption model.Option
-	require.NoError(t, db.First(&restoredOption, "key = ?", "custom.integration_secret").Error)
+	require.NoError(t, db.Where(clause.Eq{Column: "key", Value: "custom.integration_secret"}).First(&restoredOption).Error)
 	assert.Equal(t, "option-secret", restoredOption.Value)
 	var restoredChannel model.Channel
 	require.NoError(t, db.First(&restoredChannel, 30).Error)
@@ -191,7 +232,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	require.NoError(t, db.First(&restoredUser, 50).Error)
 	assert.True(t, common.ValidatePasswordAndHash("SourcePassword123", restoredUser.Password))
 	require.NotNil(t, restoredUser.AccessToken)
-	assert.Equal(t, "source-admin-access-token", *restoredUser.AccessToken)
+	assert.Equal(t, "source-admin-access-tokenxxxxxxx", *restoredUser.AccessToken)
 	require.NotNil(t, restoredUser.AccessTokenCreatedAt)
 	assert.EqualValues(t, 1700000000, *restoredUser.AccessTokenCreatedAt)
 	var restoredPlugin model.TaskPlugin
@@ -200,7 +241,7 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	assert.True(t, restoredPlugin.Active)
 	assert.True(t, restoredPlugin.Enabled)
 	assert.Contains(t, restoredPlugin.Source, "buildSubmitRequest")
-	assert.Equal(t, "data:image/svg+xml;base64,PHN2Zy8+", restoredPlugin.Icon)
+	assert.Equal(t, "data:image/svg+xml;base64,PHN2Zy8+", string(restoredPlugin.Icon))
 	var restoredToken model.Token
 	require.NoError(t, db.First(&restoredToken, 60).Error)
 	assert.Equal(t, "source-api-token", restoredToken.Key)
@@ -216,6 +257,9 @@ func TestSystemBackupRoundTripIncludesSecretsAndReplacesTarget(t *testing.T) {
 	var sessions int64
 	require.NoError(t, db.Model(&model.UserSession{}).Count(&sessions).Error)
 	assert.Zero(t, sessions)
+	var dashboardTokens int64
+	require.NoError(t, db.Model(&model.UserAccessToken{}).Count(&dashboardTokens).Error)
+	assert.Zero(t, dashboardTokens, "dashboard credentials must be invalidated when restoring users")
 	var ability model.Ability
 	require.NoError(t, db.First(&ability, "channel_id = ? AND model = ?", 30, "source-model").Error)
 	assert.True(t, ability.Enabled)
@@ -257,7 +301,7 @@ func TestSystemBackupRestoreRollsBackAllReplacedData(t *testing.T) {
 	raw, err := common.Marshal(backup)
 	require.NoError(t, err)
 
-	require.NoError(t, db.Model(&model.Option{}).Where("key = ?", "custom.integration_secret").Update("value", "target-must-remain").Error)
+	require.NoError(t, db.Model(&model.Option{}).Where(clause.Eq{Column: "key", Value: "custom.integration_secret"}).Update("value", "target-must-remain").Error)
 	preview, err := PreviewSystemBackupImport(raw)
 	require.NoError(t, err)
 	require.NoError(t, db.Migrator().DropTable(&model.Ability{}))

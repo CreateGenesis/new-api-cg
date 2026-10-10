@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 	"github.com/tidwall/gjson"
@@ -33,7 +35,7 @@ func RunExprWithRequest(exprStr string, params TokenParams, request RequestInput
 	if err != nil {
 		return 0, TraceResult{}, err
 	}
-	return runProgram(entry.prog, entry.requestRules, params, request)
+	return runProgram(entry.prog, entry.requestRules, entry.usedVars, params, request)
 }
 
 // RunExprByHash is like RunExpr but accepts a pre-computed hash for the cache
@@ -48,11 +50,12 @@ func RunExprByHashWithRequest(exprStr, hash string, params TokenParams, request 
 	if err != nil {
 		return 0, TraceResult{}, err
 	}
-	return runProgram(entry.prog, entry.requestRules, params, request)
+	return runProgram(entry.prog, entry.requestRules, entry.usedVars, params, request)
 }
 
-func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenParams, request RequestInput) (float64, TraceResult, error) {
+func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[string]bool, params TokenParams, request RequestInput) (float64, TraceResult, error) {
 	trace := TraceResult{
+		BillingUnit:  BillingUnitToken,
 		RequestRules: append([]RequestRuleTrace(nil), requestRules...),
 	}
 	headers := normalizeHeaders(request.Headers)
@@ -73,7 +76,19 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 		rawC = params.C
 	}
 
+	imageCount := 1
+	if usedVars["image_count"] {
+		if request.ImageCount != nil {
+			imageCount = *request.ImageCount
+		}
+		if imageCount < 1 || imageCount > dto.MaxImageN {
+			return 0, trace, fmt.Errorf("image_count must be between 1 and %d", dto.MaxImageN)
+		}
+		trace.ImageCount = &imageCount
+	}
+
 	env := map[string]any{
+		"image_count": float64(imageCount),
 		"p":           params.P,
 		"c":           params.C,
 		"p_total":     rawP,
@@ -90,6 +105,7 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 		"cc":          params.CC,
 		"cc1h":        params.CC1h,
 		"img":         params.Img,
+		"img_cr":      params.ImgCR,
 		"img_o":       params.ImgO,
 		"ai":          params.AI,
 		"ao":          params.AO,
@@ -97,6 +113,11 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 			trace.MatchedTier = name
 			trace.Cost = value
 			return value
+		},
+		"fixed": func(amount float64) float64 {
+			trace.BillingUnit = BillingUnitRequest
+			trace.FixedPrice = &amount
+			return amount * 1_000_000
 		},
 		requestRuleTraceFunction: func(ruleIndex int, matched bool, multiplier float64) float64 {
 			if matched && ruleIndex >= 0 && ruleIndex < len(trace.RequestRules) {

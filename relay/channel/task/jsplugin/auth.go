@@ -17,7 +17,9 @@ type cachedAuth struct {
 }
 
 var pluginAuthCache sync.Map
-var acquireAccessToken = vertexcore.AcquireAccessToken
+var acquireAccessToken = func(creds vertexcore.Credentials, proxy string, fallbackDirect bool) (string, error) {
+	return vertexcore.AcquireAccessToken(creds, proxy, fallbackDirect)
+}
 
 func resolveAuth(meta pluginruntime.AuthMeta, apiKey, proxy string, fallbackDirect ...bool) (map[string]any, error) {
 	typeName := strings.TrimSpace(meta.Type)

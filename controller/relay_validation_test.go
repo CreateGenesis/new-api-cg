@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
@@ -118,6 +119,7 @@ func TestRelaySensitiveWordRejectionReturnsBadRequest(t *testing.T) {
 
 func TestPlaygroundAccessTokenRejectionReturnsForbidden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	require.NoError(t, i18n.Init())
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/pg/chat/completions", nil)
@@ -126,5 +128,5 @@ func TestPlaygroundAccessTokenRejectionReturnsForbidden(t *testing.T) {
 	Playground(ctx)
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "access token")
+	assert.Contains(t, strings.ToLower(recorder.Body.String()), "access token")
 }

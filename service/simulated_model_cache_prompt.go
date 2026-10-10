@@ -20,6 +20,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/abema/go-mp4"
 	"github.com/shopspring/decimal"
@@ -91,7 +92,7 @@ func ExtractSimulatedModelCachePrompt(format types.RelayFormat, model string, bo
 	text := ExtractSimulatedModelCachePromptText(format, body)
 	pureText := SimulatedModelCachePrompt{
 		Text:            text,
-		estimatedTokens: EstimateTokenByModel(model, text),
+		estimatedTokens: tokenkit.Estimate(model, text),
 	}
 	if settings.Multimodal == nil || !settings.Multimodal.Enabled || settings.Multimodal.Validate() != nil {
 		return pureText
@@ -132,7 +133,7 @@ func ExtractSimulatedModelCachePrompt(format types.RelayFormat, model string, bo
 }
 
 func (b *simulatedModelCachePromptBuilder) addControl(label string, value string) {
-	b.addWeightedBlock("control:"+label, []byte(value), uint64(max(1, EstimateTokenByModel(b.model, label+" "+value))), false, false)
+	b.addWeightedBlock("control:"+label, []byte(value), uint64(max(1, tokenkit.Estimate(b.model, label+" "+value))), false, false)
 }
 
 func (b *simulatedModelCachePromptBuilder) addCanonical(label string, value any) {
@@ -168,7 +169,7 @@ func (b *simulatedModelCachePromptBuilder) addText(label string, text string) {
 }
 
 func (b *simulatedModelCachePromptBuilder) addTextChunk(label string, text string) {
-	weight := max(1, EstimateTokenByModel(b.model, text))
+	weight := max(1, tokenkit.Estimate(b.model, text))
 	b.addWeightedBlock("text:"+label, []byte(text), uint64(weight), false, false)
 }
 

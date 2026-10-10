@@ -39,13 +39,7 @@ export const MAX_CHANNEL_TEST_CONCURRENCY = 32
 
 const textEncoder = new TextEncoder()
 
-export function createRoutingReliabilitySchema(t: TFunction) {
-  const numericString = z.string().refine((value) => {
-    const trimmed = value.trim()
-    if (!trimmed) return true
-    return !Number.isNaN(Number(trimmed)) && Number(trimmed) >= 0
-  }, t('Enter a non-negative number or leave empty'))
-
+export function createResponseContentRetrySchema(t: TFunction) {
   const responseContentRetryRuleSchema = z.object({
     mode: z.enum(responseContentMatchModes),
     content: z
@@ -63,6 +57,49 @@ export function createRoutingReliabilitySchema(t: TFunction) {
           )
       ),
   })
+
+  return z
+    .object({
+      enabled: z.boolean(),
+      rules: z
+        .array(responseContentRetryRuleSchema)
+        .max(
+          RESPONSE_CONTENT_RETRY_MAX_RULES,
+          t('No more than 64 response matching rules are allowed')
+        ),
+    })
+    .superRefine((values, ctx) => {
+      const seenRules = new Set<string>()
+      let totalBytes = 0
+      values.rules.forEach((rule, index) => {
+        totalBytes += textEncoder.encode(rule.content).byteLength
+        const duplicateKey = `${rule.mode}\0${rule.content}`
+        if (seenRules.has(duplicateKey)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['rules', index, 'content'],
+            message: t('Duplicate response matching rule'),
+          })
+        }
+        seenRules.add(duplicateKey)
+      })
+
+      if (totalBytes > RESPONSE_CONTENT_RETRY_MAX_TOTAL_BYTES) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules'],
+          message: t('Rule content cannot exceed 65536 bytes in total'),
+        })
+      }
+    })
+}
+
+export function createRoutingReliabilitySchema(t: TFunction) {
+  const numericString = z.string().refine((value) => {
+    const trimmed = value.trim()
+    if (!trimmed) return true
+    return !Number.isNaN(Number(trimmed)) && Number(trimmed) >= 0
+  }, t('Enter a non-negative number or leave empty'))
 
   return z
     .object({
@@ -89,15 +126,7 @@ export function createRoutingReliabilitySchema(t: TFunction) {
           ),
         channel_test_mode: z.enum(channelTestModes),
       }),
-      response_content_retry_policy: z.object({
-        enabled: z.boolean(),
-        rules: z
-          .array(responseContentRetryRuleSchema)
-          .max(
-            RESPONSE_CONTENT_RETRY_MAX_RULES,
-            t('No more than 64 response matching rules are allowed')
-          ),
-      }),
+      response_content_retry_policy: createResponseContentRetrySchema(t),
     })
     .superRefine((values, ctx) => {
       const disableParsed = parseHttpStatusCodeRules(
@@ -123,29 +152,6 @@ export function createRoutingReliabilitySchema(t: TFunction) {
           message: t('Invalid status code rules: {{tokens}}', {
             tokens: retryParsed.invalidTokens.join(', '),
           }),
-        })
-      }
-
-      const seenRules = new Set<string>()
-      let totalBytes = 0
-      values.response_content_retry_policy.rules.forEach((rule, index) => {
-        totalBytes += textEncoder.encode(rule.content).byteLength
-        const duplicateKey = `${rule.mode}\0${rule.content}`
-        if (seenRules.has(duplicateKey)) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['response_content_retry_policy', 'rules', index, 'content'],
-            message: t('Duplicate response matching rule'),
-          })
-        }
-        seenRules.add(duplicateKey)
-      })
-
-      if (totalBytes > RESPONSE_CONTENT_RETRY_MAX_TOTAL_BYTES) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['response_content_retry_policy', 'rules'],
-          message: t('Rule content cannot exceed 65536 bytes in total'),
         })
       }
     })

@@ -289,6 +289,7 @@ const (
 	simulatedModelCacheStreamEventClaudeStop
 	simulatedModelCacheStreamEventOpenAIUsage
 	simulatedModelCacheStreamEventOpenAIDone
+	simulatedModelCacheStreamEventResponsesTerminal
 )
 
 func isSimulatedModelCacheStreamTailEvent(format types.RelayFormat, event []byte) bool {
@@ -296,7 +297,8 @@ func isSimulatedModelCacheStreamTailEvent(format types.RelayFormat, event []byte
 	case simulatedModelCacheStreamEventClaudeDelta,
 		simulatedModelCacheStreamEventClaudeStop,
 		simulatedModelCacheStreamEventOpenAIUsage,
-		simulatedModelCacheStreamEventOpenAIDone:
+		simulatedModelCacheStreamEventOpenAIDone,
+		simulatedModelCacheStreamEventResponsesTerminal:
 		return true
 	default:
 		return false
@@ -331,6 +333,11 @@ func simulatedModelCacheStreamEventType(format types.RelayFormat, event []byte) 
 	case types.RelayFormatOpenAI:
 		if payload.Usage != nil && len(payload.Choices) == 0 {
 			return simulatedModelCacheStreamEventOpenAIUsage
+		}
+	case types.RelayFormatOpenAIResponses:
+		switch payload.Type {
+		case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
+			return simulatedModelCacheStreamEventResponsesTerminal
 		}
 	}
 	return simulatedModelCacheStreamEventOther
@@ -371,7 +378,7 @@ func (w *simulatedModelCacheRecorder) writePatchedStreamTail(usage *dto.Usage) (
 	doneIndex := -1
 	for i, chunk := range chunks {
 		switch simulatedModelCacheStreamEventType(w.responseFormat, chunk) {
-		case simulatedModelCacheStreamEventClaudeDelta, simulatedModelCacheStreamEventOpenAIUsage:
+		case simulatedModelCacheStreamEventClaudeDelta, simulatedModelCacheStreamEventOpenAIUsage, simulatedModelCacheStreamEventResponsesTerminal:
 			targetIndex = i
 		case simulatedModelCacheStreamEventOpenAIDone:
 			if doneIndex == -1 {
@@ -423,6 +430,13 @@ func (w *simulatedModelCacheRecorder) writePatchedStreamTail(usage *dto.Usage) (
 func patchSimulatedModelCacheStreamUsageEvent(format types.RelayFormat, event []byte, usage *dto.Usage) ([]byte, bool) {
 	if usage == nil {
 		return event, false
+	}
+	if format == types.RelayFormatOpenAIResponses {
+		if simulatedModelCacheStreamEventType(format, event) != simulatedModelCacheStreamEventResponsesTerminal {
+			return event, false
+		}
+		patched := service.PatchSimulatedModelCacheResponseBody(format, "text/event-stream", event, usage)
+		return patched, !bytes.Equal(patched, event)
 	}
 	data, ok := simulatedModelCacheSSEData(event)
 	if !ok {

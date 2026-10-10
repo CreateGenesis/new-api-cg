@@ -234,5 +234,6 @@ func TestVideoUnderstandingFilterFailsClosedWhenSettingsCannotBeLoaded(t *testin
 	// abilities here could admit a channel whose video setting is unknown.
 	abilities := []Ability{{ChannelId: 1, Enabled: true}}
 	assert.Empty(t, filterAbilitiesByConstraints(abilities, "video-model", []dto.ChannelFilter{{Kind: dto.FilterVideoUnderstanding}}))
+	assert.Empty(t, filterAbilitiesByConstraints(abilities, "websocket-model", []dto.ChannelFilter{{Kind: dto.FilterResponsesWebSocket}}))
 	assert.Equal(t, abilities, filterAbilitiesByConstraints(abilities, "text-model", []dto.ChannelFilter{{Kind: dto.FilterRequestPath}}))
 }

@@ -219,7 +219,7 @@ func ExportSystemBackup() (*SystemBackupFile, error) {
 		return nil, err
 	}
 	for _, plugin := range taskPlugins {
-		backup.TaskPlugins = append(backup.TaskPlugins, SystemBackupTaskPlugin{TaskPlugin: plugin, Icon: plugin.Icon})
+		backup.TaskPlugins = append(backup.TaskPlugins, SystemBackupTaskPlugin{TaskPlugin: plugin, Icon: string(plugin.Icon)})
 	}
 	var vendors []model.Vendor
 	if err := model.DB.Unscoped().Order("id asc").Find(&vendors).Error; err != nil {
@@ -442,7 +442,7 @@ func validateSystemBackup(backup *SystemBackupFile) error {
 		if plugin.Id <= 0 || len(plugin.Source) > 1024*1024 || len(plugin.Icon) > 750000 {
 			return fmt.Errorf("task_plugins[%d] is invalid", index)
 		}
-		compiled, err := pluginruntime.CompilePlugin(plugin.Source, pluginruntime.Options{Key: plugin.Key, Version: plugin.Version})
+		compiled, err := pluginruntime.CompilePlugin(string(plugin.Source), pluginruntime.Options{Key: plugin.Key, Version: plugin.Version})
 		if err != nil {
 			return fmt.Errorf("task_plugins[%d]: %w", index, err)
 		}
@@ -779,7 +779,7 @@ func buildSystemBackupImportPreview(backup *SystemBackupFile, hash string) (*Sys
 func deleteSystemBackupRestoreData(tx *gorm.DB) error {
 	restoreTx := tx.Session(&gorm.Session{AllowGlobalUpdate: true, SkipHooks: true})
 	targets := []any{
-		&model.SubscriptionPreConsumeRecord{}, &model.UserSession{}, &model.AuthFlow{},
+		&model.SubscriptionPreConsumeRecord{}, &model.UserSession{}, &model.AuthFlow{}, &model.UserAccessToken{},
 		&model.UserOAuthBinding{}, &model.ExternalIdentityClaim{}, &model.PasskeyCredential{},
 		&model.TwoFABackupCode{}, &model.TwoFA{}, &model.Token{}, &model.Redemption{},
 		&model.UserSubscription{}, &model.CasbinRule{}, &model.AuthzRole{}, &model.User{},
@@ -815,7 +815,7 @@ func insertSystemBackupRestoreData(tx *gorm.DB, backup *SystemBackupFile) error 
 	taskPlugins := make([]model.TaskPlugin, 0, len(backup.TaskPlugins))
 	for _, plugin := range backup.TaskPlugins {
 		value := plugin.TaskPlugin
-		value.Icon = plugin.Icon
+		value.Icon = model.LongText(plugin.Icon)
 		taskPlugins = append(taskPlugins, value)
 	}
 	if err := createSystemBackupRecords(restoreTx, taskPlugins); err != nil {
