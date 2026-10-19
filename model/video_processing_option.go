@@ -42,6 +42,7 @@ func parseVideoProcessingConfig(value string) (videocompat.Config, string, error
 	if err := config.Validate(); err != nil {
 		return config, "", common.NewMessage("Invalid video processing configuration: {{error}}", map[string]any{"error": err.Error()})
 	}
+	config = videocompat.UpgradeLegacyDefault(config)
 	encoded, err := common.Marshal(config)
 	if err != nil {
 		return config, "", err

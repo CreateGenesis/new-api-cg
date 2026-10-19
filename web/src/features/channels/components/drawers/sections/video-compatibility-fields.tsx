@@ -158,6 +158,11 @@ export function VideoCompatibilityFields(props: {
               'Pixel percentage applies after the longest-side limit: 25% retains half the width and height. JPEG quality mainly controls size and detail; tokens depend on the final image dimensions.'
             )}
           </p>
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Videos larger than 8 MiB are extracted as at most 32 images with a 256-pixel longest side and JPEG quality of at most 40. Tokens follow those image dimensions.'
+            )}
+          </p>
         </>
       )}
     </div>

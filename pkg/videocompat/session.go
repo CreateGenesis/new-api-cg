@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +23,11 @@ import (
 )
 
 type videoBlock struct {
-	encoded, mime string
-	invalid       error
-	source        *videoSource
+	mime                     string
+	payloadStart, payloadEnd int
+	invalid                  error
+	source                   *videoSource
+	decoded                  int64
 }
 type videoSource struct {
 	path, hash string
@@ -32,14 +35,14 @@ type videoSource struct {
 	frames     map[string]imageFrame
 }
 type contentBlock struct {
-	raw   string
-	video int
-	child *contentArray
-	node  gjson.Result
+	raw, prefix, suffix, cacheControl string
+	video                             int
+	child                             *contentArray
 }
 type contentArray struct {
-	node   gjson.Result
-	blocks []contentBlock
+	start, end int
+	leading    string
+	blocks     []contentBlock
 }
 
 type Session struct {
@@ -61,6 +64,8 @@ type Session struct {
 	frozen, closed, prepared, parsed             bool
 	invalid, prepareError                        error
 	tempDir                                      string
+	trailing                                     string
+	rssReserve, neededReserve                    int64
 	memoryBytes, diskBytes, jpegBytes, bodyBytes int64
 }
 
@@ -110,9 +115,6 @@ func (s *Session) initialize() error {
 	if !gjson.ValidBytes(s.raw) {
 		return failure(400, "video_json_invalid", "invalid JSON request")
 	}
-	if e := s.reserveMemory(int64(len(s.raw))); e != nil {
-		return e
-	}
 	s.parsed = true
 	root := gjson.ParseBytes(s.raw)
 	seen := false
@@ -148,7 +150,33 @@ func (s *Session) initialize() error {
 			}
 		}
 	}
+	s.snapshotGaps()
 	return nil
+}
+
+func (s *Session) snapshotGaps() {
+	arrays := append([]*contentArray(nil), s.arrays...)
+	sort.Slice(arrays, func(i, j int) bool { return arrays[i].start < arrays[j].start })
+	position := 0
+	for _, array := range arrays {
+		if array.start < position || array.end > len(s.raw) {
+			s.invalid = failure(400, "video_content_invalid", "invalid video content position")
+			return
+		}
+		array.leading = strings.Clone(string(s.raw[position:array.start]))
+		position = array.end
+	}
+	if position > len(s.raw) {
+		s.invalid = failure(400, "video_content_invalid", "invalid video content position")
+		return
+	}
+	s.trailing = strings.Clone(string(s.raw[position:]))
+}
+
+func (s *Session) releaseRaw() {
+	n := int64(len(s.raw))
+	s.raw = nil
+	s.releaseMemory(n)
 }
 
 // Typed request envelopes accept case-insensitive JSON field names. Preserve
@@ -177,13 +205,13 @@ func HasVideo(raw []byte, protocol string) (bool, error) {
 }
 
 func (s *Session) scanArray(node gjson.Result, depth int) *contentArray {
-	a := &contentArray{node: node}
+	a := &contentArray{start: node.Index, end: node.Index + len(node.Raw)}
 	if depth > 8 {
 		s.invalid = failure(400, "video_content_invalid", "video tool content nesting exceeds limit")
 		return a
 	}
 	for _, part := range node.Array() {
-		b := contentBlock{raw: part.Raw, video: -1, node: part}
+		b := contentBlock{video: -1}
 		kind := part.Get("type").String()
 		if kind == "video_url" || kind == "input_video" || kind == "video" {
 			b.video = len(s.videos)
@@ -193,9 +221,9 @@ func (s *Session) scanArray(node gjson.Result, depth int) *contentArray {
 				switch source.Get("type").String() {
 				case "base64":
 					v.mime = source.Get("media_type").String()
-					v.encoded = source.Get("data").String()
+					v.payloadStart, v.payloadEnd, v.invalid = quotedSpan(s.raw, source.Get("data"))
 				case "url":
-					v.mime, v.encoded, v.invalid = inlineURI(source.Get("url").String())
+					v.mime, v.payloadStart, v.payloadEnd, v.invalid = inlinePayload(s.raw, source.Get("url"))
 				default:
 					v.invalid = failure(400, "video_source_unsupported", "only inline base64 video sources are supported")
 				}
@@ -207,33 +235,85 @@ func (s *Session) scanArray(node gjson.Result, depth int) *contentArray {
 				if !url.Exists() {
 					url = part.Get("url")
 				}
-				v.mime, v.encoded, v.invalid = inlineURI(url.String())
+				v.mime, v.payloadStart, v.payloadEnd, v.invalid = inlinePayload(s.raw, url)
 			}
-			if v.invalid == nil && (!strings.HasPrefix(v.mime, "video/") || len(v.mime) > 100 || v.encoded == "") {
+			if v.invalid == nil && (!strings.HasPrefix(v.mime, "video/") || len(v.mime) > 100 || v.payloadEnd <= v.payloadStart) {
 				v.invalid = failure(400, "video_source_invalid", "invalid inline base64 video")
+			}
+			if part.Get("cache_control").Exists() {
+				b.cacheControl = strings.Clone(part.Get("cache_control").Raw)
 			}
 			s.videos = append(s.videos, v)
 		} else if kind == "tool_result" {
 			content := envelopeField(part, "content")
 			if content.IsArray() {
 				b.child = s.scanArray(content, depth+1)
+				offset := b.child.start - part.Index
+				childLen := b.child.end - b.child.start
+				if offset < 0 || offset+childLen > len(part.Raw) {
+					s.invalid = failure(400, "video_content_invalid", "invalid nested content position")
+				} else {
+					b.prefix = strings.Clone(part.Raw[:offset])
+					b.suffix = strings.Clone(part.Raw[offset+childLen:])
+				}
+			} else {
+				b.raw = strings.Clone(part.Raw)
 			}
+		} else {
+			b.raw = strings.Clone(part.Raw)
 		}
 		a.blocks = append(a.blocks, b)
 	}
 	return a
 }
 
-func inlineURI(value string) (string, string, error) {
-	rest, ok := strings.CutPrefix(value, "data:")
-	if !ok {
-		return "", "", failure(400, "video_source_unsupported", "only inline base64 videos are supported")
+func quotedSpan(raw []byte, value gjson.Result) (int, int, error) {
+	i := value.Index
+	if i < 0 || i >= len(raw) || raw[i] != '"' {
+		return 0, 0, failure(400, "video_source_invalid", "invalid inline base64 video")
 	}
-	mime, data, ok := strings.Cut(rest, ";base64,")
-	if !ok {
-		return "", "", failure(400, "video_source_invalid", "invalid base64 video data URI")
+	i++
+	start := i
+	for i < len(raw) {
+		if raw[i] == '\\' {
+			i += 2
+			continue
+		}
+		if raw[i] == '"' {
+			return start, i, nil
+		}
+		i++
 	}
-	return mime, data, nil
+	return 0, 0, failure(400, "video_source_invalid", "invalid inline base64 video")
+}
+
+func inlinePayload(raw []byte, value gjson.Result) (string, int, int, error) {
+	start, end, err := quotedSpan(raw, value)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	payload := raw[start:end]
+	rest, ok := bytes.CutPrefix(payload, []byte("data:"))
+	if !ok {
+		return "", 0, 0, failure(400, "video_source_unsupported", "only inline base64 videos are supported")
+	}
+	marker := []byte(";base64,")
+	index := bytes.Index(rest, marker)
+	if index < 0 {
+		return "", 0, 0, failure(400, "video_source_invalid", "invalid base64 video data URI")
+	}
+	return string(rest[:index]), start + len("data:") + index + len(marker), end, nil
+}
+
+func payloadReader(raw []byte) io.Reader {
+	if !bytes.Contains(raw, []byte{'\\'}) {
+		return bytes.NewReader(raw)
+	}
+	unquoted, err := strconv.Unquote(`"` + string(raw) + `"`)
+	if err != nil {
+		return bytes.NewReader(raw)
+	}
+	return strings.NewReader(unquoted)
 }
 
 func (s *Session) reserveMemory(n int64) error {
@@ -284,15 +364,46 @@ func (s *Session) Close() {
 	s.storage = nil
 }
 
+func decodedByteLimit(c Config) int64 {
+	inboundMB := constant.MaxRequestBodyMB
+	if inboundMB <= 0 {
+		inboundMB = 128
+	}
+	return min(int64(inboundMB)*MiB*3/4, int64(c.TempDiskMB)*MiB)
+}
+
+func rssReserveFor(width, height int) int64 {
+	pixels := int64(width) * int64(height)
+	if pixels > 1920*1080 {
+		return rssReserveUHD
+	}
+	if pixels > 1280*720 {
+		return rssReserveHD
+	}
+	return rssReserveSmall
+}
+
+func recognitionSettings(base dto.VideoCompatibilitySettings) dto.VideoCompatibilitySettings {
+	settings := base
+	settings.MaxSide = min(settings.MaxSide, recognitionMaxSide)
+	settings.JPEGQuality = min(settings.JPEGQuality, recognitionJPEGQuality)
+	if settings.FPS > 1 {
+		settings.FPS = 1
+	}
+	settings.MaxFrames = min(settings.MaxFrames, recognitionMaxFrames)
+	return settings
+}
+
 type diskWriter struct {
 	s            *Session
 	w            io.Writer
 	requestBytes *int64
+	limit        int64
 }
 
 func (w *diskWriter) Write(p []byte) (int, error) {
-	if int64(len(p)) > 16*MiB-*w.requestBytes {
-		return 0, failure(413, "video_decoded_bytes_limit", "decoded videos exceed 16 MiB request budget")
+	if int64(len(p)) > w.limit-*w.requestBytes {
+		return 0, failure(413, "video_decoded_bytes_limit", fmt.Sprintf("decoded videos exceed %d MiB request budget", w.limit/MiB))
 	}
 	if e := w.s.reserve(false, int64(len(p))); e != nil {
 		return 0, e
@@ -332,6 +443,7 @@ func (s *Session) prepare() error {
 		return s.prepareError
 	}
 	decoded := int64(0)
+	limit := decodedByteLimit(s.config)
 	sourceFrames := 0
 	for i := range s.videos {
 		if e = s.mediaContext.Err(); e != nil {
@@ -347,8 +459,10 @@ func (s *Session) prepare() error {
 			return s.prepareError
 		}
 		hash := sha256.New()
-		writer := &diskWriter{s, file, &decoded}
-		_, err = io.Copy(io.MultiWriter(writer, hash), base64.NewDecoder(base64.StdEncoding, strings.NewReader(s.videos[i].encoded)))
+		before := decoded
+		writer := &diskWriter{s, file, &decoded, limit}
+		_, err = io.Copy(io.MultiWriter(writer, hash), base64.NewDecoder(base64.StdEncoding, payloadReader(s.raw[s.videos[i].payloadStart:s.videos[i].payloadEnd])))
+		s.videos[i].decoded = decoded - before
 		closeErr := file.Close()
 		if err == nil {
 			err = closeErr
@@ -374,12 +488,28 @@ func (s *Session) prepare() error {
 			globalPool.mu.Unlock()
 			continue
 		}
+		s.videos[i].source = &videoSource{path: file.Name(), hash: key, frames: make(map[string]imageFrame)}
+		s.sources[key] = s.videos[i].source
+	}
+	s.releaseRaw()
+	for i := range s.videos {
+		source := s.videos[i].source
+		if source == nil || source.manifest != nil {
+			continue
+		}
+		if e = s.mediaContext.Err(); e != nil {
+			s.prepareError = failure(504, "video_processing_timeout", "video preprocessing timed out")
+			if e == context.Canceled {
+				s.prepareError = failure(499, "video_cancelled", "video preprocessing cancelled")
+			}
+			return s.prepareError
+		}
 		if e = s.reserveMemory(4 * MiB); e != nil {
 			s.prepareError = e
 			return e
 		}
 		started := time.Now()
-		m, err := probe(s, file.Name(), maxSourceFrames-sourceFrames)
+		m, err := probe(s, source.path, maxSourceFrames-sourceFrames)
 		globalPool.recordPhase("decode", time.Since(started))
 		globalPool.mu.Lock()
 		globalPool.stats.DecodeCacheMisses++
@@ -389,11 +519,33 @@ func (s *Session) prepare() error {
 			return err
 		}
 		sourceFrames += len(m.Frames)
-		source := &videoSource{path: file.Name(), hash: key, manifest: m, frames: make(map[string]imageFrame)}
-		s.sources[key] = source
-		s.videos[i].source = source
+		source.manifest = m
+		s.noteResolution(m.Width, m.Height)
 	}
+	s.shrinkRSSReserve()
 	return nil
+}
+
+func (s *Session) noteResolution(width, height int) {
+	s.neededReserve = max(s.neededReserve, rssReserveFor(width, height))
+}
+
+func (s *Session) shrinkRSSReserve() {
+	if s.neededReserve == 0 || s.neededReserve >= s.rssReserve {
+		return
+	}
+	delta := s.neededReserve - s.rssReserve
+	s.rssReserve = s.neededReserve
+	globalPool.adjustMediaReserve(delta)
+}
+
+func (s *Session) largeVideo() bool {
+	for _, video := range s.videos {
+		if video.decoded > recognitionDecodedThreshold {
+			return true
+		}
+	}
+	return false
 }
 
 func adaptiveSettings(base dto.VideoCompatibilitySettings, c AdaptiveConfig, tier, videos int) dto.VideoCompatibilitySettings {
@@ -454,7 +606,13 @@ func (s *Session) Variant(base dto.VideoCompatibilitySettings) (body []byte, err
 	if e != nil {
 		return nil, e
 	}
-	defer func() { globalPool.finish(started, err, config) }()
+	s.rssReserve = rssReserveUnknown
+	s.shrinkRSSReserve()
+	defer func() {
+		release := s.rssReserve
+		s.rssReserve = 0
+		globalPool.finish(started, err, config, release)
+	}()
 	if !s.frozen {
 		s.frozen = true
 		s.tier = tier
@@ -463,7 +621,7 @@ func (s *Session) Variant(base dto.VideoCompatibilitySettings) (body []byte, err
 		globalPool.recordTier(tier)
 		globalPool.mu.Unlock()
 	}
-	if s.raw == nil && s.storage != nil {
+	if !s.parsed && s.raw == nil && s.storage != nil {
 		if s.storage.IsDisk() {
 			if err = s.reserveMemory(s.storage.Size()); err != nil {
 				return nil, err
@@ -488,6 +646,9 @@ func (s *Session) Variant(base dto.VideoCompatibilitySettings) (body []byte, err
 		return nil, err
 	}
 	settings := adaptiveSettings(base, s.config.AdaptiveConfig, s.tier, len(s.videos))
+	if s.largeVideo() {
+		settings = recognitionSettings(settings)
+	}
 	desired := make([]int, len(s.videos))
 	for i, v := range s.videos {
 		desired[i] = desiredFrames(v.source.manifest, int(math.Round(settings.FPS*10)))
@@ -647,17 +808,10 @@ func (b *chargedBuffer) text(text string) error {
 
 func (s *Session) rewrite(videoFrames [][]imageFrame) ([]byte, error) {
 	arrays := append([]*contentArray(nil), s.arrays...)
-	sort.Slice(arrays, func(i, j int) bool { return arrays[i].node.Index < arrays[j].node.Index })
+	sort.Slice(arrays, func(i, j int) bool { return arrays[i].start < arrays[j].start })
 	buffer := &chargedBuffer{s: s, limit: convertedBodyLimit()}
-	position := 0
 	for _, array := range arrays {
-		start := array.node.Index
-		end := start + len(array.node.Raw)
-		if start < position || end > len(s.raw) {
-			s.releaseMemory(buffer.charged)
-			return nil, failure(400, "video_content_invalid", "invalid video content position")
-		}
-		if _, e := buffer.Write(s.raw[position:start]); e != nil {
+		if e := buffer.text(array.leading); e != nil {
 			s.releaseMemory(buffer.charged)
 			return nil, e
 		}
@@ -665,9 +819,8 @@ func (s *Session) rewrite(videoFrames [][]imageFrame) ([]byte, error) {
 			s.releaseMemory(buffer.charged)
 			return nil, e
 		}
-		position = end
 	}
-	if _, e := buffer.Write(s.raw[position:]); e != nil {
+	if e := buffer.text(s.trailing); e != nil {
 		s.releaseMemory(buffer.charged)
 		return nil, e
 	}
@@ -735,11 +888,11 @@ func (s *Session) renderArray(buffer *chargedBuffer, array *contentArray, videoF
 				if e = buffer.text(suffix); e != nil {
 					return e
 				}
-				if i == len(frames)-1 && block.node.Get("cache_control").Exists() {
+				if i == len(frames)-1 && block.cacheControl != "" {
 					if e = buffer.text(`,"cache_control":`); e != nil {
 						return e
 					}
-					if e = buffer.text(block.node.Get("cache_control").Raw); e != nil {
+					if e = buffer.text(block.cacheControl); e != nil {
 						return e
 					}
 				}
@@ -751,17 +904,13 @@ func (s *Session) renderArray(buffer *chargedBuffer, array *contentArray, videoF
 			if e := separator(); e != nil {
 				return e
 			}
-			offset := block.child.node.Index - block.node.Index
-			if offset < 0 || offset+len(block.child.node.Raw) > len(block.raw) {
-				return failure(400, "video_content_invalid", "invalid nested content position")
-			}
-			if e := buffer.text(block.raw[:offset]); e != nil {
+			if e := buffer.text(block.prefix); e != nil {
 				return e
 			}
 			if e := s.renderArray(buffer, block.child, videoFrames); e != nil {
 				return e
 			}
-			if e := buffer.text(block.raw[offset+len(block.child.node.Raw):]); e != nil {
+			if e := buffer.text(block.suffix); e != nil {
 				return e
 			}
 		} else {

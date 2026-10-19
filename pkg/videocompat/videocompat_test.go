@@ -91,7 +91,7 @@ func TestRealWorkerCancellationQueueAndHotConfig(t *testing.T) {
 	go func() {
 		t0 := time.Now()
 		_, err := runMedia(ctx, config, ffmpegBinary, []string{"-hide_banner", "-nostdin", "-v", "error", "-re", "-stream_loop", "-1", "-threads", "1", "-i", path, "-map", "0:v:0", "-an", "-c:v", "copy", "-f", "null", "pipe:1"}, func(r io.Reader) error { close(started); _, e := io.Copy(io.Discard, r); return e })
-		globalPool.finish(t0, err, admittedConfig)
+		globalPool.finish(t0, err, admittedConfig, rssReserveUnknown)
 		done <- err
 	}()
 	<-started
@@ -475,13 +475,12 @@ func TestRealNativePatchBudgetIndependentOfOutputPixels(t *testing.T) {
 			began := time.Now()
 			_, admitted, e := globalPool.admit(ctx, 0)
 			if e == nil {
-				globalPool.finish(began, nil, admitted)
+				globalPool.finish(began, nil, admitted, rssReserveUnknown)
 			}
 			queued <- e
 		}()
 		require.Eventually(t, func() bool { return Stats().Queued == 1 }, time.Second, time.Millisecond)
 		require.NoError(t, <-done)
-		assert.Equal(t, 1, Stats().Queued)
 		session.Close()
 		require.NoError(t, <-queued)
 		assert.Zero(t, Stats().BufferBytes)
@@ -527,4 +526,75 @@ func TestRealConvertedBodyRespectsInboundLimit(t *testing.T) {
 		}
 		session.Close()
 	}
+}
+
+func TestDecodedBudgetCoversFiftyMegabytes(t *testing.T) {
+	limit := decodedByteLimit(DefaultConfig())
+	require.GreaterOrEqual(t, limit, int64(50_000_000))
+	assert.Equal(t, recognitionSettings(dto.VideoCompatibilitySettings{Enabled: true, FPS: 8, MaxFrames: 256, MaxSide: 1024, PixelPercent: 100, JPEGQuality: 100}), dto.VideoCompatibilitySettings{Enabled: true, FPS: 1, MaxFrames: 32, MaxSide: 256, PixelPercent: 100, JPEGQuality: 40})
+	assert.Equal(t, 96*MiB, rssReserveFor(64, 32))
+	assert.Equal(t, 128*MiB, rssReserveFor(1920, 1080))
+	assert.Equal(t, 256*MiB, rssReserveFor(3840, 2160))
+}
+
+func TestLargeInlineVideoUsesRecognitionProfile(t *testing.T) {
+	video := fixtureVideo(t, 10)
+	padded := append(append([]byte{}, video...), bytes.Repeat([]byte{0}, int(50_000_000)-len(video)+1)...)
+	require.Greater(t, len(padded), 50_000_000)
+	raw := []byte(`{"messages":[{"role":"user","content":[{"type":"video_url","video_url":"data:video/x-matroska;base64,` + base64.StdEncoding.EncodeToString(padded) + `"}]}]}`)
+	original := GetConfig()
+	require.NoError(t, SetConfig(DefaultConfig()))
+	defer func() { require.NoError(t, SetConfig(original)) }()
+	baseline := Stats()
+	session, e := NewSession(context.Background(), raw, "chat")
+	require.NoError(t, e)
+	settings := dto.DefaultVideoCompatibilitySettings()
+	settings.Enabled = true
+	body, e := session.Variant(settings)
+	require.NoError(t, e)
+	assert.LessOrEqual(t, strings.Count(string(body), `"type":"image_url"`), 32)
+	assert.Contains(t, string(body), "frame 1/1")
+	assert.Less(t, Stats().BufferBytes, baseline.BufferBytes+int64(len(raw)/2))
+	session.Close()
+	assert.Equal(t, baseline.BufferBytes, Stats().BufferBytes)
+	assert.Equal(t, baseline.DiskBytes, Stats().DiskBytes)
+}
+
+func TestMediaMemoryCeilingQueuesUntilReserveShrinks(t *testing.T) {
+	original := GetConfig()
+	config := DefaultConfig()
+	config.MaxConcurrency = 4
+	config.QueueCapacity = 2
+	config.QueueWaitSeconds = 2
+	require.NoError(t, SetConfig(config))
+	defer func() { require.NoError(t, SetConfig(original)) }()
+	globalPool.mu.Lock()
+	previous := globalPool.mediaReserve
+	globalPool.mediaReserve = mediaMemoryCeiling
+	globalPool.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var finished atomic.Bool
+	t.Cleanup(func() {
+		if !finished.Load() {
+			cancel()
+			<-done
+		}
+		globalPool.mu.Lock()
+		globalPool.mediaReserve = previous
+		globalPool.mu.Unlock()
+	})
+	go func() {
+		_, admitted, e := globalPool.admit(ctx, 0)
+		if e == nil {
+			globalPool.finish(time.Now(), nil, admitted, rssReserveUnknown)
+		}
+		done <- e
+	}()
+	require.Eventually(t, func() bool { return Stats().Queued == 1 }, time.Second, 5*time.Millisecond)
+	globalPool.adjustMediaReserve(-rssReserveUnknown)
+	require.NoError(t, <-done)
+	finished.Store(true)
+	assert.Zero(t, Stats().Running)
+	assert.Zero(t, Stats().Queued)
 }

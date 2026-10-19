@@ -44,9 +44,56 @@ type Config struct {
 	AdaptiveConfig        AdaptiveConfig `json:"adaptive_config"`
 }
 
+// 4 GiB is the video-pipeline budget. 3 GiB is admitted; 1 GiB covers sampler lag and short spikes.
+const mediaMemoryCeiling = 3 * 1024 * MiB
+
+const (
+	rssReserveUnknown = 256 * MiB
+	rssReserveSmall   = 96 * MiB
+	rssReserveHD      = 128 * MiB
+	rssReserveUHD     = 256 * MiB
+)
+
+const (
+	recognitionDecodedThreshold = 8 * MiB
+	recognitionMaxSide          = 256
+	recognitionJPEGQuality      = 40
+	recognitionMaxFrames        = 32
+	probeOutputLimit            = 8 * MiB
+)
+
 func DefaultConfig() Config {
-	return Config{MaxConcurrency: 32, QueueCapacity: 128, QueueBytesMB: 512, QueueWaitSeconds: 15, RequestTimeoutSeconds: 60, FFmpegThreads: 1, WorkerMemoryMB: 1024, BufferMemoryMB: 2048, TempDiskMB: 4096,
+	return Config{MaxConcurrency: 32, QueueCapacity: 32, QueueBytesMB: 512, QueueWaitSeconds: 30, RequestTimeoutSeconds: 180, FFmpegThreads: 1, WorkerMemoryMB: 768, BufferMemoryMB: 512, TempDiskMB: 4096,
 		AdaptiveConfig: AdaptiveConfig{Light: AdaptiveLevel{50, 75, 75, 75, 70, 75, 75, 25}, Heavy: AdaptiveLevel{25, 50, 50, 50, 85, 85, 90, 50}, MinimumFPS: .5, MinimumFrames: 16, MinimumPixelPercent: 25, MinimumJPEGQuality: 40, RecoverySeconds: 30}}
+}
+
+// LegacyDefaultConfig is the resource document shipped before the 4 GiB budget.
+func LegacyDefaultConfig() Config {
+	config := DefaultConfig()
+	config.MaxConcurrency = 32
+	config.QueueCapacity = 128
+	config.QueueBytesMB = 512
+	config.QueueWaitSeconds = 15
+	config.RequestTimeoutSeconds = 60
+	config.FFmpegThreads = 1
+	config.WorkerMemoryMB = 1024
+	config.BufferMemoryMB = 2048
+	config.TempDiskMB = 4096
+	config.AdaptiveEnabled = false
+	return config
+}
+
+// UpgradeLegacyDefault replaces an untouched previous default with the 4 GiB budget.
+// A document that changed concurrency, timeout, or any other resource field is kept.
+func UpgradeLegacyDefault(config Config) Config {
+	legacy := LegacyDefaultConfig()
+	if config.MaxConcurrency != legacy.MaxConcurrency || config.QueueCapacity != legacy.QueueCapacity || config.QueueBytesMB != legacy.QueueBytesMB || config.QueueWaitSeconds != legacy.QueueWaitSeconds || config.RequestTimeoutSeconds != legacy.RequestTimeoutSeconds || config.FFmpegThreads != legacy.FFmpegThreads || config.WorkerMemoryMB != legacy.WorkerMemoryMB || config.BufferMemoryMB != legacy.BufferMemoryMB || config.TempDiskMB != legacy.TempDiskMB {
+		return config
+	}
+	upgraded := DefaultConfig()
+	upgraded.AdaptiveEnabled = config.AdaptiveEnabled
+	upgraded.AdaptiveConfig = config.AdaptiveConfig
+	return upgraded
 }
 
 func (c Config) Validate() error {

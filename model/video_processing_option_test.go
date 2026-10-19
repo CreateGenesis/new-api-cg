@@ -22,6 +22,35 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+func TestLegacyVideoProcessingDefaultUpgradesOnLoad(t *testing.T) {
+	legacy := videocompat.LegacyDefaultConfig()
+	encoded, err := common.Marshal(legacy)
+	require.NoError(t, err)
+	loaded, canonical, err := parseVideoProcessingConfig(string(encoded))
+	require.NoError(t, err)
+	assert.Equal(t, videocompat.DefaultConfig(), loaded)
+	assert.JSONEq(t, string(mustMarshalVideoConfig(t, videocompat.DefaultConfig())), canonical)
+
+	custom := legacy
+	custom.MaxConcurrency = 12
+	custom.RequestTimeoutSeconds = 90
+	encoded, err = common.Marshal(custom)
+	require.NoError(t, err)
+	loaded, _, err = parseVideoProcessingConfig(string(encoded))
+	require.NoError(t, err)
+	assert.Equal(t, 12, loaded.MaxConcurrency)
+	assert.Equal(t, 90, loaded.RequestTimeoutSeconds)
+	assert.Equal(t, legacy.TempDiskMB, loaded.TempDiskMB)
+	assert.Equal(t, legacy.BufferMemoryMB, loaded.BufferMemoryMB)
+}
+
+func mustMarshalVideoConfig(t *testing.T, config videocompat.Config) []byte {
+	t.Helper()
+	encoded, err := common.Marshal(config)
+	require.NoError(t, err)
+	return encoded
+}
+
 func TestVideoProcessingOptionsDatabaseMatrix(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {

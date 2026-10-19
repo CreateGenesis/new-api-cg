@@ -100,13 +100,13 @@ export const videoProcessingSchema = z
 export type VideoProcessingConfig = z.infer<typeof videoProcessingSchema>
 export const DEFAULT_VIDEO_PROCESSING_CONFIG: VideoProcessingConfig = {
   max_concurrency: 32,
-  queue_capacity: 128,
+  queue_capacity: 32,
   queue_bytes_mb: 512,
-  queue_wait_seconds: 15,
-  request_timeout_seconds: 60,
+  queue_wait_seconds: 30,
+  request_timeout_seconds: 180,
   ffmpeg_threads: 1,
-  worker_memory_mb: 1024,
-  buffer_memory_mb: 2048,
+  worker_memory_mb: 768,
+  buffer_memory_mb: 512,
   temp_disk_mb: 4096,
   adaptive_enabled: false,
   adaptive_config: {

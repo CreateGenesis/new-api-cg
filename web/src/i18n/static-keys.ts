@@ -908,6 +908,7 @@ export const STATIC_I18N_KEYS = [
   'Completed media tasks',
   'Configuration version',
   'Convert inline base64 videos into timestamped images. Only visual content is processed; audio is ignored.',
+  'Videos larger than 8 MiB are extracted as at most 32 images with a 256-pixel longest side and JPEG quality of at most 40. Tokens follow those image dimensions.',
   'Decode cache hit rate',
   'Decode cache hits',
   'Effective CPU limit',

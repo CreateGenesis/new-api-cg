@@ -75,6 +75,7 @@ type pool struct {
 	timings      [300]timingSlot
 	children     map[int]struct{}
 	activeLimits map[Config]int
+	mediaReserve int64
 }
 
 var globalPool = pool{changed: make(chan struct{})}
@@ -86,7 +87,39 @@ func (p *pool) ready(c Config) bool {
 			return false
 		}
 	}
+	if p.mediaAccountedLocked()+rssReserveUnknown > mediaMemoryCeiling {
+		return false
+	}
 	return p.stats.Running < c.MaxConcurrency && p.stats.BufferBytes <= int64(c.BufferMemoryMB)*MiB && p.stats.DiskBytes <= int64(c.TempDiskMB)*MiB
+}
+
+func (p *pool) mediaAccountedLocked() int64 {
+	p.refreshChildRSSLocked()
+	return p.stats.BufferBytes + max(p.mediaReserve, p.stats.CurrentChildRSSBytes)
+}
+
+func (p *pool) refreshChildRSSLocked() {
+	pids := make([]int, 0, len(p.children))
+	for pid := range p.children {
+		pids = append(pids, pid)
+	}
+	combined, count, worker := runtimeChildStats(pids)
+	p.stats.CurrentChildRSSBytes, p.stats.CurrentChildren = combined, count
+	p.stats.PeakChildRSSBytes = max(p.stats.PeakChildRSSBytes, worker)
+	p.stats.PeakChildren = max(p.stats.PeakChildren, count)
+	p.stats.PeakCombinedChildRSSBytes = max(p.stats.PeakCombinedChildRSSBytes, combined)
+}
+
+func (p *pool) adjustMediaReserve(delta int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.mediaReserve += delta
+	if p.mediaReserve < 0 {
+		p.mediaReserve = 0
+	}
+	if delta < 0 {
+		p.signal()
+	}
 }
 func (p *pool) recordTier(tier int) {
 	if tier == 1 {
@@ -116,6 +149,7 @@ func (p *pool) admit(ctx context.Context, size int64, frozen ...Config) (int, Co
 		p.stats.Running++
 		p.stats.PeakRunning = max(p.stats.PeakRunning, p.stats.Running)
 		p.stats.Accepted++
+		p.mediaReserve += rssReserveUnknown
 		tier := p.pressure(c)
 		p.recordLocked("queue", time.Since(started))
 		if len(frozen) > 0 {
@@ -145,6 +179,7 @@ func (p *pool) admit(ctx context.Context, size int64, frozen ...Config) (int, Co
 			p.stats.Running++
 			p.stats.PeakRunning = max(p.stats.PeakRunning, p.stats.Running)
 			p.stats.Accepted++
+			p.mediaReserve += rssReserveUnknown
 			p.stats.QueueWaitMilliseconds += time.Since(started).Milliseconds()
 			p.recordLocked("queue", time.Since(started))
 			tier := p.pressure(c)
@@ -199,10 +234,14 @@ func (p *pool) admit(ctx context.Context, size int64, frozen ...Config) (int, Co
 	}
 }
 
-func (p *pool) finish(start time.Time, err error, limits Config) {
+func (p *pool) finish(start time.Time, err error, limits Config, rssReserve int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stats.Running--
+	p.mediaReserve -= rssReserve
+	if p.mediaReserve < 0 {
+		p.mediaReserve = 0
+	}
 	p.activeLimits[limits]--
 	if p.activeLimits[limits] <= 0 {
 		delete(p.activeLimits, limits)

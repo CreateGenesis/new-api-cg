@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"io"
 	"math/big"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -50,80 +51,96 @@ func (r *boundedReader) Read(b []byte) (int, error) {
 func probe(ctxSession *Session, path string, remaining int) (*manifest, error) {
 	m := &manifest{}
 	rotation := 0
+	file, err := os.CreateTemp(ctxSession.tempDir, "probe-")
+	if err != nil {
+		return nil, failure(503, "video_storage_unavailable", "video temporary storage is unavailable")
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
 	args := []string{"-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,avi,mpegts,mpeg,ogg", "-threads", strconv.Itoa(ctxSession.config.FFmpegThreads), "-err_detect", "explode", "-select_streams", "v:0", "-show_frames", "-show_streams", "-show_entries", "frame=pts,pkt_duration,duration,width,height:stream=time_base,width,height:stream_side_data=rotation:frame_side_data=", "-of", "compact=p=1:nk=0", path}
 	log, err := runMedia(ctxSession.mediaContext, ctxSession.config, ffprobeBinary, args, func(r io.Reader) error {
-		scanner := bufio.NewScanner(&boundedReader{r: r, remaining: 4*MiB + 1})
-		scanner.Buffer(make([]byte, 4096), 128*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fields := strings.Split(line, "|")
-			if len(fields) < 2 {
-				continue
-			}
-			values := make(map[string]string, len(fields))
-			for _, field := range fields[1:] {
-				k, v, ok := strings.Cut(field, "=")
-				if ok {
-					values[k] = v
-				}
-			}
-			switch fields[0] {
-			case "frame":
-				pts, e := strconv.ParseInt(values["pts"], 10, 64)
-				if e != nil {
-					return failure(422, "video_timestamps_invalid", "video frames require source timestamps")
-				}
-				d := values["duration"]
-				if d == "" {
-					d = values["pkt_duration"]
-				}
-				duration, e := strconv.ParseInt(d, 10, 64)
-				if e != nil || duration <= 0 {
-					return failure(422, "video_timestamps_invalid", "video frames require positive durations")
-				}
-				w, we := strconv.Atoi(values["width"])
-				h, he := strconv.Atoi(values["height"])
-				if we != nil || he != nil || w <= 0 || h <= 0 || w > 8192 || h > 8192 || int64(w)*int64(h) > 4096*4096 {
-					return failure(413, "video_resolution_limit", "video source resolution exceeds budget")
-				}
-				if len(m.Frames) == 0 {
-					m.Width = w
-					m.Height = h
-				} else {
-					if w != m.Width || h != m.Height {
-						return failure(422, "video_dynamic_resolution", "dynamic video resolution is unsupported")
-					}
-					if pts <= m.Frames[len(m.Frames)-1].PTS {
-						return failure(422, "video_timestamps_invalid", "video timestamps must increase")
-					}
-				}
-				if len(m.Frames) >= remaining {
-					return failure(413, "video_source_frames_limit", "decoded source frames exceed request budget")
-				}
-				m.Frames = append(m.Frames, sourceFrame{pts, duration})
-			case "stream":
-				if tb, ok := values["time_base"]; ok {
-					m.TimeBase = new(big.Rat)
-					if _, ok = m.TimeBase.SetString(tb); !ok || m.TimeBase.Sign() <= 0 {
-						return failure(422, "video_timestamps_invalid", "invalid video time base")
-					}
-				}
-			}
-			if value, ok := values["rotation"]; ok {
-				n, e := strconv.Atoi(value)
-				if e != nil || n%90 != 0 {
-					return failure(422, "video_rotation_invalid", "unsupported video rotation")
-				}
-				rotation = n
-			}
+		n, e := io.Copy(file, &boundedReader{r: r, remaining: probeOutputLimit + 1})
+		if n > probeOutputLimit {
+			return failure(413, "video_probe_limit", "video metadata exceeded budget")
 		}
-		return scanner.Err()
+		return e
 	})
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(log) != "" {
 		return nil, failure(422, "video_decode_failed", "video source contains decoding errors")
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return nil, failure(503, "video_storage_unavailable", "video temporary storage is unavailable")
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 128*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Split(line, "|")
+		if len(fields) < 2 {
+			continue
+		}
+		values := make(map[string]string, len(fields))
+		for _, field := range fields[1:] {
+			k, v, ok := strings.Cut(field, "=")
+			if ok {
+				values[k] = v
+			}
+		}
+		switch fields[0] {
+		case "frame":
+			pts, e := strconv.ParseInt(values["pts"], 10, 64)
+			if e != nil {
+				return nil, failure(422, "video_timestamps_invalid", "video frames require source timestamps")
+			}
+			d := values["duration"]
+			if d == "" {
+				d = values["pkt_duration"]
+			}
+			duration, e := strconv.ParseInt(d, 10, 64)
+			if e != nil || duration <= 0 {
+				return nil, failure(422, "video_timestamps_invalid", "video frames require positive durations")
+			}
+			w, we := strconv.Atoi(values["width"])
+			h, he := strconv.Atoi(values["height"])
+			if we != nil || he != nil || w <= 0 || h <= 0 || w > 8192 || h > 8192 || int64(w)*int64(h) > 4096*4096 {
+				return nil, failure(413, "video_resolution_limit", "video source resolution exceeds budget")
+			}
+			if len(m.Frames) == 0 {
+				m.Width = w
+				m.Height = h
+			} else {
+				if w != m.Width || h != m.Height {
+					return nil, failure(422, "video_dynamic_resolution", "dynamic video resolution is unsupported")
+				}
+				if pts <= m.Frames[len(m.Frames)-1].PTS {
+					return nil, failure(422, "video_timestamps_invalid", "video timestamps must increase")
+				}
+			}
+			if len(m.Frames) >= remaining {
+				return nil, failure(413, "video_source_frames_limit", "decoded source frames exceed request budget")
+			}
+			m.Frames = append(m.Frames, sourceFrame{pts, duration})
+		case "stream":
+			if tb, ok := values["time_base"]; ok {
+				m.TimeBase = new(big.Rat)
+				if _, ok = m.TimeBase.SetString(tb); !ok || m.TimeBase.Sign() <= 0 {
+					return nil, failure(422, "video_timestamps_invalid", "invalid video time base")
+				}
+			}
+		}
+		if value, ok := values["rotation"]; ok {
+			n, e := strconv.Atoi(value)
+			if e != nil || n%90 != 0 {
+				return nil, failure(422, "video_rotation_invalid", "unsupported video rotation")
+			}
+			rotation = n
+		}
+	}
+	if err = scanner.Err(); err != nil {
+		return nil, err
 	}
 	if len(m.Frames) == 0 || m.TimeBase == nil {
 		return nil, failure(422, "video_empty", "video contains no timed frames")
