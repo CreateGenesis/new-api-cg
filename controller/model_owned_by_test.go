@@ -60,6 +60,15 @@ func TestBuildOpenAIModelFallsBackToCustomForUnknownModels(t *testing.T) {
 	require.Equal(t, "custom", modelItem.OwnedBy)
 }
 
+func TestBuildOpenAIModelClearsVolcengineOwner(t *testing.T) {
+	modelItem := buildOpenAIModel(
+		"deepseek-v4.1-flash",
+		map[string]string{"deepseek-v4.1-flash": "volcengine"},
+		map[string]bool{"deepseek-v4.1-flash": true},
+	)
+	require.Equal(t, "self-hosted", modelItem.OwnedBy)
+}
+
 func TestGetModelListGroupsUsesUserGroupWhenTokenGroupIsEmpty(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

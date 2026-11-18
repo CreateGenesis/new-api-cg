@@ -138,16 +138,18 @@ func channelOwnerName(channelType int) string {
 	return strings.ToLower(constant.GetChannelTypeName(channelType))
 }
 
-func getPreferredModelOwners(modelNames []string, groups []string) map[string]string {
-	channelTypes, err := model.GetPreferredModelOwnerChannelTypes(modelNames, groups)
+func getPreferredModelOwners(modelNames []string, groups []string) (map[string]string, map[string]bool) {
+	channelOwners, err := model.GetPreferredModelOwners(modelNames, groups)
 	if err != nil {
-		common.SysLog(common.LogText("GetPreferredModelOwnerChannelTypes error: %v", err))
-		return map[string]string{}
+		common.SysLog(common.LogText("GetPreferredModelOwners error: %v", err))
+		return map[string]string{}, map[string]bool{}
 	}
 
 	ownerByChannelType := make(map[int]string)
-	owners := make(map[string]string, len(channelTypes))
-	for modelName, channelType := range channelTypes {
+	owners := make(map[string]string, len(channelOwners))
+	clearVolcengineTraits := make(map[string]bool, len(channelOwners))
+	for modelName, channelOwner := range channelOwners {
+		channelType := channelOwner.ChannelType
 		owner, ok := ownerByChannelType[channelType]
 		if !ok {
 			owner = channelOwnerName(channelType)
@@ -156,11 +158,12 @@ func getPreferredModelOwners(modelNames []string, groups []string) map[string]st
 		if owner != "" {
 			owners[modelName] = owner
 		}
+		clearVolcengineTraits[modelName] = channelOwner.ClearVolcengineTraits
 	}
-	return owners
+	return owners, clearVolcengineTraits
 }
 
-func buildOpenAIModel(modelName string, ownerByModel map[string]string) dto.OpenAIModels {
+func buildOpenAIModel(modelName string, ownerByModel map[string]string, clearVolcengineTraits ...map[string]bool) dto.OpenAIModels {
 	var oaiModel dto.OpenAIModels
 	if staticModel, ok := openAIModelsMap[modelName]; ok {
 		oaiModel = staticModel
@@ -174,6 +177,9 @@ func buildOpenAIModel(modelName string, ownerByModel map[string]string) dto.Open
 	}
 	if owner, ok := ownerByModel[modelName]; ok && owner != "" {
 		oaiModel.OwnedBy = owner
+	}
+	if len(clearVolcengineTraits) > 0 && clearVolcengineTraits[0][modelName] {
+		oaiModel.OwnedBy = "self-hosted"
 	}
 	oaiModel.SupportedEndpointTypes = model.GetModelSupportEndpointTypes(modelName)
 	return oaiModel
@@ -263,12 +269,13 @@ func ListModels(c *gin.Context, modelType int) {
 	}
 
 	ownerByModel := map[string]string{}
+	clearVolcengineTraits := map[string]bool{}
 	if len(ownerGroups) > 0 {
-		ownerByModel = getPreferredModelOwners(userModelNames, ownerGroups)
+		ownerByModel, clearVolcengineTraits = getPreferredModelOwners(userModelNames, ownerGroups)
 	}
 	userOpenAiModels := make([]dto.OpenAIModels, 0, len(userModelNames))
 	for _, modelName := range userModelNames {
-		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
+		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel, clearVolcengineTraits))
 	}
 
 	switch modelType {

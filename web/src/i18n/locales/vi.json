@@ -1263,6 +1263,8 @@
     "Client header value": "Giá trị header client",
     "Client headers override the gateway defaults and may cause upstream errors": "Header của client sẽ ghi đè header mặc định của gateway và có thể gây lỗi ở upstream",
     "Client ID": "Mã khách hàng",
+    "Clear Volcengine traits": "Xóa dấu hiệu Volcengine",
+    "Hide the Volcengine ownership label for models served through this channel.": "Ẩn nhãn sở hữu Volcengine đối với các mô hình được cung cấp qua kênh này.",
     "Client information such as User-Agent and IP is exposed to the upstream": "Thông tin client như User-Agent và IP sẽ bị lộ cho upstream",
     "Client model": "Model phía client",
     "Client model matching": "Khớp client model",

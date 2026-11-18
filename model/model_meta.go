@@ -442,7 +442,28 @@ func normalizeLookupValues(values []string) []string {
 }
 
 func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (map[string]int, error) {
-	result := make(map[string]int)
+	owners, err := getPreferredModelOwners(modelNames, groups)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]int, len(owners))
+	for modelName, owner := range owners {
+		result[modelName] = owner.ChannelType
+	}
+	return result, nil
+}
+
+type PreferredModelOwner struct {
+	ChannelType           int
+	ClearVolcengineTraits bool
+}
+
+func GetPreferredModelOwners(modelNames []string, groups []string) (map[string]PreferredModelOwner, error) {
+	return getPreferredModelOwners(modelNames, groups)
+}
+
+func getPreferredModelOwners(modelNames []string, groups []string) (map[string]PreferredModelOwner, error) {
+	result := make(map[string]PreferredModelOwner)
 	modelNames = normalizeLookupValues(modelNames)
 	if len(modelNames) == 0 {
 		return result, nil
@@ -485,7 +506,12 @@ func GetPreferredModelOwnerChannelTypes(modelNames []string, groups []string) (m
 		} else if channelMapsModelToKimiK3Official(r.ChannelType, r.Model, r.ChannelSettings, r.ModelMapping) {
 			channelType = constant.ChannelTypeMoonshot
 		}
-		result[r.Model] = channelType
+		var settings dto.ChannelOtherSettings
+		_ = common.UnmarshalJsonStr(r.ChannelSettings, &settings)
+		result[r.Model] = PreferredModelOwner{
+			ChannelType:           channelType,
+			ClearVolcengineTraits: settings.ClearVolcengineTraits,
+		}
 	}
 	return result, nil
 }

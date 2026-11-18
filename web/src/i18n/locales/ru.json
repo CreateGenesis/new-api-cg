@@ -1263,6 +1263,8 @@
     "Client header value": "Значение заголовка клиента",
     "Client headers override the gateway defaults and may cause upstream errors": "Заголовки клиента заменяют заголовки шлюза по умолчанию и могут вызвать ошибки вышестоящего сервиса",
     "Client ID": "ID клиента",
+    "Clear Volcengine traits": "Скрыть признаки Volcengine",
+    "Hide the Volcengine ownership label for models served through this channel.": "Скрывать метку принадлежности Volcengine для моделей этого канала.",
     "Client information such as User-Agent and IP is exposed to the upstream": "Данные клиента, такие как User-Agent и IP, раскрываются вышестоящему сервису",
     "Client model": "Модель клиента",
     "Client model matching": "Сопоставление client model",

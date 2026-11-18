@@ -60,6 +60,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'allow_speed',
   'claude_beta_query',
   'ollama_openai_chat',
+  'clear_volcengine_traits',
   'disable_task_polling_sleep',
   'deepseek_v4_request_sanitization_enabled',
   'deepseek_v4_official_compatibility',

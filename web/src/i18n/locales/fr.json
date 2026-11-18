@@ -1263,6 +1263,8 @@
     "Client header value": "Valeur d'en-tête client",
     "Client headers override the gateway defaults and may cause upstream errors": "Les en-têtes du client remplacent ceux de la passerelle et peuvent provoquer des erreurs en amont",
     "Client ID": "ID client",
+    "Clear Volcengine traits": "Supprimer les attributs Volcengine",
+    "Hide the Volcengine ownership label for models served through this channel.": "Masquer le libellé de propriété Volcengine pour les modèles servis par ce canal.",
     "Client information such as User-Agent and IP is exposed to the upstream": "Les informations du client, comme le User-Agent et l'IP, sont exposées à l'amont",
     "Client model": "Modèle client",
     "Client model matching": "Correspondance du model client",

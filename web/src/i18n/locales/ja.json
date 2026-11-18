@@ -1263,6 +1263,8 @@
     "Client header value": "クライアントヘッダー値",
     "Client headers override the gateway defaults and may cause upstream errors": "クライアントのヘッダーがゲートウェイの既定ヘッダーを上書きし、上流でエラーになる可能性があります",
     "Client ID": "クライアントID",
+    "Clear Volcengine traits": "Volcengine の特徴を削除",
+    "Hide the Volcengine ownership label for models served through this channel.": "このチャネルが提供するモデルの Volcengine 所有ラベルを非表示にします。",
     "Client information such as User-Agent and IP is exposed to the upstream": "User-Agent や IP などのクライアント情報が上流に公開されます",
     "Client model": "クライアント model",
     "Client model matching": "クライアント model のマッチング",

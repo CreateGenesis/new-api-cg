@@ -5713,6 +5713,30 @@ export function ChannelMutateDrawer({
   )
   const providerCompatibilityFields = (
     <>
+      <FormField
+        control={form.control}
+        name='clear_volcengine_traits'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Clear Volcengine traits')}</FormLabel>
+              <FormDescription>
+                {t(
+                  'Hide the Volcengine ownership label for models served through this channel.'
+                )}
+              </FormDescription>
+              <FormMessage />
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value === true}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
       {currentType === 14 && (
         <FormField
           control={form.control}

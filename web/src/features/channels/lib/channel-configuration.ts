@@ -93,6 +93,7 @@ const CONFIGURATION_BLOCKS = {
       'pass_through_body_enabled',
       'responses_websocket_enabled',
       'ollama_openai_chat',
+      'clear_volcengine_traits',
       'system_prompt',
       'system_prompt_override',
       'tnt_tencent_openai_conversion',
@@ -254,6 +255,7 @@ export function getChannelConfigurationState(
         CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_seconds ||
       values.stream_interruption_billing_mode !== 'off' ||
       values.cache_usage_validation_split ||
+      values.clear_volcengine_traits ||
       values.simulated_model_cache_enabled ||
       values.simulated_model_cache_multimodal_enabled ||
       values.multi_key_type === 'cache_affinity_least_requests'

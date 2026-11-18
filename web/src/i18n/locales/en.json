@@ -1263,6 +1263,8 @@
     "Client header value": "Client header value",
     "Client headers override the gateway defaults and may cause upstream errors": "Client headers override the gateway defaults and may cause upstream errors",
     "Client ID": "Client ID",
+    "Clear Volcengine traits": "Clear Volcengine traits",
+    "Hide the Volcengine ownership label for models served through this channel.": "Hide the Volcengine ownership label for models served through this channel.",
     "Client information such as User-Agent and IP is exposed to the upstream": "Client information such as User-Agent and IP is exposed to the upstream",
     "Client model": "Client model",
     "Client model matching": "Client model matching",

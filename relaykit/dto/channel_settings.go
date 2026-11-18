@@ -173,6 +173,7 @@ type ChannelOtherSettings struct {
 	UsageTokenLimit                       *UsageTokenLimitSettings           `json:"usage_token_limit,omitempty"`
 	UsageEstimation                       *UsageEstimationSettings           `json:"usage_estimation,omitempty"`
 	OllamaOpenAIChat                      bool                               `json:"ollama_openai_chat,omitempty"`
+	ClearVolcengineTraits                 bool                               `json:"clear_volcengine_traits,omitempty"` // 是否隐藏渠道对外暴露的火山引擎归属信息
 	MoonshotQuotaAutoDisable              *MoonshotQuotaAutoDisableSettings  `json:"moonshot_quota_auto_disable,omitempty"`
 }
 

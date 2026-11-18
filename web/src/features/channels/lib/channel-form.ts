@@ -470,6 +470,7 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     ollama_openai_chat: z.boolean().optional(), // Ollama: OpenAI-compatible /v1/chat/completions instead of native /api/chat
+    clear_volcengine_traits: z.boolean().optional(),
     disable_task_polling_sleep: z.boolean().optional(),
     deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
     cache_usage_validation_split: z.boolean().optional(),
@@ -1125,6 +1126,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   ollama_openai_chat: false,
+  clear_volcengine_traits: false,
   disable_task_polling_sleep: false,
   deepseek_v4_request_sanitization_enabled: false,
   cache_usage_validation_split: false,
@@ -1304,6 +1306,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let deepSeekV4RequestSanitizationEnabled = false
+  let clearVolcengineTraits = false
   let moonshotQuotaAutoDisableEnabled = false
   let moonshotMonthlyNoSubscriptionEnabled = false
   let groupScheduling = defaultGroupScheduling
@@ -1344,6 +1347,7 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       ollamaOpenAIChat = parsed.ollama_openai_chat === true
+      clearVolcengineTraits = parsed.clear_volcengine_traits === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
       tntTencentOpenAIConversion =
         channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
@@ -1702,6 +1706,7 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     ollama_openai_chat: ollamaOpenAIChat,
+    clear_volcengine_traits: clearVolcengineTraits,
     disable_task_polling_sleep: disableTaskPollingSleep,
     tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
     anthropic_input_includes_cache: anthropicInputIncludesCache,
@@ -2004,6 +2009,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.ollama_openai_chat = formData.ollama_openai_chat === true
   } else if ('ollama_openai_chat' in settingsObj) {
     delete settingsObj.ollama_openai_chat
+  }
+
+  if (formData.clear_volcengine_traits === true) {
+    settingsObj.clear_volcengine_traits = true
+  } else if ('clear_volcengine_traits' in settingsObj) {
+    delete settingsObj.clear_volcengine_traits
   }
 
   settingsObj.disable_task_polling_sleep =

@@ -1263,6 +1263,8 @@
     "Client header value": "用戶端請求頭值",
     "Client headers override the gateway defaults and may cause upstream errors": "客戶端請求標頭會覆蓋閘道預設標頭，可能導致上游回報錯誤",
     "Client ID": "Client ID",
+    "Clear Volcengine traits": "清除火山特徵",
+    "Hide the Volcengine ownership label for models served through this channel.": "隱藏此渠道提供模型的火山引擎歸屬標識。",
     "Client information such as User-Agent and IP is exposed to the upstream": "客戶端資訊（如 User-Agent、IP）會暴露給上游",
     "Client model": "客戶端 model",
     "Client model matching": "客戶端 model 匹配",

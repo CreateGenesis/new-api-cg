@@ -197,6 +197,7 @@ export interface ChannelOtherSettings {
   allow_speed?: boolean
   claude_beta_query?: boolean
   ollama_openai_chat?: boolean
+  clear_volcengine_traits?: boolean
   disable_task_polling_sleep?: boolean
   deepseek_v4_request_sanitization?: boolean
   deepseek_v4_official_compatibility?: boolean
