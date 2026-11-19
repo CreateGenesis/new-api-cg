@@ -130,7 +130,8 @@ func (s *streamInterruptionBillingSettler) NeedsRefund() bool   { return true }
 func (s *streamInterruptionBillingSettler) GetPreConsumedQuota() int {
 	return s.preConsumed
 }
-func (s *streamInterruptionBillingSettler) Reserve(int) error { return nil }
+func (s *streamInterruptionBillingSettler) Reserve(int) error             { return nil }
+func (s *streamInterruptionBillingSettler) ReserveBeforeSubmit(int) error { return nil }
 
 func TestStreamInterruptionBillingSettlesPreConsumedQuotaToZero(t *testing.T) {
 	gin.SetMode(gin.TestMode)

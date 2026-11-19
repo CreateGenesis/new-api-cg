@@ -465,7 +465,9 @@ func TestResponseOpenAI2ClaudePreservesReasoningAsThinkingBlock(t *testing.T) {
 	assert.Equal(t, "final answer", resp.Content[1].GetText())
 	assert.Equal(t, "tool_use", resp.Content[2].Type)
 	assert.Equal(t, "lookup", resp.Content[2].Name)
-	assert.Equal(t, map[string]any{"q": "x"}, resp.Content[2].Input)
+	encodedInput, err := kitutil.Marshal(resp.Content[2].Input)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"q":"x"}`, string(encodedInput))
 }
 
 func TestBuildClaudeUsageFromOpenAICacheReadAlwaysSplitsAnthropicInput(t *testing.T) {

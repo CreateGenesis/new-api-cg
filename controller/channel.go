@@ -2274,10 +2274,10 @@ func ManageMultiKeys(c *gin.Context) {
 				stored.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
 			}
 
-		channel.ChannelInfo.MultiKeyStatusList[keyIndex] = 2 // disabled
-		channel.ChannelInfo.MultiKeyDisabledReason[keyIndex] = "Manually disabled"
-		channel.ChannelInfo.MultiKeyDisabledTime[keyIndex] = common.GetTimestamp()
-		delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, keyIndex)
+			channel.ChannelInfo.MultiKeyStatusList[keyIndex] = 2 // disabled
+			channel.ChannelInfo.MultiKeyDisabledReason[keyIndex] = "Manually disabled"
+			channel.ChannelInfo.MultiKeyDisabledTime[keyIndex] = common.GetTimestamp()
+			delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, keyIndex)
 
 			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
 			return nil
@@ -2370,14 +2370,16 @@ func ManageMultiKeys(c *gin.Context) {
 				stored.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
 			}
 
-			// 只禁用当前启用的密钥
-			if status == 1 {
-				channel.ChannelInfo.MultiKeyStatusList[i] = 2 // disabled
-				channel.ChannelInfo.MultiKeyDisabledReason[i] = "Manually disabled"
-				channel.ChannelInfo.MultiKeyDisabledTime[i] = common.GetTimestamp()
-				delete(channel.ChannelInfo.MultiKeyMoonshotQuotaStatus, i)
-				disabledCount++
-
+			disabledCount = 0
+			for i := range stored.ChannelInfo.MultiKeySize {
+				status := 1
+				if s, exists := stored.ChannelInfo.MultiKeyStatusList[i]; exists {
+					status = s
+				}
+				if status == 1 {
+					stored.ChannelInfo.MultiKeyStatusList[i] = 2
+					disabledCount++
+				}
 			}
 
 			if disabledCount == 0 {
@@ -2404,24 +2406,13 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
-			common.ApiErrorT(c, "Key index out of range")
-			return
-		}
-
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-		var newQuotaStatus = make(map[int]model.MoonshotQuotaStatus)
-
-		newIndex := 0
-		for i, key := range keys {
-			// 跳过要删除的密钥
-			if i == keyIndex {
-				continue
-
+		// The keys change under the channel's key lock, from the stored ones: a
+		// refresh may have replaced a credential since channel was read.
+		var keyBefore string
+		shouldCloseWebSocket := false
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			if keyIndex < 0 || keyIndex >= stored.ChannelInfo.MultiKeySize {
+				return common.NewMessage("Key index out of range")
 			}
 
 			keyBefore = stored.Key
@@ -2458,25 +2449,17 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 				newIndex++
 			}
-			if quota, exists := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; exists {
-				newQuotaStatus[newIndex] = quota
-			}
-			newIndex++
-		}
-
 
 			if len(remainingKeys) == 0 {
 				return common.NewMessage("Cannot delete the last key")
 			}
 
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
-		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = newQuotaStatus
-
+			// Update channel with remaining keys
+			stored.Key = strings.Join(remainingKeys, "\n")
+			stored.ChannelInfo.MultiKeySize = len(remainingKeys)
+			stored.ChannelInfo.MultiKeyStatusList = newStatusList
+			stored.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+			stored.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
 			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
 			return nil
@@ -2497,11 +2480,14 @@ func ManageMultiKeys(c *gin.Context) {
 		// As delete_key, from the stored keys under the channel's key lock.
 		var keyBefore string
 		var deletedCount int
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-		var newQuotaStatus = make(map[int]model.MoonshotQuotaStatus)
-
+		shouldCloseWebSocket := false
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			keyBefore = stored.Key
+			keys := stored.GetKeys()
+			var remainingKeys []string
+			var newStatusList = make(map[int]int)
+			var newDisabledTime = make(map[int]int64)
+			var newDisabledReason = make(map[int]string)
 
 			newIndex := 0
 			for i, key := range keys {
@@ -2535,30 +2521,8 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 			}
 
-			// 只删除自动禁用（status == 3）的密钥，保留启用（status == 1）和手动禁用（status == 2）的密钥
-			if status == 3 {
-				deletedCount++
-			} else {
-				remainingKeys = append(remainingKeys, key)
-				// 保留非自动禁用密钥的状态信息，重新索引
-				if status != 1 {
-					newStatusList[newIndex] = status
-					if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-						if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-							newDisabledTime[newIndex] = t
-						}
-					}
-					if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-						if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-							newDisabledReason[newIndex] = r
-						}
-					}
-					if quota, exists := channel.ChannelInfo.MultiKeyMoonshotQuotaStatus[i]; exists {
-						newQuotaStatus[newIndex] = quota
-					}
-				}
-				newIndex++
-
+			if deletedCount == 0 {
+				return common.NewMessage("No auto-disabled keys to delete")
 			}
 
 			// Update channel with remaining keys
@@ -2568,17 +2532,9 @@ func ManageMultiKeys(c *gin.Context) {
 			stored.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 			stored.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
-		channel.ChannelInfo.MultiKeyMoonshotQuotaStatus = newQuotaStatus
-
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
-
+			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
+			return nil
+		})
 		if err != nil {
 			common.ApiError(c, err)
 			return

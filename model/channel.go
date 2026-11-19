@@ -573,6 +573,23 @@ func (channel *Channel) GetAutoBan() bool {
 	return *channel.AutoBan == 1
 }
 
+// saveStatusState persists only the fields owned by the channel status flow.
+// Keeping this allowlist here prevents a stale channel snapshot from
+// overwriting credentials, accounting counters, or channel configuration.
+func (channel *Channel) saveStatusState() error {
+	if channel.Id == 0 {
+		return errors.New("channel ID is 0")
+	}
+	updates := map[string]any{
+		"status":     channel.Status,
+		"other_info": channel.OtherInfo,
+	}
+	if channel.ChannelInfo.IsMultiKey {
+		updates["channel_info"] = channel.ChannelInfo
+	}
+	return DB.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
+}
+
 // ErrChannelOtherInfoBusy reports a channel whose other_info other writers
 // kept changing through every attempt of UpdateChannelOtherInfo.
 var ErrChannelOtherInfoBusy = errors.New("channel other_info kept changing during the update")
@@ -1842,8 +1859,9 @@ func BatchSetChannelTag(ids []int, tag *string) error {
 		return err
 	}
 
-	// update ability status
-	channels, err := GetChannelsByIds(ids)
+	// Read our uncommitted tag changes before rebuilding abilities.
+	var channels []*Channel
+	err = tx.Where("id in (?)", ids).Find(&channels).Error
 	if err != nil {
 		tx.Rollback()
 		return err

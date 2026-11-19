@@ -43,10 +43,10 @@ func TestConvertTNTTencentClaudeRequestNormalizesToolHistory(t *testing.T) {
 		Tools: []dto.Tool{{
 			Name:        "lookup",
 			Description: "Anthropic security review",
-			InputSchema: map[string]any{
+			InputSchema: tntRawMessage(t, map[string]any{
 				"type":        "object",
 				"description": "Claude Code schema",
-			},
+			}),
 		}},
 	}
 
@@ -75,7 +75,8 @@ func TestConvertTNTTencentClaudeRequestNormalizesToolHistory(t *testing.T) {
 
 	require.Len(t, converted.Tools, 1)
 	assert.Equal(t, "Provider code review", converted.Tools[0].Function.Description)
-	schema := converted.Tools[0].Function.Parameters.(map[string]any)
+	var schema map[string]any
+	require.NoError(t, kitutil.Unmarshal(converted.Tools[0].Function.Parameters, &schema))
 	assert.Equal(t, "AI Assistant schema", schema["description"])
 
 	encoded, err := kitutil.Marshal(converted)
@@ -146,7 +147,9 @@ func TestConvertTNTTencentResponsesRequestForcesStreamingAndFlattensInput(t *tes
 	assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_1", Content: "(interrupted)"}, converted.Messages[4])
 	require.Len(t, converted.Tools, 1)
 	assert.Equal(t, "testing", converted.Tools[0].Function.Description)
-	assert.Equal(t, "Provider schema", converted.Tools[0].Function.Parameters.(map[string]any)["description"])
+	var schema map[string]any
+	require.NoError(t, kitutil.Unmarshal(converted.Tools[0].Function.Parameters, &schema))
+	assert.Equal(t, "Provider schema", schema["description"])
 
 	encoded, err := kitutil.Marshal(converted)
 	require.NoError(t, err)

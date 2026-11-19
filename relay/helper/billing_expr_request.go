@@ -18,7 +18,11 @@ import (
 
 const billingMultipartInputKey = "_billing_expr_multipart_input"
 
-func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.RelayInfo) (billingexpr.RequestInput, error) {
+func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.RelayInfo, readsBodyOptions ...bool) (billingexpr.RequestInput, error) {
+	readsBody := true
+	if len(readsBodyOptions) > 0 {
+		readsBody = readsBodyOptions[0]
+	}
 	if info != nil && info.BillingRequestInput != nil {
 		input := cloneRequestInput(*info.BillingRequestInput)
 		if input.Multipart == nil && isMultipartContentType(c) {

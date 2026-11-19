@@ -488,10 +488,11 @@ func (b *videoBillingReservation) Reserve(target int) error {
 	b.quota = max(b.quota, target)
 	return nil
 }
-func (b *videoBillingReservation) GetPreConsumedQuota() int { return b.quota }
-func (*videoBillingReservation) Settle(int) error           { return nil }
-func (*videoBillingReservation) Refund(*gin.Context)        {}
-func (*videoBillingReservation) NeedsRefund() bool          { return true }
+func (b *videoBillingReservation) ReserveBeforeSubmit(target int) error { return b.Reserve(target) }
+func (b *videoBillingReservation) GetPreConsumedQuota() int             { return b.quota }
+func (*videoBillingReservation) Settle(int) error                       { return nil }
+func (*videoBillingReservation) Refund(*gin.Context)                    {}
+func (*videoBillingReservation) NeedsRefund() bool                      { return true }
 
 func TestVideoVariantBillingPreservesFrozenExpressionAndInput(t *testing.T) {
 	const expression = `param("factor") == 2 ? tier("frozen", p * 2) : tier("other", p * 20)`

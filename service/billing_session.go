@@ -159,6 +159,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	requireAvailableQuota := false
 	imageRequest := false
 	if s.relayInfo != nil {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
@@ -190,6 +191,10 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	}
 	s.syncRelayInfo()
 	return nil
+}
+
+func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
+	return s.Reserve(targetQuota)
 }
 
 // ---------------------------------------------------------------------------

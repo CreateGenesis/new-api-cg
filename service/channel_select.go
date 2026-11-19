@@ -310,10 +310,39 @@ func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []strin
 					if _, duplicate := seen[channelType]; duplicate {
 						continue
 					}
-					if plugin, indexed := pinned.Generation.GetByChannelType(channelType); indexed && plugin == candidate.Plugin {
-						seen[channelType] = struct{}{}
-						channelTypes = append(channelTypes, channelType)
+					seen[channelType] = struct{}{}
+					channelTypes = append(channelTypes, channelType)
+				}
+			}
+			if expectedFound {
+				return channelTypes, pluginKeys
+			}
+		}
+	}
+	if value, exists := c.Get(jsplugin.ContextKeyPinnedRoute); exists {
+		pinned, ok := value.(jsplugin.PinnedRoute)
+		if ok && pinned.Generation != nil && len(pinned.Candidates) > 1 {
+			expectedFound := false
+			channelTypes := make([]int, 0, len(pinned.Candidates))
+			pluginKeys := make([]string, 0, len(pinned.Candidates))
+			seen := make(map[int]struct{}, len(pinned.Candidates))
+			for _, candidate := range pinned.Candidates {
+				if candidate.Plugin == nil {
+					continue
+				}
+				if candidate.Plugin.Meta.Key == expected {
+					expectedFound = true
+				}
+				pluginKeys = append(pluginKeys, candidate.Plugin.Meta.Key)
+				for _, channelType := range candidate.Plugin.Meta.ChannelTypes {
+					if channelType == 0 || channelType == constant.ChannelTypeTaskPlugin {
+						continue
 					}
+					if _, duplicate := seen[channelType]; duplicate {
+						continue
+					}
+					seen[channelType] = struct{}{}
+					channelTypes = append(channelTypes, channelType)
 				}
 			}
 			if expectedFound {

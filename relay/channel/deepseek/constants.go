@@ -1,5 +1,7 @@
 package deepseek
 
+import "github.com/QuantumNous/new-api/constant"
+
 var ModelList = []string{
 	"deepseek-chat", "deepseek-reasoner",
 	"deepseek-v4-flash", "deepseek-v4-flash-none", "deepseek-v4-flash-max",
@@ -12,3 +14,8 @@ var ModelList = []string{
 }
 
 var ChannelName = "deepseek"
+
+const (
+	SearchToolPriceKey = "deepseek_search"
+	FetchToolPriceKey  = "deepseek_fetch"
+)

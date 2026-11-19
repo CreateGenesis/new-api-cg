@@ -233,7 +233,7 @@ func LoadOptionsFromDatabase() error {
 	videoDefaults, err := common.Marshal(videocompat.DefaultConfig())
 	if err != nil {
 		common.SysError(common.LogText("invalid video processing settings: %s", err.Error()))
-		return
+		return err
 	}
 	videoOptions := map[string]string{VideoProcessingConfigOptionKey: string(videoDefaults)}
 	for _, option := range options {
@@ -266,6 +266,10 @@ func LoadOptionsFromDatabase() error {
 	}
 	applyPasskeyDomainOptions(passkeyOptions)
 	return nil
+}
+
+func loadOptionsFromDatabase() {
+	_ = LoadOptionsFromDatabase()
 }
 
 func SyncOptions(frequency int) {

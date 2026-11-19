@@ -176,7 +176,11 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 		info.StreamStatus.RequireProtocolEnd()
 	}
 	originalWriter := c.Writer
-	c.Writer = &streamDeliveryWriter{ResponseWriter: originalWriter, context: c, status: info.StreamStatus}
+	streamWriter := originalWriter
+	if !options.BufferedResponse {
+		streamWriter = &streamResponseWriter{ResponseWriter: originalWriter}
+	}
+	c.Writer = &streamDeliveryWriter{ResponseWriter: streamWriter, context: c, status: info.StreamStatus}
 	defer func() { c.Writer = originalWriter }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -319,9 +323,6 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 				defer writeMutex.Unlock()
 				// Only adapter payload writes block retry; headers and keepalive pings do not.
 				responseSize := c.Writer.Size()
-				if !options.BufferedResponse {
-					ExtendWriteDeadline(c)
-				}
 				dataHandler(data, sr)
 				if c.Writer.Size() > responseSize {
 					payloadSent = true

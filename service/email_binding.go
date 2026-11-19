@@ -93,7 +93,11 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	return data, nil
 }
 
-func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string) (*EmailBindingData, error) {
+func ResendAccountEmailBinding(identity AuthIdentity, token string, langOptions ...string) (*EmailBindingData, error) {
+	lang := ""
+	if len(langOptions) > 0 {
+		lang = langOptions[0]
+	}
 	_, state, err := model.GetEmailBinding(identity, token)
 	if err != nil {
 		return nil, err

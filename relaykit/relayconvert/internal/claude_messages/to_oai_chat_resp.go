@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/reasonmap"
 	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
+	"github.com/tidwall/sjson"
 )
 
 type ClaudeResponseInfo struct {

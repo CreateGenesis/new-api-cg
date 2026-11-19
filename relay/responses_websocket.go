@@ -92,6 +92,7 @@ type responsesWSCallState struct {
 	// A nonzero closeCode ends the connection after this request.
 	closeCode   int
 	closeReason string
+	closeAfter  bool
 }
 
 type responsesWSSession struct {
@@ -464,6 +465,7 @@ func (s *responsesWSSession) readResponse(c *gin.Context, state *responsesWSCall
 	outputRecorder := beginSimulatedModelCacheRecorder(c, info, outputAttempt)
 
 	outputFinished := false
+	var stopErr *types.NewAPIError
 	defer func() {
 		if !outputFinished {
 			if outputErr := restoreSimulatedModelCacheRecorder(c, outputRecorder, apiErr); outputErr != nil {
@@ -955,6 +957,20 @@ func (s *responsesWSSession) setTarget(target *websocket.Conn) bool {
 	}
 	s.target = target
 	return true
+}
+
+func (s *responsesWSSession) closeTarget() {
+	s.connectionMu.Lock()
+	target, unregister := s.target, s.unregister
+	s.target, s.unregister = nil, nil
+	s.connectionMu.Unlock()
+	if unregister != nil {
+		unregister()
+	}
+	if target != nil {
+		_ = target.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_ = target.Close()
+	}
 }
 
 func (s *responsesWSSession) writeTarget(kind int, message []byte) error {

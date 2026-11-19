@@ -106,7 +106,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResponse.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			}
 			if outputDelivered {
-				sendResponsesStreamData(c, streamResponse, data)
+				if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
+					sr.Error(err)
+					return
+				}
 			}
 			sr.Stop(streamErr)
 			return

@@ -241,7 +241,7 @@ func TestNormalizeKimiK3ToolChoiceNoneRemovesToolsAcrossFormats(t *testing.T) {
 			Type: "function",
 			Function: dto.FunctionRequest{
 				Name:       "get_weather",
-				Parameters: map[string]any{"type": "object"},
+				Parameters: []byte(`{"type":"object"}`),
 			},
 		}},
 	}
@@ -277,7 +277,7 @@ func TestNormalizeKimiK3ToolChoiceNoneRemovesToolsAcrossFormats(t *testing.T) {
 		Model: "kimi-k3",
 		Tools: []dto.Tool{{
 			Name:        "get_weather",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: tntRawMessage(t, map[string]any{"type": "object"}),
 		}},
 		ToolChoice: map[string]any{"type": "none"},
 	}

@@ -687,7 +687,7 @@ func TestResponsesWSShutdownInterruptsBusyWriter(t *testing.T) {
 	s.targetWriteMu.Lock()
 	defer s.targetWriteMu.Unlock()
 	done := make(chan struct{})
-	go func() { s.shutdown(); close(done) }()
+	go func() { s.shutdown(websocket.CloseNormalClosure, ""); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

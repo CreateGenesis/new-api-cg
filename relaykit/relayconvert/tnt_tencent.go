@@ -1,6 +1,7 @@
 package relayconvert
 
 import (
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -172,7 +173,7 @@ func ConvertTNTTencentClaudeRequest(request *dto.ClaudeRequest) (*dto.GeneralOpe
 				Function: dto.FunctionRequest{
 					Name:        tool.Name,
 					Description: SanitizeTNTTencentText(tool.Description),
-					Parameters:  sanitizeTNTSchema(tool.InputSchema),
+					Parameters:  sanitizeTNTSchemaJSON(tool.InputSchema),
 				},
 			})
 		}
@@ -266,7 +267,7 @@ func SanitizeTNTTencentChatRequest(request *dto.GeneralOpenAIRequest) error {
 		for toolIndex := range toolCalls {
 			toolCalls[toolIndex].Function.Description = SanitizeTNTTencentText(toolCalls[toolIndex].Function.Description)
 			toolCalls[toolIndex].Function.Arguments = SanitizeTNTTencentText(toolCalls[toolIndex].Function.Arguments)
-			toolCalls[toolIndex].Function.Parameters = sanitizeTNTSchema(toolCalls[toolIndex].Function.Parameters)
+			toolCalls[toolIndex].Function.Parameters = sanitizeTNTSchemaRaw(toolCalls[toolIndex].Function.Parameters)
 		}
 		if len(toolCalls) > 0 {
 			encoded, err := kitutil.Marshal(toolCalls)
@@ -279,7 +280,7 @@ func SanitizeTNTTencentChatRequest(request *dto.GeneralOpenAIRequest) error {
 	for index := range request.Tools {
 		request.Tools[index].Function.Description = SanitizeTNTTencentText(request.Tools[index].Function.Description)
 		request.Tools[index].Function.Arguments = SanitizeTNTTencentText(request.Tools[index].Function.Arguments)
-		request.Tools[index].Function.Parameters = sanitizeTNTSchema(request.Tools[index].Function.Parameters)
+		request.Tools[index].Function.Parameters = sanitizeTNTSchemaRaw(request.Tools[index].Function.Parameters)
 	}
 	if request.ResponseFormat != nil && len(request.ResponseFormat.JsonSchema) > 0 {
 		var schema any
@@ -545,6 +546,30 @@ func sanitizeTNTSchema(schema any) any {
 		return schema
 	}
 	return sanitizeTNTSchemaValue(normalized)
+}
+
+func sanitizeTNTSchemaJSON(schema any) json.RawMessage {
+	encoded, err := kitutil.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	return sanitizeTNTSchemaRaw(encoded)
+}
+
+func sanitizeTNTSchemaRaw(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := kitutil.Unmarshal(schema, &decoded); err != nil {
+		return schema
+	}
+	sanitized := sanitizeTNTSchema(decoded)
+	encoded, err := kitutil.Marshal(sanitized)
+	if err != nil {
+		return schema
+	}
+	return encoded
 }
 
 func sanitizeTNTSchemaValue(value any) any {
