@@ -1,14 +1,15 @@
 package dto
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/regexp"
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
@@ -40,6 +41,9 @@ type ChannelSettings struct {
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+	// RequestPlugins lists the request plugin instances the channel binds,
+	// by instance id, in run order.
+	RequestPlugins []string `json:"request_plugins,omitempty"`
 }
 
 // BindsTaskPlugin reports whether the channel is bound to the task plugin,
@@ -101,6 +105,13 @@ type VertexKeyType string
 const (
 	VertexKeyTypeJSON   VertexKeyType = "json"
 	VertexKeyTypeAPIKey VertexKeyType = "api_key"
+)
+
+type AwsApiType string
+
+const (
+	AwsApiTypeInvokeModel AwsApiType = "invoke_model"
+	AwsApiTypeMantle      AwsApiType = "mantle"
 )
 
 type AwsKeyType string
@@ -175,6 +186,10 @@ type ChannelOtherSettings struct {
 	OllamaOpenAIChat                      bool                               `json:"ollama_openai_chat,omitempty"`
 	ClearVolcengineTraits                 bool                               `json:"clear_volcengine_traits,omitempty"` // 是否隐藏渠道对外暴露的火山引擎归属信息
 	MoonshotQuotaAutoDisable              *MoonshotQuotaAutoDisableSettings  `json:"moonshot_quota_auto_disable,omitempty"`
+	VertexProjectID                       string                             `json:"vertex_project_id,omitempty"`
+	VertexAPIVersion                      string                             `json:"vertex_api_version,omitempty"`
+	AwsApiType                            AwsApiType                         `json:"aws_api_type,omitempty"`
+	PluginConfig                          json.RawMessage                    `json:"plugin_config,omitempty"`
 }
 
 // VideoCompatibilitySettings converts inline video blocks to timestamped images.
@@ -523,6 +538,7 @@ func (s StatusCodeRetrySettings) Normalize() NormalizedStatusCodeRetrySettings {
 		RetryIntervalMS: retryIntervalMS,
 		StatusCodes:     statusCodes,
 	}
+
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {
@@ -607,6 +623,8 @@ const (
 	advancedCustomEndpointPathOpenAIResponses        = "/v1/responses"
 	advancedCustomEndpointPathOpenAIResponsesCompact = "/v1/responses/compact"
 	advancedCustomEndpointPathOpenAIAlphaSearch      = "/v1/alpha/search"
+	advancedCustomEndpointPathDeepSeekToolsSearch    = "/v1/tools/search"
+	advancedCustomEndpointPathDeepSeekToolsFetch     = "/v1/tools/fetch"
 	advancedCustomEndpointPathClaudeMessages         = "/v1/messages"
 	advancedCustomEndpointPathJinaRerank             = "/v1/rerank"
 	advancedCustomEndpointPathImageGeneration        = "/v1/images/generations"
@@ -619,6 +637,12 @@ const (
 	// AdvancedCustomBalancePath identifies the optional balance lookup route used by channel management.
 	AdvancedCustomBalancePath = "/v1/dashboard/billing/credit_grants"
 )
+
+// AcceptsModel reports whether the route's Models list admits model, as
+// MatchPathForModel matches it; an empty list admits every model.
+func (r AdvancedCustomRoute) AcceptsModel(model string) bool {
+	return matchAdvancedCustomRouteModel(r.Models, strings.TrimSpace(model))
+}
 
 // IsNative reports whether the route forwards requests without protocol
 // conversion. Validate normalizes an empty converter to none, but callers may
@@ -732,6 +756,10 @@ func advancedCustomEndpointTypeFromIncomingPath(incomingPath string) (types.Endp
 		return types.EndpointTypeOpenAIResponseCompact, true
 	case advancedCustomEndpointPathOpenAIAlphaSearch:
 		return types.EndpointTypeOpenAIAlphaSearch, true
+	case advancedCustomEndpointPathDeepSeekToolsSearch:
+		return types.EndpointTypeDeepSeekToolsSearch, true
+	case advancedCustomEndpointPathDeepSeekToolsFetch:
+		return types.EndpointTypeDeepSeekToolsFetch, true
 	case advancedCustomEndpointPathClaudeMessages:
 		return types.EndpointTypeAnthropic, true
 	case advancedCustomEndpointPathJinaRerank:

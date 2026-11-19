@@ -24,10 +24,9 @@ import {
   ArrowRightLeft,
   PanelLeftOpen,
   AlertCircle,
+  Puzzle,
   ChevronDown,
-  CircleDollarSign,
   ClipboardPaste,
-  ListChecks,
   Loader2,
   Server,
   Sparkles,
@@ -37,11 +36,9 @@ import {
   Eraser,
   Eye,
   RefreshCw,
-  TimerReset,
   Code,
   Route,
   Settings,
-  Shuffle,
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react'
@@ -108,10 +105,10 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
-import { useSystemOptions } from '@/features/system-settings/hooks/use-system-options'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
+import type { PluginIconInput } from '@/features/task-plugins/lib/plugin-icon'
+import { fromRequestPluginConfigDraft } from '@/features/task-plugins/lib/request-plugins'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useHiddenClickUnlock } from '@/hooks/use-hidden-click-unlock'
 import {
@@ -124,6 +121,7 @@ import {
   type ChannelConnectionInfo,
 } from '@/lib/channel-connection-info'
 import { handleServerError } from '@/lib/handle-server-error'
+import { resolveLocalizedText } from '@/lib/localized-text'
 import { ROLE } from '@/lib/roles'
 import {
   requireServerSuccess,
@@ -227,6 +225,7 @@ import {
   PassthroughWarningDialog,
   type PassthroughKind,
 } from '../dialogs/passthrough-warning-dialog'
+import { PluginLoginDialog } from '../dialogs/plugin-login-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import {
   ModelMappingBatchDialog,
@@ -238,24 +237,23 @@ import {
   type ModelMappingDraftRequest,
 } from '../model-mapping-editor'
 import { ModelRedirectPanel } from '../model-redirect-panel'
-import { ResponseModelMappingFields } from '../response-model-mapping-fields'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 import {
   ChannelConfiguration,
   ChannelConfigurationStatusIndicator,
 } from './channel-configuration'
+import { ChannelPluginConfigFields } from './channel-plugin-config-fields'
 import { ChannelProviderPicker } from './channel-provider-picker'
+import { ChannelRequestPluginsField } from './channel-request-plugins-field'
+import { PluginCredentialPanel } from './plugin-credential-panel'
 import {
   ChannelApiAccessSection,
   ChannelAuthSection,
   ChannelBasicSection,
   ChannelEditorLoadingState,
-  ChannelFallbackPolicyFields,
   ChannelModelsSection,
-  SimulatedModelCacheFields,
 } from './sections'
-import { ChannelGroupSchedulingSection } from './sections/channel-group-scheduling-section'
 
 type ChannelMutateDrawerProps = {
   open: boolean
@@ -278,6 +276,35 @@ const createEmptyModelMappingGuardrail = (): ModelMappingGuardrail => ({
   exposedTargetModels: [],
 })
 
+// Mappings already reflected in the model list count as synced, so the
+// redirect sync only reverts changes it made for the channel being edited.
+const getModelMappingSyncBaseline = (
+  mapping: string,
+  modelsValue: string
+): { aliases: Set<string>; targets: Set<string> } => {
+  const aliases = new Set<string>()
+  const targets = new Set<string>()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(mapping.trim() || '{}')
+  } catch {
+    return { aliases, targets }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { aliases, targets }
+  }
+  const models = new Set(parseModelsString(modelsValue))
+  for (const [rawFrom, rawTo] of Object.entries(parsed)) {
+    if (typeof rawTo !== 'string') continue
+    const from = rawFrom.trim()
+    const to = rawTo.trim()
+    if (!from || !to) continue
+    if (models.has(from)) aliases.add(from)
+    if (!models.has(to)) targets.add(to)
+  }
+  return { aliases, targets }
+}
+
 const formatModelNames = (models: string[]): string =>
   models.map((model) => `"${model}"`).join(', ')
 
@@ -295,33 +322,25 @@ const SENSITIVE_FORM_FIELDS = [
   'openai_organization',
   'other',
   'key_mode',
-  'multi_key_type',
-  'multi_key_affinity_ttl_seconds',
-  'multi_key_least_requests_window_seconds',
   'param_override',
   'header_override',
-  'header_rewrite_preset_id',
-  'header_rewrite',
   'settings',
   'setting',
   'advanced_custom',
   'is_enterprise_account',
   'vertex_key_type',
+  'vertex_project_id',
+  'vertex_api_version',
   'aws_key_type',
+  'aws_api_type',
   'azure_responses_version',
   'force_format',
   'thinking_to_content',
   'proxy',
-  'proxy_fallback_direct',
   'http_protocol',
   'http2_connection_shards',
   'tls_insecure_skip_verify',
   'pass_through_body_enabled',
-  'tnt_tencent_openai_conversion',
-  'anthropic_input_includes_cache',
-  'kimi_k3_official_compatibility',
-  'glm_5_3_official_compatibility',
-  'deepseek_v4_official_compatibility',
   'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -334,45 +353,11 @@ const SENSITIVE_FORM_FIELDS = [
   'claude_beta_query',
   'ollama_openai_chat',
   'disable_task_polling_sleep',
-  'deepseek_v4_request_sanitization_enabled',
-  'cache_usage_validation_split',
-  'retry_zero_output',
-  'usage_estimation_enabled',
-  'usage_estimation_model_family',
-  'usage_estimation_input_multiplier',
-  'usage_estimation_output_multiplier',
-  'disable_stream',
-  'disable_non_stream',
-  'disable_video_understanding',
-  'video_compatibility',
-  'usage_token_limit_input_tokens',
-  'usage_token_limit_output_tokens',
-  'simulated_model_cache_enabled',
-  'simulated_model_cache_ttl_seconds',
-  'simulated_model_cache_min_match_ratio',
-  'simulated_model_cache_multimodal_enabled',
-  'simulated_model_cache_image_tokens_per_megapixel',
-  'simulated_model_cache_video_tokens_per_second_megapixel',
-  'simulated_model_cache_audio_tokens_per_second',
-  'simulated_model_cache_file_tokens_per_mib',
-  'simulated_model_cache_image_fallback_tokens',
-  'simulated_model_cache_video_fallback_tokens',
-  'simulated_model_cache_audio_fallback_tokens',
-  'simulated_model_cache_file_fallback_tokens',
-  'status_code_retry_enabled',
-  'status_code_retry_times',
-  'status_code_retry_interval_ms',
-  'status_code_retry_status_codes',
-  'response_header_timeout_enabled',
-  'response_header_timeout_seconds',
-  'group_scheduling',
-  'input_token_routing_enabled',
-  'input_token_routing_estimation_mode',
-  'input_token_routing_ranges',
-  'stream_interruption_billing_mode',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
+  'plugin_config',
+  'plugin_config_draft',
 ] satisfies (keyof ChannelFormValues)[]
 
 function parseSettingsRecord(
@@ -462,10 +447,9 @@ export function ChannelMutateDrawer({
   onOpenChange,
   currentRow,
 }: ChannelMutateDrawerProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const { setOpen } = useChannels()
-  const { data: systemOptionsData } = useSystemOptions()
   const currentUser = useAuthStore((s) => s.auth.user)
   const canEditSensitive = hasPermission(
     currentUser,
@@ -514,6 +498,13 @@ export function ChannelMutateDrawer({
     useState(false)
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
     useState<ChannelConnectionInfo | null>(null)
+  // Outlives the drawer: "Save and log in" closes it, then logs in.
+  const [loginRequest, setLoginRequest] = useState<{
+    channelId: number
+    keyIndex: number | null
+    add?: boolean
+    plugin: PluginIconInput
+  } | null>(null)
 
   const isEditing = Boolean(currentRow)
   const requestedSide = isEditing ? 'left' : 'right'
@@ -543,6 +534,16 @@ export function ChannelMutateDrawer({
   const [redirectSyncModels, setRedirectSyncModels] = useState(true)
   const syncedAliasesRef = useRef(new Set<string>())
   const syncedTargetsRef = useRef(new Set<string>())
+  // The drawer stays mounted between channels, so the sync baseline must be
+  // rebuilt whenever another channel is loaded.
+  const resetModelMappingSync = useCallback(
+    (mapping = '', modelsValue = '') => {
+      const baseline = getModelMappingSyncBaseline(mapping, modelsValue)
+      syncedAliasesRef.current = baseline.aliases
+      syncedTargetsRef.current = baseline.targets
+    },
+    []
+  )
   const [viewportWide, setViewportWide] = useState(
     () => window.innerWidth >= REDIRECT_PANEL_MIN_VIEWPORT
   )
@@ -581,25 +582,6 @@ export function ChannelMutateDrawer({
     enabled: open,
     staleTime: 5 * 60 * 1000,
   })
-
-  const headerRewritePresetOptions = useMemo(() => {
-    const raw = systemOptionsData?.data.find(
-      (option) => option.key === 'HeaderRewritePresets'
-    )?.value
-    if (!raw) return []
-    try {
-      const parsed = JSON.parse(raw) as Record<string, { name?: unknown }>
-      return Object.entries(parsed)
-        .filter(
-          ([id, preset]) =>
-            id.trim().length > 0 && typeof preset?.name === 'string'
-        )
-        .map(([id, preset]) => ({ id, name: preset.name as string }))
-        .sort((left, right) => left.name.localeCompare(right.name))
-    } catch {
-      return []
-    }
-  }, [systemOptionsData?.data])
 
   // Fetch channel details if editing
   const {
@@ -682,70 +664,6 @@ export function ChannelMutateDrawer({
   const currentHeaderOverride = formValues.header_override
   const currentProxy = formValues.proxy
   const currentHttpProtocol = formValues.http_protocol
-  // Watch form values for conditional rendering
-  const multiKeyOverloadEnabled = formValues.multi_key_overload_enabled
-  const channelOverloadEnabled = formValues.channel_overload_enabled
-  let multiKeyTypeDescription: ReactNode = t(
-    'Randomly select a key from the pool for each request'
-  )
-  if (multiKeyType === 'affinity') {
-    multiKeyTypeDescription = t(
-      'Use the current user token to keep requests on the same upstream key until the affinity cache expires'
-    )
-  } else if (multiKeyType === 'polling') {
-    multiKeyTypeDescription = (
-      <span className='text-warning'>
-        {t(
-          'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
-        )}
-      </span>
-    )
-  } else if (multiKeyType === 'least_requests') {
-    multiKeyTypeDescription = t(
-      'Select the upstream key with the fewest requests in the recent window.'
-    )
-  } else if (multiKeyType === 'cache_affinity_least_requests') {
-    multiKeyTypeDescription = t(
-      'Prefer the key with the most similar simulated cache, but fall back to the least-requested key when load differs beyond the threshold.'
-    )
-  }
-  const currentSimulatedModelCacheEnabled =
-    formValues.simulated_model_cache_enabled
-  const simulatedModelCacheRuntimeActive =
-    currentSimulatedModelCacheEnabled ||
-    multiKeyType === 'cache_affinity_least_requests'
-  const currentStatusCodeRetryEnabled = formValues.status_code_retry_enabled
-  const currentResponseHeaderTimeoutEnabled =
-    formValues.response_header_timeout_enabled
-  const currentInputTokenRoutingEnabled = formValues.input_token_routing_enabled
-  const currentInputTokenRoutingEstimationMode =
-    formValues.input_token_routing_estimation_mode
-  let inputTokenRoutingEstimationDescription = t(
-    'Use the standard tokenizer estimate for the requested model'
-  )
-  if (currentInputTokenRoutingEstimationMode === 'glm_5_2') {
-    inputTokenRoutingEstimationDescription = t(
-      'Estimate GLM-5.2 text at about 1 token per 1.6 Unicode characters'
-    )
-  } else if (currentInputTokenRoutingEstimationMode === 'kimi_k3') {
-    inputTokenRoutingEstimationDescription = t(
-      'Estimate Kimi K3 text at about 1 token per 1.5 CJK characters or 3.1 other characters; add 5001 tokens once when the request contains media'
-    )
-  }
-  const currentStreamInterruptionBillingMode =
-    formValues.stream_interruption_billing_mode
-  let streamInterruptionBillingDescription = t(
-    'Keep the existing billing behavior.'
-  )
-  if (currentStreamInterruptionBillingMode === 'input_only_free') {
-    streamInterruptionBillingDescription = t(
-      'Interrupted streams with zero output tokens settle at zero quota.'
-    )
-  } else if (currentStreamInterruptionBillingMode === 'all_interrupted_free') {
-    streamInterruptionBillingDescription = t(
-      'All interrupted streams settle at zero quota, even after partial output.'
-    )
-  }
   const {
     unlocked: doubaoApiEditUnlocked,
     handleClick: handleApiConfigSecretClick,
@@ -933,6 +851,34 @@ export function ChannelMutateDrawer({
     boundTaskPlugin?.name ||
     (currentType === CHANNEL_TYPE_TASK_PLUGIN && currentTaskPluginKey) ||
     t(currentTypeLabel)
+  // Credentials of a plugin with its own login come from that login, so a
+  // credential panel replaces the key input.
+  const pluginLogin = boundTaskPlugin?.login === true
+  // Login acts on the saved channel, so a plugin picked in this edit waits
+  // for the save.
+  const loginChannelId =
+    isEditing &&
+    !form.formState.dirtyFields.type &&
+    !form.formState.dirtyFields.task_plugin_key
+      ? channelId
+      : null
+  const pluginConfigSchema =
+    boundTaskPlugin?.channelConfig &&
+    Object.keys(boundTaskPlugin.channelConfig.properties ?? {}).length > 0
+      ? boundTaskPlugin.channelConfig
+      : undefined
+  const pluginKeyHint = resolveLocalizedText(
+    boundTaskPlugin?.keyHint,
+    i18n.language
+  )
+  const responsesWebsocketSupported =
+    currentType === CHANNEL_TYPE_TASK_PLUGIN
+      ? boundTaskPlugin?.responsesWebsocket === true
+      : undefined
+  // Batch mode makes one channel per key line, and a login plugin has none.
+  const keyAddModeOptions = pluginLogin
+    ? addModeOptions.filter((option) => option.value !== 'batch')
+    : addModeOptions
 
   const selectProvider = useCallback(
     (target: ChannelProviderTarget) => {
@@ -954,11 +900,25 @@ export function ChannelMutateDrawer({
           (item) => item.key === target.key
         )
         if (!plugin) return
+        const previousKey = form.getValues('task_plugin_key')
         const previousPlugin = taskPluginOptionsQuery.data?.find(
-          (item) => item.key === form.getValues('task_plugin_key')
+          (item) => item.key === previousKey
         )
         form.setValue('type', CHANNEL_TYPE_TASK_PLUGIN, { shouldDirty: true })
         form.setValue('task_plugin_key', plugin.key, { shouldDirty: true })
+        // Settings belong to the plugin that declared them.
+        if (previousKey !== plugin.key) {
+          form.setValue('plugin_config', {}, { shouldDirty: true })
+          form.setValue('plugin_config_draft', null, { shouldDirty: true })
+        }
+        if (!plugin.responsesWebsocket) {
+          form.setValue('responses_websocket_enabled', false, {
+            shouldDirty: true,
+          })
+        }
+        if (plugin.login && form.getValues('multi_key_mode') === 'batch') {
+          form.setValue('multi_key_mode', 'single', { shouldDirty: true })
+        }
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
           form.setValue('name', plugin.name)
         }
@@ -1019,7 +979,8 @@ export function ChannelMutateDrawer({
   const configuration = getChannelConfigurationState(
     formValues,
     formErrors,
-    isEditing
+    isEditing || pluginLogin,
+    boundTaskPlugin
   )
 
   // Extract redirect models from model_mapping (target values)
@@ -1174,6 +1135,7 @@ export function ChannelMutateDrawer({
       setChoosingProvider(true)
       setConfigurationSection('connection')
       setPendingErrorFocus(null)
+      resetModelMappingSync()
       return
     }
     if (isEditing && channelData?.data) {
@@ -1188,6 +1150,7 @@ export function ChannelMutateDrawer({
       }
       const defaults = transformChannelToFormDefaults(channelData.data)
       form.reset(defaults)
+      resetModelMappingSync(defaults.model_mapping, defaults.models)
       loadedForm.current = {
         channelId: channelData.data.id,
         snapshot: JSON.stringify(form.getValues()),
@@ -1212,11 +1175,12 @@ export function ChannelMutateDrawer({
         channelData.data.status_code_mapping || ''
     } else if (!isEditing) {
       form.reset(CHANNEL_FORM_DEFAULT_VALUES)
+      resetModelMappingSync()
       initialModelsRef.current = []
       initialModelMappingRef.current = ''
       initialStatusCodeMappingRef.current = ''
     }
-  }, [isEditing, channelId, channelData, form, open])
+  }, [isEditing, channelId, channelData, form, open, resetModelMappingSync])
 
   // Handle type change - set default values for specific types
   useEffect(() => {
@@ -1340,6 +1304,11 @@ export function ChannelMutateDrawer({
     !isEditing ||
     (currentType === CHANNEL_TYPE_ADVANCED_CUSTOM && canEditSensitive)
   const canDiscoverModels = previewModels ? canEditSensitive : canOperateChannel
+  // A plugin channel lists models when its plugin has relay routes. A plugin
+  // that logs in has no credential before the channel is saved.
+  const modelFetchable =
+    MODEL_FETCHABLE_TYPES.has(currentType) ||
+    (boundTaskPlugin?.provider === true && (isEditing || !pluginLogin))
   const previewKey = isEditing ? undefined : currentKey
   const previewRequest = useMemo<ChannelModelDiscoveryRequest>(
     () => ({
@@ -1348,6 +1317,10 @@ export function ChannelMutateDrawer({
         type: currentType,
         key: previewKey,
         channel_id: isEditing ? channelId || undefined : undefined,
+        task_plugin_key:
+          currentType === CHANNEL_TYPE_TASK_PLUGIN
+            ? currentTaskPluginKey
+            : undefined,
         base_url: currentBaseUrl || '',
         advanced_custom: currentAdvancedCustom,
         header_override: currentHeaderOverride,
@@ -1359,6 +1332,7 @@ export function ChannelMutateDrawer({
       previewKey,
       isEditing,
       channelId,
+      currentTaskPluginKey,
       currentBaseUrl,
       currentAdvancedCustom,
       currentHeaderOverride,
@@ -1373,7 +1347,7 @@ export function ChannelMutateDrawer({
     enabled:
       open &&
       canDiscoverModels &&
-      MODEL_FETCHABLE_TYPES.has(currentType) &&
+      modelFetchable &&
       (!isEditing || Boolean(channelData?.data)),
     request: previewModels ? previewRequest : savedRequest,
   })
@@ -1386,7 +1360,7 @@ export function ChannelMutateDrawer({
   const fetchDiscoveredModels = discovery.fetch
   const handleFetchModels = useCallback(async () => {
     const type = form.getValues('type')
-    if (!MODEL_FETCHABLE_TYPES.has(type)) {
+    if (!modelFetchable) {
       toast.error(t('This channel type does not support fetching models'))
       return
     }
@@ -1408,7 +1382,14 @@ export function ChannelMutateDrawer({
       return
     }
     await fetchDiscoveredModels()
-  }, [isEditing, canDiscoverModels, form, t, fetchDiscoveredModels])
+  }, [
+    isEditing,
+    canDiscoverModels,
+    modelFetchable,
+    form,
+    t,
+    fetchDiscoveredModels,
+  ])
 
   // Handle model operations
   const handleFillRelatedModels = useCallback(() => {
@@ -1576,15 +1557,18 @@ export function ChannelMutateDrawer({
 
   const applyMappingPairs = useCallback(
     (pairs: ModelMappingPair[], sync: boolean) => {
-      const merged = mergeModelMappingPairs(
-        form.getValues('model_mapping') || '',
-        pairs
-      )
+      const current = form.getValues('model_mapping') || ''
+      const merged = mergeModelMappingPairs(current, pairs)
       if (merged === null) return
       form.setValue('model_mapping', merged, { shouldDirty: true })
-      if (sync) syncModelsWithMapping(merged)
+      if (sync) {
+        // Mapping edits made outside the redirect panel are not synced, so
+        // rebase on the current values and revert only this batch's changes.
+        resetModelMappingSync(current, form.getValues('models') || '')
+        syncModelsWithMapping(merged)
+      }
     },
-    [form, syncModelsWithMapping]
+    [form, resetModelMappingSync, syncModelsWithMapping]
   )
 
   const handleBatchMappingApply = useCallback(
@@ -1610,19 +1594,12 @@ export function ChannelMutateDrawer({
   const openRedirectPanel = useCallback(() => {
     // Pre-existing mappings count as already synced, so opening the panel
     // never rewrites the model list on its own.
-    const models = new Set(parseModelsString(form.getValues('models') || ''))
-    syncedAliasesRef.current = new Set(
-      modelMappingGuardrail.entries
-        .filter((entry) => models.has(entry.source))
-        .map((entry) => entry.source)
-    )
-    syncedTargetsRef.current = new Set(
-      modelMappingGuardrail.entries
-        .filter((entry) => !models.has(entry.target))
-        .map((entry) => entry.target)
+    resetModelMappingSync(
+      form.getValues('model_mapping') || '',
+      form.getValues('models') || ''
     )
     setRedirectPanelOpen(true)
-  }, [form, modelMappingGuardrail.entries])
+  }, [form, resetModelMappingSync])
 
   const closeRedirectPanel = useCallback(() => {
     setRedirectPanelOpen(false)
@@ -1748,7 +1725,7 @@ export function ChannelMutateDrawer({
       if (isEditing && !channelData?.data) return
       if (!isEditing && (!providerTarget || !canEditSensitive)) return
       // Validate key is required when creating
-      if (!isEditing && !data.key?.trim()) {
+      if (!isEditing && !pluginLogin && !data.key?.trim()) {
         form.setError('key', {
           type: 'manual',
           message: ERROR_MESSAGES.REQUIRED_KEY,
@@ -1771,6 +1748,26 @@ export function ChannelMutateDrawer({
           )
           return
         }
+      }
+
+      // Edited plugin settings are saved as values; untouched ones stay as
+      // they were saved.
+      if (
+        data.type === CHANNEL_TYPE_TASK_PLUGIN &&
+        pluginConfigSchema &&
+        data.plugin_config_draft
+      ) {
+        const parsed = fromRequestPluginConfigDraft(
+          pluginConfigSchema,
+          data.plugin_config_draft
+        )
+        if (Object.keys(parsed.errors).length > 0) {
+          setConfigurationSection('connection')
+          setPendingErrorFocus('plugin_config')
+          toast.error(t('Please fix the highlighted fields before saving'))
+          return
+        }
+        data.plugin_config = parsed.config
       }
 
       // Validate status_code_mapping entries
@@ -1859,14 +1856,29 @@ export function ChannelMutateDrawer({
         }
       }
 
+      // A login plugin never takes a typed key, even one left over from
+      // another provider.
+      const loginPlugin = pluginLogin ? boundTaskPlugin : undefined
+      if (loginPlugin) data.key = ''
+
       try {
-        await channelMutation.mutateAsync(data)
+        const result = await channelMutation.mutateAsync(data)
+        if (!isEditing && loginPlugin && result.channelId) {
+          setLoginRequest({
+            channelId: result.channelId,
+            keyIndex: null,
+            plugin: loginPlugin,
+          })
+        }
       } catch {
         // The mutation reports the server error; keep the draft open for correction.
       }
     },
     [
       isEditing,
+      pluginLogin,
+      boundTaskPlugin,
+      pluginConfigSchema,
       providerTarget,
       canEditSensitive,
       sensitiveLocked,
@@ -1937,44 +1949,24 @@ export function ChannelMutateDrawer({
   )
 
   const proxyFields = (
-    <>
-      <FormField
-        control={form.control}
-        name='proxy'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('Proxy Addresses')}</FormLabel>
-            <FormControl>
-              <Textarea
-                rows={3}
-                placeholder={t('socks5://user:pass@host:port')}
-                {...field}
-              />
-            </FormControl>
-            <FormDescription>
-              {t(
-                'Supports HTTP, HTTPS, SOCKS5, and SOCKS5H. Enter one URL per line; requests prefer the proxy with the fewest active connections.'
-              )}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        control={form.control}
-        name='proxy_fallback_direct'
-        render={({ field }) => (
-          <FormItem className='flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2 md:mt-6'>
-            <FormLabel className='text-sm leading-tight font-normal'>
-              {t('Direct fallback on SOCKS failure')}
-            </FormLabel>
-            <FormControl>
-              <Switch checked={field.value} onCheckedChange={field.onChange} />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-    </>
+    <FormField
+      control={form.control}
+      name='proxy'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{t('Proxy Address')}</FormLabel>
+          <FormControl>
+            <Input placeholder={t('socks5://user:pass@host:port')} {...field} />
+          </FormControl>
+          <FormDescription>
+            {t(
+              'Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)'
+            )}
+          </FormDescription>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
   )
 
   const systemPromptFields = (
@@ -2449,9 +2441,7 @@ export function ChannelMutateDrawer({
     </div>
   )
 
-  const upstreamModelDetectionFields = MODEL_FETCHABLE_TYPES.has(
-    currentType
-  ) && (
+  const upstreamModelDetectionFields = modelFetchable && (
     <div
       role='group'
       aria-label={t('Upstream Model Detection Settings')}
@@ -2944,10 +2934,42 @@ export function ChannelMutateDrawer({
                   )}
                 />
               </FormControl>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Rules for all channels are set on the Request processing page'
+                )}
+              </p>
               <FormMessage />
             </FormItem>
           )}
         />
+
+        {canBindTaskPlugin && (
+          <FormField
+            control={form.control}
+            name='request_plugins'
+            render={({ field }) => (
+              <FormItem className='space-y-3 border-t pt-4'>
+                <div className='space-y-1'>
+                  <FormLabel>{t('Request processing plugins')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      "Instances for all requests or for this channel's groups also apply."
+                    )}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <ChannelRequestPluginsField
+                    value={field.value ?? []}
+                    onChange={field.onChange}
+                    disabled={sensitiveLocked || isSubmitting}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
         <FormField
           control={form.control}
@@ -3039,7 +3061,12 @@ export function ChannelMutateDrawer({
     </div>
   )
 
-  const fieldPassthroughFields = FIELD_PASSTHROUGH_TYPES.has(currentType) && (
+  // A plugin channel without relay routes relays no client fields.
+  const fieldPassthroughSupported =
+    FIELD_PASSTHROUGH_TYPES.has(currentType) &&
+    (currentType !== CHANNEL_TYPE_TASK_PLUGIN ||
+      boundTaskPlugin?.provider === true)
+  const fieldPassthroughFields = fieldPassthroughSupported && (
     <div
       role='group'
       aria-label={t('Field passthrough controls')}
@@ -3451,7 +3478,7 @@ export function ChannelMutateDrawer({
               )}
             />
 
-            {MODEL_FETCHABLE_TYPES.has(currentType) && (
+            {modelFetchable && (
               <div aria-live='polite' className='mt-4 space-y-3'>
                 {discovery.status === 'loading' && (
                   <LoadingState
@@ -3607,7 +3634,7 @@ export function ChannelMutateDrawer({
                   <FileText className='mr-2 h-4 w-4' aria-hidden='true' />
                   {t('Fill Related Models')}
                 </Button>
-                {MODEL_FETCHABLE_TYPES.has(currentType) && (
+                {modelFetchable && (
                   <>
                     <Button
                       type='button'
@@ -3878,6 +3905,54 @@ export function ChannelMutateDrawer({
             {currentType === 33 && (
               <FormField
                 control={form.control}
+                name='aws_api_type'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('AWS API')}</FormLabel>
+                    <Select
+                      disabled={sensitiveLocked}
+                      items={[
+                        {
+                          value: 'invoke_model',
+                          label: t('InvokeModel (legacy)'),
+                        },
+                        {
+                          value: 'mantle',
+                          label: t('Mantle (Messages API)'),
+                        },
+                      ]}
+                      onValueChange={field.onChange}
+                      value={field.value ?? 'invoke_model'}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='invoke_model'>
+                            {t('InvokeModel (legacy)')}
+                          </SelectItem>
+                          <SelectItem value='mantle'>
+                            {t('Mantle (Messages API)')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {t(
+                        'Use Mantle for supported Claude models and automatic prompt caching. Keep InvokeModel for older models and Amazon Nova.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+            {currentType === 33 && (
+              <FormField
+                control={form.control}
                 name='aws_key_type'
                 render={({ field }) => (
                   <FormItem>
@@ -4079,6 +4154,56 @@ export function ChannelMutateDrawer({
                     </FormItem>
                   )}
                 />
+                <FormField
+                  control={form.control}
+                  name='vertex_api_version'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between'>
+                      <div className='space-y-0.5'>
+                        <FormLabel>
+                          {t('Use Vertex AI v1beta1 endpoint')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Switches Gemini and Imagen requests on this Vertex channel from v1 to v1beta1. Some features require v1beta1; check the Vertex AI documentation.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={sensitiveLocked}
+                          checked={field.value === 'v1beta1'}
+                          onCheckedChange={(checked) =>
+                            field.onChange(checked ? 'v1beta1' : 'v1')
+                          }
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                {vertexKeyType === 'api_key' && (
+                  <FormField
+                    control={form.control}
+                    name='vertex_project_id'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Vertex AI Project ID')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder={t('e.g., my-project-123')}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Optional. Without it, Google picks the region; with it, requests go to the deployment region below.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
                 {vertexKeyType === 'json' && (
                   <FormItem>
                     <FormLabel>{t('Service account JSON file(s)')}</FormLabel>
@@ -4303,7 +4428,7 @@ export function ChannelMutateDrawer({
                       !boundTaskPlugin?.baseUrl && (
                         <FormDescription>
                           {t(
-                            'The upstream address this plugin sends requests to. The plugin declares no default, so it must be filled in.'
+                            'Required. The upstream address this plugin sends requests to.'
                           )}
                         </FormDescription>
                       )}
@@ -4431,7 +4556,7 @@ export function ChannelMutateDrawer({
                       </FormLabel>
                       <Select
                         disabled={sensitiveLocked}
-                        items={addModeOptions.map((option) => ({
+                        items={keyAddModeOptions.map((option) => ({
                           value: option.value,
                           label: t(option.label),
                         }))}
@@ -4445,7 +4570,7 @@ export function ChannelMutateDrawer({
                         </FormControl>
                         <SelectContent alignItemWithTrigger={false}>
                           <SelectGroup>
-                            {addModeOptions.map((option) => (
+                            {keyAddModeOptions.map((option) => (
                               <SelectItem
                                 key={option.value}
                                 value={option.value}
@@ -4462,151 +4587,183 @@ export function ChannelMutateDrawer({
                 />
               )}
 
-              <FormField
-                control={form.control}
-                name='key'
-                render={({ field }) => {
-                  let keyPlaceholder = t(getKeyPromptForType(currentType))
-                  if (isEditing) {
-                    keyPlaceholder = t('Leave empty to keep existing key')
-                  } else if (
-                    currentType === 33 &&
-                    awsKeyType === 'api_key' &&
-                    isBatchMode
-                  ) {
-                    keyPlaceholder = t(
-                      'Enter API Key, one per line, format: APIKey|Region'
-                    )
-                  } else if (currentType === 33 && awsKeyType === 'api_key') {
-                    keyPlaceholder = t('Enter API Key, format: APIKey|Region')
-                  } else if (currentType === 33 && isBatchMode) {
-                    keyPlaceholder = t(
-                      'Enter key, one per line, format: AccessKey|SecretAccessKey|Region'
-                    )
-                  } else if (currentType === 33) {
-                    keyPlaceholder = t(
-                      'Enter key, format: AccessKey|SecretAccessKey|Region'
-                    )
-                  } else if (isBatchMode) {
-                    keyPlaceholder = t(
-                      'Enter one key per line for batch creation'
-                    )
-                  }
-
-                  let keyDescription: ReactNode = t(FIELD_DESCRIPTIONS.KEY)
-                  if (isEditing) {
-                    let keyModeDescription = t(
-                      'Append mode: New keys will be added to the end of the existing key list'
-                    )
-                    if (keyMode === 'replace') {
-                      keyModeDescription = t(
-                        'Replace mode: Will completely replace all existing keys'
+              {pluginLogin ? (
+                <PluginCredentialPanel
+                  channelId={loginChannelId}
+                  multiKey={isMultiKeyChannel}
+                  disabled={!canEditSensitive}
+                  onLogin={(keyIndex, add) => {
+                    if (loginChannelId === null || !boundTaskPlugin) return
+                    setLoginRequest({
+                      channelId: loginChannelId,
+                      keyIndex,
+                      add,
+                      plugin: boundTaskPlugin,
+                    })
+                  }}
+                />
+              ) : (
+                <FormField
+                  control={form.control}
+                  name='key'
+                  render={({ field }) => {
+                    let keyPlaceholder = t(getKeyPromptForType(currentType))
+                    if (isEditing) {
+                      keyPlaceholder = t('Leave empty to keep existing key')
+                    } else if (pluginKeyHint && isBatchMode) {
+                      keyPlaceholder = t(
+                        'Enter one key per line, format: {{format}}',
+                        { format: pluginKeyHint }
+                      )
+                    } else if (pluginKeyHint) {
+                      keyPlaceholder = pluginKeyHint
+                    } else if (
+                      currentType === 33 &&
+                      awsKeyType === 'api_key' &&
+                      isBatchMode
+                    ) {
+                      keyPlaceholder = t(
+                        'Enter API Key, one per line, format: APIKey|Region'
+                      )
+                    } else if (currentType === 33 && awsKeyType === 'api_key') {
+                      keyPlaceholder = t('Enter API Key, format: APIKey|Region')
+                    } else if (currentType === 33 && isBatchMode) {
+                      keyPlaceholder = t(
+                        'Enter key, one per line, format: AccessKey|SecretAccessKey|Region'
+                      )
+                    } else if (currentType === 33) {
+                      keyPlaceholder = t(
+                        'Enter key, format: AccessKey|SecretAccessKey|Region'
+                      )
+                    } else if (isBatchMode) {
+                      keyPlaceholder = t(
+                        'Enter one key per line for batch creation'
                       )
                     }
-                    keyDescription = (
-                      <>
-                        {t(
-                          'Enter new key to update, or leave empty to keep current key'
-                        )}
-                        {isMultiKeyChannel && (
-                          <span className='text-warning mt-1 block'>
-                            {keyModeDescription}
-                          </span>
-                        )}
-                      </>
-                    )
-                  } else if (isBatchMode) {
-                    keyDescription = t(
-                      'Enter one API key per line for batch creation'
-                    )
-                  }
-                  return (
-                    <FormItem>
-                      <FormLabel required>{t('API Key')}</FormLabel>
-                      <FormControl>
-                        <Textarea
-                          placeholder={keyPlaceholder}
-                          rows={isBatchMode ? 8 : 4}
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        <span className='flex flex-col gap-2'>
-                          <span>{keyDescription}</span>
-                          {!isEditing && isBatchMode && (
-                            <Button
-                              type='button'
-                              variant='outline'
-                              size='sm'
-                              onClick={handleDeduplicateKeys}
-                              className='w-fit'
-                            >
-                              <Trash2 className='mr-2 h-4 w-4' />
-                              {t('Remove Duplicates')}
-                            </Button>
+
+                    let keyDescription: ReactNode = t(FIELD_DESCRIPTIONS.KEY)
+                    if (isEditing) {
+                      let keyModeDescription = t(
+                        'Append mode: New keys will be added to the end of the existing key list'
+                      )
+                      if (keyMode === 'replace') {
+                        keyModeDescription = t(
+                          'Replace mode: Will completely replace all existing keys'
+                        )
+                      }
+                      keyDescription = (
+                        <>
+                          {t(
+                            'Enter new key to update, or leave empty to keep current key'
                           )}
-                        </span>
-                      </FormDescription>
-                      {isEditing && canRevealChannelKey && (
-                        <div className='border-border/60 mt-4 flex flex-col gap-3 border-y border-dashed py-4'>
-                          <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
-                            <div>
-                              <p className='text-sm font-medium'>
-                                {t('Current key')}
-                              </p>
-                              <p className='text-muted-foreground text-xs'>
-                                {t(
-                                  'Verification required to reveal the saved key.'
-                                )}
-                              </p>
-                            </div>
-                            <div className='flex items-center gap-2'>
+                          {isMultiKeyChannel && (
+                            <span className='text-warning mt-1 block'>
+                              {keyModeDescription}
+                            </span>
+                          )}
+                        </>
+                      )
+                    } else if (isBatchMode) {
+                      keyDescription = t(
+                        'Enter one API key per line for batch creation'
+                      )
+                    }
+                    return (
+                      <FormItem>
+                        <FormLabel required>{t('API Key')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            placeholder={keyPlaceholder}
+                            rows={isBatchMode ? 8 : 4}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          <span className='flex flex-col gap-2'>
+                            <span>{keyDescription}</span>
+                            {pluginKeyHint && (
+                              <span>
+                                {t('Key format')}:{' '}
+                                <span className='font-mono break-all'>
+                                  {pluginKeyHint}
+                                </span>
+                              </span>
+                            )}
+                            {!isEditing && isBatchMode && (
                               <Button
                                 type='button'
                                 variant='outline'
                                 size='sm'
-                                onClick={handleRevealKey}
-                                disabled={
-                                  isChannelKeyLoading || verification.isActive
-                                }
+                                onClick={handleDeduplicateKeys}
+                                className='w-fit'
                               >
-                                {isChannelKeyLoading ||
-                                verification.isActive ? (
-                                  <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-                                ) : (
-                                  <Eye className='mr-2 h-4 w-4' />
-                                )}
-                                {t('Reveal key')}
+                                <Trash2 className='mr-2 h-4 w-4' />
+                                {t('Remove Duplicates')}
                               </Button>
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='sm'
-                                onClick={async () => {
-                                  if (channelKey) {
-                                    await copyToClipboard(channelKey)
+                            )}
+                          </span>
+                        </FormDescription>
+                        {isEditing && canRevealChannelKey && (
+                          <div className='border-border/60 mt-4 flex flex-col gap-3 border-y border-dashed py-4'>
+                            <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                              <div>
+                                <p className='text-sm font-medium'>
+                                  {t('Current key')}
+                                </p>
+                                <p className='text-muted-foreground text-xs'>
+                                  {t(
+                                    'Verification required to reveal the saved key.'
+                                  )}
+                                </p>
+                              </div>
+                              <div className='flex items-center gap-2'>
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  size='sm'
+                                  onClick={handleRevealKey}
+                                  disabled={
+                                    isChannelKeyLoading || verification.isActive
                                   }
-                                }}
-                                disabled={!channelKey}
-                              >
-                                <Copy className='mr-2 h-4 w-4' />
-                                {t('Copy')}
-                              </Button>
+                                >
+                                  {isChannelKeyLoading ||
+                                  verification.isActive ? (
+                                    <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                                  ) : (
+                                    <Eye className='mr-2 h-4 w-4' />
+                                  )}
+                                  {t('Reveal key')}
+                                </Button>
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='sm'
+                                  onClick={async () => {
+                                    if (channelKey) {
+                                      await copyToClipboard(channelKey)
+                                    }
+                                  }}
+                                  disabled={!channelKey}
+                                >
+                                  <Copy className='mr-2 h-4 w-4' />
+                                  {t('Copy')}
+                                </Button>
+                              </div>
                             </div>
+                            <Input
+                              readOnly
+                              value={channelKey ?? ''}
+                              placeholder={t('Hidden — verify to reveal')}
+                              className='font-mono'
+                            />
                           </div>
-                          <Input
-                            readOnly
-                            value={channelKey ?? ''}
-                            placeholder={t('Hidden — verify to reveal')}
-                            className='font-mono'
-                          />
-                        </div>
-                      )}
-                      <FormMessage />
-                    </FormItem>
-                  )
-                }}
-              />
+                        )}
+                        <FormMessage />
+                      </FormItem>
+                    )
+                  }}
+                />
+              )}
 
               {currentType === 57 && (
                 <div className='border-border/60 flex flex-col gap-3 border-y py-4'>
@@ -4649,7 +4806,7 @@ export function ChannelMutateDrawer({
                 </div>
               )}
 
-              {isEditing && isMultiKeyChannel && (
+              {isEditing && isMultiKeyChannel && !pluginLogin && (
                 <FormField
                   control={form.control}
                   name='key_mode'
@@ -4721,18 +4878,6 @@ export function ChannelMutateDrawer({
                             value: 'polling',
                             label: t('Polling'),
                           },
-                          {
-                            value: 'affinity',
-                            label: t('Cache affinity'),
-                          },
-                          {
-                            value: 'least_requests',
-                            label: t('Least requests'),
-                          },
-                          {
-                            value: 'cache_affinity_least_requests',
-                            label: t('Cache-aware least requests'),
-                          },
                         ]}
                         onValueChange={field.onChange}
                         value={field.value}
@@ -4750,1141 +4895,65 @@ export function ChannelMutateDrawer({
                             <SelectItem value='polling'>
                               {t('Polling')}
                             </SelectItem>
-                            <SelectItem value='affinity'>
-                              {t('Cache affinity')}
-                            </SelectItem>
-                            <SelectItem value='least_requests'>
-                              {t('Least requests')}
-                            </SelectItem>
-                            <SelectItem value='cache_affinity_least_requests'>
-                              {t('Cache-aware least requests')}
-                            </SelectItem>
                           </SelectGroup>
                         </SelectContent>
                       </Select>
                       <FormDescription>
-                        {multiKeyTypeDescription}
+                        {multiKeyType === 'polling' ? (
+                          <span className='text-warning'>
+                            {t(
+                              'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
+                            )}
+                          </span>
+                        ) : (
+                          t(
+                            'Randomly select a key from the pool for each request'
+                          )
+                        )}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
               )}
-              {((isEditing && isMultiKeyChannel) ||
-                (!isEditing && multiKeyMode === 'multi_to_single')) &&
-                multiKeyType === 'affinity' && (
-                  <FormField
-                    control={form.control}
-                    name='multi_key_affinity_ttl_seconds'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Affinity TTL (seconds)')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            min={1}
-                            step={1}
-                            {...field}
-                            onChange={(e) =>
-                              field.onChange(Number(e.target.value))
-                            }
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'How long a user token stays bound to the selected upstream key.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-              {((isEditing && isMultiKeyChannel) ||
-                (!isEditing && multiKeyMode === 'multi_to_single')) &&
-                (multiKeyType === 'least_requests' ||
-                  multiKeyType === 'cache_affinity_least_requests') && (
-                  <FormField
-                    control={form.control}
-                    name='multi_key_least_requests_window_seconds'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          {t('Statistics window (seconds)')}
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            min={10}
-                            max={3600}
-                            step={10}
-                            {...field}
-                            onChange={(e) =>
-                              field.onChange(Number(e.target.value))
-                            }
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'Count requests in 10-second buckets within this recent window.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-              {((isEditing && isMultiKeyChannel) ||
-                (!isEditing && multiKeyMode === 'multi_to_single')) &&
-                multiKeyType === 'cache_affinity_least_requests' && (
-                  <FormField
-                    control={form.control}
-                    name='multi_key_cache_affinity_threshold_percent'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          {t('Load difference threshold (%)')}
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            min={0}
-                            max={100}
-                            step={1}
-                            {...field}
-                            onChange={(e) =>
-                              field.onChange(Number(e.target.value))
-                            }
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'Use the least-requested key when its request-share difference from the best cache key exceeds this value.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-              {((isEditing && isMultiKeyChannel) ||
-                (!isEditing && multiKeyMode === 'multi_to_single')) && (
-                <div className='border-border/60 flex flex-col gap-4 border-t pt-4'>
-                  <FormField
-                    control={form.control}
-                    name='multi_key_overload_enabled'
-                    render={({ field }) => (
-                      <FormItem className='flex items-center justify-between gap-3'>
-                        <div className='space-y-0.5'>
-                          <FormLabel>{t('Key overload protection')}</FormLabel>
-                          <FormDescription>
-                            {t(
-                              'Apply the configured limits independently to each upstream key.'
-                            )}
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                  <fieldset
-                    disabled={!multiKeyOverloadEnabled || isSubmitting}
-                    className='grid gap-4 disabled:opacity-60 sm:grid-cols-2 xl:grid-cols-5'
-                  >
-                    {(
-                      [
-                        [
-                          'multi_key_overload_requests_per_second',
-                          'Requests per second',
-                          2147483647,
-                        ],
-                        [
-                          'multi_key_overload_requests_per_minute',
-                          'Requests per minute',
-                          2147483647,
-                        ],
-                        [
-                          'multi_key_overload_tokens_per_minute',
-                          'Tokens per minute',
-                          Number.MAX_SAFE_INTEGER,
-                        ],
-                        [
-                          'multi_key_overload_concurrent_requests',
-                          'Concurrent requests',
-                          2147483647,
-                        ],
-                        [
-                          'multi_key_overload_recovery_seconds',
-                          'Recovery time (seconds)',
-                          86400,
-                        ],
-                      ] as const
-                    ).map(([name, label, maximum]) => (
-                      <FormField
-                        key={name}
-                        control={form.control}
-                        name={name}
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>{t(label)}</FormLabel>
-                            <FormControl>
-                              <Input
-                                type='number'
-                                min={0}
-                                max={maximum}
-                                step={1}
-                                {...field}
-                                onChange={(event) =>
-                                  field.onChange(Number(event.target.value))
-                                }
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    ))}
-                  </fieldset>
-                  <FormDescription>
-                    {t(
-                      'TPM counts only actual tokens reported by the upstream. When any limit is reached, the key is skipped until recovery; request and token counters reset while active requests remain counted.'
-                    )}
-                  </FormDescription>
-                  <FormDescription>
-                    {t(
-                      'Zero means unlimited for traffic limits. Recovery time defaults to 2 seconds when set to zero.'
-                    )}
-                  </FormDescription>
-                </div>
-              )}
-              {currentType === 25 && multiKeyMode === 'multi_to_single' && (
-                <>
-                  <FormField
-                    control={form.control}
-                    name='moonshot_quota_auto_disable_enabled'
-                    render={({ field }) => (
-                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                        <div className='space-y-0.5'>
-                          <FormLabel>
-                            {t('5-Hour Window')} / {t('Weekly')}{' '}
-                            {t('Auto Disabled')}
-                          </FormLabel>
-                          <FormDescription>
-                            {t(
-                              'Disable Moonshot keys when 5-hour or weekly quota errors are reported; automatically restore them after the quota window resets.'
-                            )}
-                          </FormDescription>
-                          <FormMessage />
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name='moonshot_monthly_no_subscription_enabled'
-                    render={({ field }) => (
-                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                        <div className='space-y-0.5'>
-                          <FormLabel>
-                            {t('Monthly')} {t('Auto Disabled')}
-                          </FormLabel>
-                          <FormDescription>
-                            {t(
-                              'Optionally disable keys when Moonshot reports that a subscription is required; this state does not recover automatically.'
-                            )}
-                          </FormDescription>
-                          <FormMessage />
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
             </ChannelAuthSection>
           </fieldset>
         </div>
+
+        {pluginConfigSchema && currentTaskPluginKey && (
+          <div
+            role='group'
+            aria-label={t('Plugin settings')}
+            className='space-y-3'
+          >
+            <SubHeading
+              title={t('Plugin settings')}
+              icon={<Puzzle />}
+              iconTone='info'
+            />
+            <fieldset
+              disabled={sensitiveLocked}
+              className='min-w-0 disabled:opacity-60'
+            >
+              <ChannelPluginConfigFields
+                pluginKey={currentTaskPluginKey}
+                schema={pluginConfigSchema}
+                models={currentModelsArray}
+                disabled={sensitiveLocked || isSubmitting}
+              />
+            </fieldset>
+          </div>
+        )}
       </ChannelApiAccessSection>
     </div>
   )
 
-  const inputTokenRoutingFields = (
-    <div
-      role='group'
-      aria-label={t('Input Token Routing')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <SubHeading
-        title={t('Input Token Routing')}
-        icon={<Route className='h-3.5 w-3.5' />}
-      />
-      <fieldset
-        disabled={sensitiveLocked}
-        className='space-y-4 disabled:opacity-60'
-      >
-        <div className='divide-border space-y-0 divide-y border-y'>
-          <FormField
-            control={form.control}
-            name='input_token_routing_enabled'
-            render={({ field }) => (
-              <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                <div className='space-y-0.5'>
-                  <FormLabel className='text-sm'>
-                    {t('Enable input token routing')}
-                  </FormLabel>
-                  <FormDescription>
-                    {t(
-                      'Only use this channel when the estimated input tokens match one configured range'
-                    )}
-                  </FormDescription>
-                </div>
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name='input_token_routing_estimation_mode'
-            render={({ field }) => (
-              <FormItem className='space-y-3 px-4 py-3'>
-                <FormLabel className='text-sm'>
-                  {t('Estimation mode')}
-                </FormLabel>
-                <FormControl>
-                  <ToggleGroup
-                    value={[field.value || 'default']}
-                    disabled={!currentInputTokenRoutingEnabled || isSubmitting}
-                    onValueChange={(values) => {
-                      const currentValue = field.value || 'default'
-                      const nextValue = values.find(
-                        (value) => value !== currentValue
-                      )
-                      if (nextValue) {
-                        field.onChange(nextValue)
-                      }
-                    }}
-                    aria-label={t('Estimation mode')}
-                    variant='outline'
-                    size='sm'
-                    className='grid w-full grid-cols-3'
-                  >
-                    <ToggleGroupItem value='default' className='w-full'>
-                      {t('Default')}
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value='glm_5_2' className='w-full'>
-                      {t('GLM-5.2')}
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value='kimi_k3' className='w-full'>
-                      {t('Kimi K3')}
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </FormControl>
-                <FormDescription>
-                  {inputTokenRoutingEstimationDescription}
-                </FormDescription>
-              </FormItem>
-            )}
-          />
-        </div>
-
-        <FormField
-          control={form.control}
-          name='input_token_routing_ranges'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>{t('Token ranges')}</FormLabel>
-              <FormControl>
-                <Textarea
-                  placeholder={'0-200\n50000-'}
-                  rows={3}
-                  disabled={!currentInputTokenRoutingEnabled || isSubmitting}
-                  className='font-mono text-xs'
-                  {...field}
-                />
-              </FormControl>
-              <FormDescription>
-                {t(
-                  'One range per line, for example 0-200 or 50000- for no upper limit'
-                )}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </fieldset>
-    </div>
-  )
-  const channelOverloadFields = (
-    <fieldset disabled={sensitiveLocked} className='disabled:opacity-60'>
-      <div className='flex scroll-mt-4 flex-col gap-4 border-t pt-4'>
-        <SubHeading
-          title={t('Channel overload protection')}
-          icon={<SlidersHorizontal className='h-3.5 w-3.5' />}
-        />
-        <FormField
-          control={form.control}
-          name='channel_overload_enabled'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('Enable channel overload protection')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Temporarily route around this channel when any configured limit is reached.'
-                  )}
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-        <fieldset
-          disabled={!channelOverloadEnabled || isSubmitting}
-          className='grid gap-4 disabled:opacity-60 sm:grid-cols-2 xl:grid-cols-4'
-        >
-          {(
-            [
-              [
-                'channel_overload_requests_per_second',
-                'Requests per second',
-                2147483647,
-              ],
-              [
-                'channel_overload_requests_per_minute',
-                'Requests per minute',
-                2147483647,
-              ],
-              [
-                'channel_overload_concurrent_requests',
-                'Concurrent requests',
-                2147483647,
-              ],
-              [
-                'channel_overload_recovery_seconds',
-                'Recovery time (seconds)',
-                86400,
-              ],
-            ] as const
-          ).map(([name, label, maximum]) => (
-            <FormField
-              key={name}
-              control={form.control}
-              name={name}
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t(label)}</FormLabel>
-                  <FormControl>
-                    <Input
-                      type='number'
-                      min={0}
-                      max={maximum}
-                      step={1}
-                      {...field}
-                      onChange={(event) =>
-                        field.onChange(Number(event.target.value))
-                      }
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          ))}
-        </fieldset>
-        <FormDescription>
-          {t(
-            'When any request or concurrency limit is reached, the channel is skipped until recovery; request counters reset while active requests remain counted.'
-          )}
-        </FormDescription>
-        <FormDescription>
-          {t(
-            'Zero means unlimited for traffic limits. Recovery time defaults to 2 seconds when set to zero.'
-          )}
-        </FormDescription>
-      </div>
-    </fieldset>
-  )
-  const responseHeaderTimeoutFields = (
-    <div
-      role='group'
-      aria-label={t('Upstream Response Header Timeout')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Upstream Response Header Timeout')}
-        icon={<TimerReset className='h-4 w-4' aria-hidden='true' />}
-      />
-      <fieldset
-        disabled={sensitiveLocked}
-        className='space-y-4 disabled:opacity-60'
-      >
-        <div className='divide-border space-y-0 divide-y border-y'>
-          <FormField
-            control={form.control}
-            name='response_header_timeout_enabled'
-            render={({ field }) => (
-              <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                <div className='space-y-0.5'>
-                  <FormLabel className='text-sm'>
-                    {t('Enable upstream response header timeout')}
-                  </FormLabel>
-                  <FormDescription>
-                    {t(
-                      'Abort this streaming channel attempt when upstream response headers exceed the limit.'
-                    )}
-                  </FormDescription>
-                </div>
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-        </div>
-
-        <FormField
-          control={form.control}
-          name='response_header_timeout_seconds'
-          render={({ field }) => (
-            <FormItem className='max-w-sm'>
-              <FormLabel>{t('Response header timeout (seconds)')}</FormLabel>
-              <FormControl>
-                <Input
-                  type='number'
-                  min={1}
-                  max={86400}
-                  step={1}
-                  disabled={!currentResponseHeaderTimeoutEnabled}
-                  {...field}
-                  onChange={(event) =>
-                    field.onChange(Number(event.target.value))
-                  }
-                />
-              </FormControl>
-              <FormDescription>
-                {t(
-                  'Applied only to streaming requests; receiving response headers stops the timer.'
-                )}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </fieldset>
-    </div>
-  )
-  const statusCodeRetryFields = (
-    <div
-      role='group'
-      aria-label={t('Channel Retry Override')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Channel Retry Override')}
-        icon={<RefreshCw className='h-4 w-4' />}
-      />
-      <fieldset
-        disabled={sensitiveLocked}
-        className='space-y-4 disabled:opacity-60'
-      >
-        <div className='divide-border space-y-0 divide-y border-y'>
-          <FormField
-            control={form.control}
-            name='status_code_retry_enabled'
-            render={({ field }) => (
-              <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                <div className='space-y-0.5'>
-                  <FormLabel className='text-sm'>
-                    {t('Enable channel retry override')}
-                  </FormLabel>
-                  <FormDescription>
-                    {t('Override global request retry for this channel')}
-                  </FormDescription>
-                </div>
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-        </div>
-
-        <div className='grid gap-4 sm:grid-cols-2'>
-          <FormField
-            control={form.control}
-            name='status_code_retry_times'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Retry times')}</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    min={0}
-                    step={1}
-                    disabled={!currentStatusCodeRetryEnabled}
-                    {...field}
-                    onChange={(e) => field.onChange(Number(e.target.value))}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t(
-                    'Maximum retries for this channel; no upper limit is enforced'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name='status_code_retry_interval_ms'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Retry interval (ms)')}</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    min={0}
-                    step={1}
-                    disabled={!currentStatusCodeRetryEnabled}
-                    {...field}
-                    onChange={(e) => field.onChange(Number(e.target.value))}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t('Delay before each same-channel retry, in milliseconds.')}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name='status_code_retry_status_codes'
-            render={({ field }) => (
-              <FormItem className='sm:col-span-2'>
-                <FormLabel>{t('Channel retry status codes')}</FormLabel>
-                <FormControl>
-                  <Textarea
-                    rows={3}
-                    disabled={!currentStatusCodeRetryEnabled}
-                    placeholder='100-199,300-399,401-407,409-499,500-503,505-523,525-599'
-                    className='font-mono text-xs'
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t(
-                    'Accepts comma-separated status codes and inclusive ranges.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </div>
-      </fieldset>
-    </div>
-  )
-  const streamInterruptionBillingFields = (
-    <div
-      role='group'
-      aria-label={t('Stream Interruption Billing')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Stream Interruption Billing')}
-        icon={<CircleDollarSign className='h-4 w-4' />}
-      />
-      <fieldset disabled={sensitiveLocked} className='disabled:opacity-60'>
-        <FormField
-          control={form.control}
-          name='stream_interruption_billing_mode'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>{t('Stream Interruption Billing')}</FormLabel>
-              <FormDescription>
-                {t(
-                  'Choose how interrupted streaming responses are billed for this channel.'
-                )}
-              </FormDescription>
-              <Select
-                items={[
-                  {
-                    value: 'off',
-                    label: t('Disabled'),
-                  },
-                  {
-                    value: 'input_only_free',
-                    label: t('Free only when no output'),
-                  },
-                  {
-                    value: 'all_interrupted_free',
-                    label: t('Free for all interrupted streams'),
-                  },
-                ]}
-                value={field.value || 'off'}
-                onValueChange={field.onChange}
-              >
-                <FormControl>
-                  <SelectTrigger className='w-full'>
-                    <SelectValue />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent alignItemWithTrigger={false}>
-                  <SelectGroup>
-                    <SelectItem value='off'>{t('Disabled')}</SelectItem>
-                    <SelectItem value='input_only_free'>
-                      {t('Free only when no output')}
-                    </SelectItem>
-                    <SelectItem value='all_interrupted_free'>
-                      {t('Free for all interrupted streams')}
-                    </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FormDescription>
-                {streamInterruptionBillingDescription}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </fieldset>
-    </div>
-  )
-  const cacheUsageValidationFields = (
-    <div
-      role='group'
-      aria-label={t('Cache Validation Split')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Cache Validation Split')}
-        icon={<ListChecks className='h-4 w-4' />}
-      />
-      <fieldset disabled={sensitiveLocked} className='disabled:opacity-60'>
-        <FormField
-          control={form.control}
-          name='cache_usage_validation_split'
-          render={({ field }) => (
-            <FormItem className={sideDrawerSwitchItemClassName()}>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('Cache Validation Split')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Validate whether upstream input usage includes cache tokens, then bill cached and uncached input separately.'
-                  )}
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      </fieldset>
-    </div>
-  )
-  const fallbackPolicyFields = (
-    <div
-      role='group'
-      aria-label={t('Channel Fallback Policies')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Channel Fallback Policies')}
-        icon={<Shuffle className='h-4 w-4' />}
-      />
-      <ChannelFallbackPolicyFields
-        control={form.control}
-        sensitiveLocked={sensitiveLocked}
-      />
-    </div>
-  )
-  const simulatedModelCacheFields = (
-    <div
-      role='group'
-      aria-label={t('Simulated Model Cache')}
-      className='border-border/60 space-y-4 rounded-lg border p-4'
-    >
-      <CardHeading
-        title={t('Simulated Model Cache')}
-        icon={<Sparkles className='h-4 w-4' />}
-      />
-      <SimulatedModelCacheFields
-        control={form.control}
-        runtimeActive={simulatedModelCacheRuntimeActive}
-        sensitiveLocked={sensitiveLocked}
-      />
-    </div>
-  )
-  const headerRewriteFields = (
-    <>
-      <FormField
-        control={form.control}
-        name='header_rewrite_preset_id'
-        render={({ field }) => (
-          <FormItem className='space-y-3 border-t pt-4'>
-            <FormLabel>{t('Header Rewrite Preset')}</FormLabel>
-            <Select
-              items={[
-                {
-                  value: '__none__',
-                  label: t('No preset'),
-                },
-                ...(field.value &&
-                !headerRewritePresetOptions.some(
-                  (preset) => preset.id === field.value
-                )
-                  ? [
-                      {
-                        value: field.value,
-                        label: field.value,
-                      },
-                    ]
-                  : []),
-                ...headerRewritePresetOptions.map((preset) => ({
-                  value: preset.id,
-                  label: `${preset.name} (${preset.id})`,
-                })),
-              ]}
-              value={field.value || ''}
-              onValueChange={(value) =>
-                field.onChange(value === '__none__' ? '' : value)
-              }
-              disabled={sensitiveLocked || isSubmitting}
-            >
-              <FormControl>
-                <SelectTrigger>
-                  <SelectValue placeholder={t('No preset')} />
-                </SelectTrigger>
-              </FormControl>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value='__none__'>{t('No preset')}</SelectItem>
-                  {field.value &&
-                    !headerRewritePresetOptions.some(
-                      (preset) => preset.id === field.value
-                    ) && (
-                      <SelectItem value={field.value}>{field.value}</SelectItem>
-                    )}
-                  {headerRewritePresetOptions.map((preset) => (
-                    <SelectItem key={preset.id} value={preset.id}>
-                      {preset.name} ({preset.id})
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <FormDescription>
-              {t(
-                'Preset changes apply immediately to every channel that references it.'
-              )}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        control={form.control}
-        name='header_rewrite'
-        render={({ field }) => (
-          <FormItem className='space-y-3'>
-            <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
-              <div className='space-y-1'>
-                <FormLabel>{t('Channel Header Rewrite JSON')}</FormLabel>
-                <FormDescription>
-                  {t('Channel rules run after the selected preset.')}
-                </FormDescription>
-              </div>
-              <div className='flex flex-wrap gap-2'>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={() =>
-                    field.onChange(
-                      JSON.stringify(
-                        {
-                          remove: ['X-Custom-Source-*'],
-                          set: {
-                            'User-Agent': 'codex-cli/0.146.0-custom',
-                          },
-                        },
-                        null,
-                        2
-                      )
-                    )
-                  }
-                >
-                  <Code className='mr-2 h-4 w-4' />
-                  {t('Fill Template')}
-                </Button>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={() => {
-                    try {
-                      const parsed = JSON.parse(field.value || '{}')
-                      field.onChange(JSON.stringify(parsed, null, 2))
-                    } catch {
-                      toast.error(t('Invalid JSON format'))
-                    }
-                  }}
-                >
-                  {t('Format')}
-                </Button>
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='sm'
-                  onClick={() => field.onChange('')}
-                >
-                  {t('Clear')}
-                </Button>
-              </div>
-            </div>
-            <FormControl>
-              <Textarea
-                className='min-h-40 resize-y font-mono text-xs'
-                rows={7}
-                value={field.value || ''}
-                onChange={field.onChange}
-                disabled={sensitiveLocked || isSubmitting}
-                placeholder={t('Enter JSON with remove and set rules')}
-              />
-            </FormControl>
-            <FormDescription className='text-xs'>
-              {t('Supported variables')}:{' '}
-              <code className='bg-muted rounded px-1 py-0.5'>
-                {'{request_id}'}
-              </code>{' '}
-              <code className='bg-muted rounded px-1 py-0.5'>
-                {'{client_header:NAME}'}
-              </code>{' '}
-              <code className='bg-muted rounded px-1 py-0.5'>
-                {'{client_header:NAME|request_id}'}
-              </code>
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-    </>
-  )
-  const providerCompatibilityFields = (
-    <>
-      <FormField
-        control={form.control}
-        name='clear_volcengine_traits'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-            <div className='space-y-0.5'>
-              <FormLabel>{t('Clear Volcengine traits')}</FormLabel>
-              <FormDescription>
-                {t(
-                  'Hide the Volcengine ownership label for models served through this channel.'
-                )}
-              </FormDescription>
-              <FormMessage />
-            </div>
-            <FormControl>
-              <Switch
-                disabled={sensitiveLocked}
-                checked={field.value === true}
-                onCheckedChange={field.onChange}
-              />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      {currentType === 14 && (
-        <FormField
-          control={form.control}
-          name='tnt_tencent_openai_conversion'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>
-                  {t('TNT Tencent-style OpenAI Conversion')}
-                </FormLabel>
-                <FormMessage />
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-      {currentType === 14 && (
-        <FormField
-          control={form.control}
-          name='anthropic_input_includes_cache'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('Anthropic Input Includes Cache')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Convert upstream Anthropic usage where input_tokens already includes cache tokens into separate standard counters.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-      {[1, 14, 25].includes(currentType) && (
-        <FormField
-          control={form.control}
-          name='kimi_k3_official_compatibility'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('Kimi K3 Official Compatibility')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Align mapped kimi-k3 requests, responses, and billing with the official K3 API.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-      {[1, 14].includes(currentType) && (
-        <FormField
-          control={form.control}
-          name='glm_5_3_official_compatibility'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('GLM 5.3 Official Compatibility')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Align requests with the official GLM 5.3 API without changing response formats.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-      {[1, 14, 43].includes(currentType) && (
-        <FormField
-          control={form.control}
-          name='deepseek_v4_official_compatibility'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('DeepSeek V4 Official Compatibility')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Align DeepSeek V4 Chat, Responses, and Anthropic request behavior without rewriting response bodies.'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-      {currentType === 43 && (
-        <FormField
-          control={form.control}
-          name='deepseek_v4_request_sanitization_enabled'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-              <div className='space-y-0.5'>
-                <FormLabel>{t('DeepSeek V4 request compatibility')}</FormLabel>
-                <FormDescription>
-                  {t(
-                    'Clamp max_tokens to 393216 and top_k to 99, and remove invalid required fields from tool schemas. Skipped when request body passthrough is enabled.'
-                  )}
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-      )}
-    </>
-  )
+  let submitLabel = t('Create Channel')
+  if (isEditing) {
+    submitLabel = t('Update Channel')
+  } else if (pluginLogin) {
+    submitLabel = t('Save and log in')
+  }
 
   let formContent: ReactNode
   if (!isEditing && !providerTarget) {
@@ -5927,6 +4996,8 @@ export function ChannelMutateDrawer({
           viewportWide ? null : (
             <ChannelQuickOptions
               channelType={currentType}
+              modelFetchable={modelFetchable}
+              responsesWebsocket={responsesWebsocketSupported}
               sensitiveLocked={sensitiveLocked}
               disabled={isSubmitting}
               confirmEnablePassthrough={confirmEnablePassthrough}
@@ -5936,29 +5007,12 @@ export function ChannelMutateDrawer({
         routing={
           <>
             {redirectPanelActive ? redirectPanelNotice : modelMappingFields}
-            <ResponseModelMappingFields
-              sourceModelOptions={currentModelsArray}
-              disabled={isSubmitting || sensitiveLocked}
-            />
             {routingFields}
-            <ChannelGroupSchedulingSection
-              form={form}
-              channelId={channelId}
-              disabled={sensitiveLocked || isSubmitting}
-            />
-            {channelOverloadFields}
-            {inputTokenRoutingFields}
           </>
         }
         request={
           <>
             {overrideFields}
-            <fieldset
-              disabled={sensitiveLocked}
-              className='border-border/60 space-y-4 rounded-lg border p-4 disabled:opacity-60'
-            >
-              {headerRewriteFields}
-            </fieldset>
             <div
               role='group'
               aria-label={t('Request processing')}
@@ -5978,25 +5032,18 @@ export function ChannelMutateDrawer({
               >
                 <ResponsesWebSocketSetting
                   channelType={currentType}
+                  supported={responsesWebsocketSupported}
                   disabled={sensitiveLocked || isSubmitting}
                 />
                 {formatFields}
-                {providerCompatibilityFields}
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
-                {currentType !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
-                  passthroughFields}
+                {passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>
             </div>
             {fieldPassthroughFields}
-            {responseHeaderTimeoutFields}
-            {statusCodeRetryFields}
-            {fallbackPolicyFields}
-            {streamInterruptionBillingFields}
-            {cacheUsageValidationFields}
-            {simulatedModelCacheFields}
           </>
         }
         other={
@@ -6159,6 +5206,8 @@ export function ChannelMutateDrawer({
                       form={form}
                       layout='inline'
                       channelType={currentType}
+                      modelFetchable={modelFetchable}
+                      responsesWebsocket={responsesWebsocketSupported}
                       sensitiveLocked={sensitiveLocked}
                       disabled={isSubmitting}
                       className='sm:justify-end'
@@ -6273,7 +5322,7 @@ export function ChannelMutateDrawer({
                 {isSubmitting && (
                   <Loader2 className='mr-2 h-4 w-4 animate-spin' />
                 )}
-                {isEditing ? t('Update Channel') : t('Create Channel')}
+                {submitLabel}
               </Button>
             )}
           </SheetFooter>
@@ -6385,6 +5434,7 @@ export function ChannelMutateDrawer({
         onConfirm={() => handleStatusCodeRiskAction(true)}
       />
       <PassthroughWarningDialog
+        channelType={currentType}
         open={passthroughWarningKind !== null}
         kind={passthroughWarningKind}
         onOpenChange={(v) => {
@@ -6392,6 +5442,28 @@ export function ChannelMutateDrawer({
         }}
         handleConfirm={() => handlePassthroughWarningAction(true)}
       />
+
+      {loginRequest && (
+        <PluginLoginDialog
+          open
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setLoginRequest(null)
+          }}
+          channelId={loginRequest.channelId}
+          keyIndex={loginRequest.keyIndex}
+          add={loginRequest.add}
+          plugin={loginRequest.plugin}
+          onDone={() => {
+            // A login can enable the channel, so the list refreshes too.
+            void queryClient.invalidateQueries({
+              queryKey: channelsQueryKeys.detail(loginRequest.channelId),
+            })
+            void queryClient.invalidateQueries({
+              queryKey: channelsQueryKeys.lists(),
+            })
+          }}
+        />
+      )}
     </>
   )
 }

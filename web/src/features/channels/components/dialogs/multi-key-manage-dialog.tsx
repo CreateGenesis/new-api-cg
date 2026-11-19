@@ -16,15 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  Copy01Icon,
-  GaugeIcon,
-  Loading03Icon,
-  Tick02Icon,
-  ViewIcon,
-  ViewOffSlashIcon,
-} from '@hugeicons/core-free-icons'
-import { HugeiconsIcon } from '@hugeicons/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw, Trash2, Power, PowerOff } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
@@ -45,20 +36,18 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
-import { copyToClipboard } from '@/lib/copy-to-clipboard'
 import { handleServerError } from '@/lib/handle-server-error'
-import { ROLE } from '@/lib/roles'
-import { getServerMessage } from '@/lib/server-error-message'
+import {
+  getServerMessage,
+  translateServerText,
+} from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -69,18 +58,21 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
-  getMultiKeyChannelKey,
 } from '../../api'
-import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_MODES } from '../../constants'
+import {
+  CHANNEL_TYPE_TASK_PLUGIN,
+  MULTI_KEY_FILTER_OPTIONS,
+} from '../../constants'
 import {
   channelsQueryKeys,
   formatTimestamp,
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
-  handleTestChannel,
   isDestructiveAction,
 } from '../../lib'
+import { formatChannelBalanceSummary } from '../../lib/channel-balance'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
+import { ChannelBalanceDetails } from '../channel-balance-details'
 import { useChannels } from '../channels-provider'
 import { StatisticsCard } from './multi-key-statistics-card'
 import { MultiKeyTableRowActions } from './multi-key-table-row-actions'
@@ -94,8 +86,14 @@ export function MultiKeyManageDialog({
   open,
   onOpenChange,
 }: MultiKeyManageDialogProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { currentRow } = useChannels()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  // A plugin channel queries the balance of each key.
+  const keyBalances =
+    currentRow?.type === CHANNEL_TYPE_TASK_PLUGIN
+      ? currentRow.balance_detail?.keys
+      : undefined
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
   const canEditSensitive = hasPermission(
@@ -103,12 +101,10 @@ export function MultiKeyManageDialog({
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
-  const canRevealKeys = currentUser?.role === ROLE.SUPER_ADMIN
 
   // Data state
   const [isLoading, setIsLoading] = useState(false)
   const [keys, setKeys] = useState<KeyStatus[]>([])
-  const [keysChannelId, setKeysChannelId] = useState<number | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
@@ -122,67 +118,27 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
-  const [testingKeyIndexes, setTestingKeyIndexes] = useState<Set<number>>(
-    new Set()
-  )
+  // A confirmed action reloads the table, which can remove the button that
+  // asked for it. Focus then comes back into this dialog rather than to
+  // whatever opened the dialog, so the next Escape closes only this dialog.
+  const confirmOpenerRef = useRef<HTMLElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
-  // Complete keys are scoped to the current dialog/channel and fetched on demand.
-  const [loadedKeys, setLoadedKeys] = useState<Record<number, string>>({})
-  const [loadedKeysChannelId, setLoadedKeysChannelId] = useState<number | null>(
-    null
-  )
-  const [revealedKeyIndexes, setRevealedKeyIndexes] = useState<Set<number>>(
-    new Set()
-  )
-  const [loadingKeyIndexes, setLoadingKeyIndexes] = useState<Set<number>>(
-    new Set()
-  )
-  const [copyingKeyIndexes, setCopyingKeyIndexes] = useState<Set<number>>(
-    new Set()
-  )
-  const [copiedKeyIndexes, setCopiedKeyIndexes] = useState<Set<number>>(
-    new Set()
-  )
-  const loadedKeysRef = useRef<Record<number, string>>({})
-  const loadedKeysChannelIdRef = useRef<number | null>(null)
-  const keyRequestsRef = useRef<Map<number, Promise<string | null>>>(new Map())
-  const copiedTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(
-    new Map()
-  )
-  const testingKeyIndexesRef = useRef<Set<number>>(new Set())
-  const testGenerationRef = useRef(0)
-  const secretGenerationRef = useRef(0)
-  const statusGenerationRef = useRef(0)
-  const secretScopeRef = useRef<number | null>(null)
-  secretScopeRef.current = open && currentRow ? currentRow.id : null
+  const openConfirm = (action: MultiKeyConfirmAction) => {
+    const opener = document.activeElement
+    confirmOpenerRef.current = opener instanceof HTMLElement ? opener : null
+    setConfirmAction(action)
+  }
 
-  const clearLoadedSecrets = () => {
-    secretGenerationRef.current += 1
-    loadedKeysRef.current = {}
-    loadedKeysChannelIdRef.current = null
-    keyRequestsRef.current.clear()
-    for (const timer of copiedTimersRef.current.values()) {
-      clearTimeout(timer)
-    }
-    copiedTimersRef.current.clear()
-    setLoadedKeys({})
-    setLoadedKeysChannelId(null)
-    setRevealedKeyIndexes(new Set())
-    setLoadingKeyIndexes(new Set())
-    setCopyingKeyIndexes(new Set())
-    setCopiedKeyIndexes(new Set())
+  const getConfirmFinalFocus = () => {
+    const opener = confirmOpenerRef.current
+    return opener && bodyRef.current?.contains(opener)
+      ? opener
+      : bodyRef.current
   }
 
   // Reset and load data when dialog opens
   useEffect(() => {
-    statusGenerationRef.current += 1
-    testGenerationRef.current += 1
-    testingKeyIndexesRef.current.clear()
-    setTestingKeyIndexes(new Set())
-    clearLoadedSecrets()
-    setKeys([])
-    setKeysChannelId(null)
-    setIsLoading(false)
     if (open && currentRow) {
       setCurrentPage(1)
       setStatusFilter(null)
@@ -198,29 +154,17 @@ export function MultiKeyManageDialog({
   ) => {
     if (!currentRow) return
 
-    const channelId = currentRow.id
-    const generation = statusGenerationRef.current + 1
-    statusGenerationRef.current = generation
-    clearLoadedSecrets()
     setIsLoading(true)
     try {
       const response = await getMultiKeyStatus(
-        channelId,
+        currentRow.id,
         page,
         size,
         status === null ? undefined : status
       )
 
-      if (
-        generation !== statusGenerationRef.current ||
-        secretScopeRef.current !== channelId
-      ) {
-        return
-      }
-
       if (response.success && response.data) {
         setKeys(response.data.keys || [])
-        setKeysChannelId(channelId)
         setTotal(response.data.total || 0)
         setCurrentPage(response.data.page || 1)
         setPageSize(response.data.page_size || 10)
@@ -232,166 +176,9 @@ export function MultiKeyManageDialog({
         handleServerError(response, t('Failed to load key status'))
       }
     } catch (error: unknown) {
-      if (
-        generation === statusGenerationRef.current &&
-        secretScopeRef.current === channelId
-      ) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t('Failed to load key status')
-        )
-      }
+      handleServerError(error, t('Failed to load key status'))
     } finally {
-      if (generation === statusGenerationRef.current) {
-        setIsLoading(false)
-      }
-    }
-  }
-
-  const loadFullKey = async (
-    keyIndex: number,
-    failureMessage: string
-  ): Promise<string | null> => {
-    if (!currentRow || !canRevealKeys) return null
-    if (secretScopeRef.current !== currentRow.id) return null
-    if (
-      loadedKeysChannelIdRef.current === currentRow.id &&
-      Object.hasOwn(loadedKeysRef.current, keyIndex)
-    ) {
-      return loadedKeysRef.current[keyIndex]
-    }
-
-    const pendingRequest = keyRequestsRef.current.get(keyIndex)
-    if (pendingRequest) return pendingRequest
-
-    const channelId = currentRow.id
-    const generation = secretGenerationRef.current
-    setLoadingKeyIndexes((previous) => new Set(previous).add(keyIndex))
-
-    const request = (async () => {
-      try {
-        const response = await getMultiKeyChannelKey(channelId, keyIndex)
-        if (
-          generation !== secretGenerationRef.current ||
-          secretScopeRef.current !== channelId
-        ) {
-          return null
-        }
-        if (!response.success || typeof response.data?.key !== 'string') {
-          toast.error(t(failureMessage))
-          return null
-        }
-
-        const fullKey = response.data.key
-        loadedKeysRef.current = {
-          ...loadedKeysRef.current,
-          [keyIndex]: fullKey,
-        }
-        loadedKeysChannelIdRef.current = channelId
-        setLoadedKeys((previous) => ({ ...previous, [keyIndex]: fullKey }))
-        setLoadedKeysChannelId(channelId)
-        return fullKey
-      } catch {
-        if (
-          generation === secretGenerationRef.current &&
-          secretScopeRef.current === channelId
-        ) {
-          toast.error(t(failureMessage))
-        }
-        return null
-      } finally {
-        if (generation === secretGenerationRef.current) {
-          setLoadingKeyIndexes((previous) => {
-            const next = new Set(previous)
-            next.delete(keyIndex)
-            return next
-          })
-          keyRequestsRef.current.delete(keyIndex)
-        }
-      }
-    })()
-
-    keyRequestsRef.current.set(keyIndex, request)
-    return request
-  }
-
-  const handleToggleKeyVisibility = async (keyIndex: number) => {
-    if (revealedKeyIndexes.has(keyIndex)) {
-      setRevealedKeyIndexes((previous) => {
-        const next = new Set(previous)
-        next.delete(keyIndex)
-        return next
-      })
-      return
-    }
-
-    const fullKey = await loadFullKey(keyIndex, 'Failed to fetch channel key')
-    if (fullKey === null) return
-    setRevealedKeyIndexes((previous) => new Set(previous).add(keyIndex))
-  }
-
-  const handleCopyKey = async (keyIndex: number) => {
-    setCopyingKeyIndexes((previous) => new Set(previous).add(keyIndex))
-    try {
-      const fullKey = await loadFullKey(keyIndex, 'Failed to copy')
-      if (fullKey === null) return
-      if (!(await copyToClipboard(fullKey))) {
-        toast.error(t('Failed to copy'))
-        return
-      }
-
-      toast.success(t('Copied!'))
-      setCopiedKeyIndexes((previous) => new Set(previous).add(keyIndex))
-      const previousTimer = copiedTimersRef.current.get(keyIndex)
-      if (previousTimer) clearTimeout(previousTimer)
-      copiedTimersRef.current.set(
-        keyIndex,
-        setTimeout(() => {
-          setCopiedKeyIndexes((previous) => {
-            const next = new Set(previous)
-            next.delete(keyIndex)
-            return next
-          })
-          copiedTimersRef.current.delete(keyIndex)
-        }, 2000)
-      )
-    } finally {
-      setCopyingKeyIndexes((previous) => {
-        const next = new Set(previous)
-        next.delete(keyIndex)
-        return next
-      })
-    }
-  }
-
-  const handleTestKey = async (keyIndex: number) => {
-    if (!currentRow || testingKeyIndexesRef.current.has(keyIndex)) return
-
-    const channelId = currentRow.id
-    const generation = testGenerationRef.current
-    testingKeyIndexesRef.current.add(keyIndex)
-    setTestingKeyIndexes((previous) => new Set(previous).add(keyIndex))
-    try {
-      await handleTestChannel(
-        channelId,
-        { channelName: currentRow.name, keyIndex },
-        () => {
-          queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
-        }
-      )
-    } finally {
-      if (
-        generation === testGenerationRef.current &&
-        secretScopeRef.current === channelId
-      ) {
-        testingKeyIndexesRef.current.delete(keyIndex)
-        setTestingKeyIndexes((previous) => {
-          const next = new Set(previous)
-          next.delete(keyIndex)
-          return next
-        })
-      }
+      setIsLoading(false)
     }
   }
 
@@ -441,6 +228,10 @@ export function MultiKeyManageDialog({
       if (response?.success) {
         toast.success(getServerMessage(response) || t('Operation successful'))
         queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+        // A plugin channel's edit drawer lists the same lines beside this dialog.
+        queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.pluginCredentials(currentRow.id),
+        })
 
         // Reload data - reset to page 1 for bulk actions
         const isBulkAction = type.includes('all') || type === 'delete-disabled'
@@ -480,12 +271,6 @@ export function MultiKeyManageDialog({
 
   if (!currentRow) return null
 
-  const visibleKeys = keysChannelId === currentRow.id ? keys : []
-  const multiKeyMode = currentRow.channel_info?.multi_key_mode
-  const multiKeyModeLabel = MULTI_KEY_MODES.find(
-    (mode) => mode.value === multiKeyMode
-  )?.label
-
   return (
     <>
       <Dialog
@@ -499,9 +284,13 @@ export function MultiKeyManageDialog({
               variant='neutral'
               copyable={false}
             />
-            {multiKeyMode && (
+            {currentRow.channel_info?.multi_key_mode && (
               <StatusBadge
-                label={t(multiKeyModeLabel || 'Random')}
+                label={
+                  currentRow.channel_info.multi_key_mode === 'random'
+                    ? t('Random')
+                    : t('Polling')
+                }
                 variant='neutral'
                 copyable={false}
               />
@@ -511,12 +300,19 @@ export function MultiKeyManageDialog({
         description={t(
           'Manage multi-key status and configuration for this channel'
         )}
-        contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-5xl flex-col'
+        // Key balances add a column, which needs the wider dialog.
+        contentClassName={cn(
+          'flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-5xl flex-col',
+          keyBalances && 'sm:max-w-5xl'
+        )}
         titleClassName='flex items-center gap-2'
         contentHeight='min(72vh, 720px)'
         bodyClassName='space-y-4'
       >
-        <div className='flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden'>
+        <div
+          ref={bodyRef}
+          className='flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden'
+        >
           {/* Statistics */}
           <div className='grid shrink-0 grid-cols-3 gap-3'>
             <StatisticsCard
@@ -576,7 +372,7 @@ export function MultiKeyManageDialog({
                 <Button
                   variant='default'
                   size='sm'
-                  onClick={() => setConfirmAction({ type: 'enable-all' })}
+                  onClick={() => openConfirm({ type: 'enable-all' })}
                 >
                   <Power className='mr-2 h-4 w-4' />
                   {t('Enable All')}
@@ -587,7 +383,7 @@ export function MultiKeyManageDialog({
                 <Button
                   variant='destructive'
                   size='sm'
-                  onClick={() => setConfirmAction({ type: 'disable-all' })}
+                  onClick={() => openConfirm({ type: 'disable-all' })}
                 >
                   <PowerOff className='mr-2 h-4 w-4' />
                   {t('Disable All')}
@@ -600,7 +396,7 @@ export function MultiKeyManageDialog({
                   size='sm'
                   onClick={() => {
                     if (!canEditSensitive) return
-                    setConfirmAction({ type: 'delete-disabled' })
+                    openConfirm({ type: 'delete-disabled' })
                   }}
                   disabled={!canEditSensitive}
                   title={
@@ -628,16 +424,16 @@ export function MultiKeyManageDialog({
                 <Loader2 className='text-muted-foreground h-8 w-8 animate-spin' />
               </div>
             )}
-            {!isLoading && visibleKeys.length === 0 && (
+            {!isLoading && keys.length === 0 && (
               <div className='text-muted-foreground py-12 text-center'>
                 {t('No keys found')}
               </div>
             )}
-            {!isLoading && visibleKeys.length > 0 && (
+            {!isLoading && !(keys.length === 0) && (
               <StaticDataTable
                 className='rounded-none border-0'
-                tableClassName='min-w-[1110px]'
-                data={visibleKeys}
+                tableClassName='min-w-[800px]'
+                data={keys}
                 getRowKey={(key) => key.index}
                 columns={[
                   {
@@ -648,155 +444,49 @@ export function MultiKeyManageDialog({
                     cell: (key) => `#${key.index + 1}`,
                   },
                   {
-                    id: 'test',
-                    header: t('Test'),
-                    className: 'w-16 text-center',
-                    cellClassName: 'text-center',
-                    cell: (key) => {
-                      const isTesting = testingKeyIndexes.has(key.index)
-                      const testLabel = t('Test channel key #{{index}}', {
-                        index: key.index + 1,
-                      })
-                      return (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                variant='ghost'
-                                size='icon-xs'
-                                onClick={() => void handleTestKey(key.index)}
-                                disabled={isTesting}
-                                aria-label={testLabel}
-                              />
-                            }
-                          >
-                            <HugeiconsIcon
-                              icon={isTesting ? Loading03Icon : GaugeIcon}
-                              className={isTesting ? 'animate-spin' : undefined}
-                              strokeWidth={2}
-                            />
-                          </TooltipTrigger>
-                          <TooltipContent>{testLabel}</TooltipContent>
-                        </Tooltip>
-                      )
-                    },
-                  },
-                  {
-                    id: 'key',
-                    header: t('Channel key'),
-                    className: 'min-w-[280px]',
-                    cell: (key) => {
-                      const isRevealed = revealedKeyIndexes.has(key.index)
-                      const isLoadingKey = loadingKeyIndexes.has(key.index)
-                      const isCopyingKey = copyingKeyIndexes.has(key.index)
-                      const isCopied = copiedKeyIndexes.has(key.index)
-                      let displayedKey = key.masked_key || key.key_preview || ''
-                      if (
-                        open &&
-                        loadedKeysChannelId === currentRow.id &&
-                        isRevealed &&
-                        Object.hasOwn(loadedKeys, key.index)
-                      ) {
-                        displayedKey = loadedKeys[key.index]
-                      }
-
-                      let visibilityIcon = ViewIcon
-                      if (isLoadingKey) {
-                        visibilityIcon = Loading03Icon
-                      } else if (isRevealed) {
-                        visibilityIcon = ViewOffSlashIcon
-                      }
-
-                      let copyIcon = Copy01Icon
-                      let copyLabel = 'Copy secret key'
-                      let copyIconClassName: string | undefined
-                      if (isCopyingKey) {
-                        copyIcon = Loading03Icon
-                        copyLabel = 'Loading...'
-                        copyIconClassName = 'animate-spin'
-                      } else if (isCopied) {
-                        copyIcon = Tick02Icon
-                        copyLabel = 'Copied!'
-                        copyIconClassName = 'text-success'
-                      }
-
-                      return (
-                        <div className='flex min-w-0 items-center gap-1'>
-                          <code className='min-w-0 flex-1 truncate font-mono text-sm'>
-                            {displayedKey}
-                          </code>
-                          {canRevealKeys && (
-                            <>
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <Button
-                                      variant='ghost'
-                                      size='icon-xs'
-                                      onClick={() =>
-                                        void handleToggleKeyVisibility(
-                                          key.index
-                                        )
-                                      }
-                                      disabled={isLoadingKey || isCopyingKey}
-                                      aria-label={t(
-                                        isRevealed ? 'Hide' : 'Show'
-                                      )}
-                                    />
-                                  }
-                                >
-                                  <HugeiconsIcon
-                                    icon={visibilityIcon}
-                                    className={
-                                      isLoadingKey ? 'animate-spin' : undefined
-                                    }
-                                    strokeWidth={2}
-                                  />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  {t(isRevealed ? 'Hide' : 'Show')}
-                                </TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <Button
-                                      variant='ghost'
-                                      size='icon-xs'
-                                      onClick={() =>
-                                        void handleCopyKey(key.index)
-                                      }
-                                      disabled={isLoadingKey || isCopyingKey}
-                                      aria-label={t(copyLabel)}
-                                    />
-                                  }
-                                >
-                                  <HugeiconsIcon
-                                    icon={copyIcon}
-                                    className={copyIconClassName}
-                                    strokeWidth={2}
-                                  />
-                                </TooltipTrigger>
-                                <TooltipContent>{t(copyLabel)}</TooltipContent>
-                              </Tooltip>
-                            </>
-                          )}
-                        </div>
-                      )
-                    },
-                  },
-                  {
                     id: 'status',
                     header: t('Status'),
                     className: 'w-32',
                     cell: (key) => renderStatusBadge(key.status),
                   },
+                  ...(keyBalances
+                    ? [
+                        {
+                          id: 'balance',
+                          header: t('Balance'),
+                          className: 'w-48',
+                          cellClassName: 'text-sm',
+                          cell: (key: KeyStatus) => {
+                            const result = keyBalances[String(key.index)]
+                            if (!result) return '-'
+                            // Wraps, so the key actions stay in view.
+                            return (
+                              <div className='max-w-56 space-y-0.5 whitespace-normal'>
+                                <div className='font-medium'>
+                                  {/* A key has no USD balance of its own. */}
+                                  {formatChannelBalanceSummary(
+                                    result,
+                                    Number.NaN,
+                                    { locale }
+                                  )}
+                                </div>
+                                <ChannelBalanceDetails
+                                  result={result}
+                                  className='text-muted-foreground'
+                                />
+                              </div>
+                            )
+                          },
+                        },
+                      ]
+                    : []),
                   {
                     id: 'reason',
                     header: t('Disabled Reason'),
                     className: 'min-w-[200px]',
                     cellClassName: 'max-w-xs truncate text-sm',
-                    cell: (key) => key.reason || '-',
+                    cell: (key) =>
+                      key.reason ? translateServerText(t, key.reason) : '-',
                   },
                   {
                     id: 'disabled-time',
@@ -804,29 +494,6 @@ export function MultiKeyManageDialog({
                     className: 'w-44',
                     cellClassName: 'text-muted-foreground text-sm',
                     cell: (key) => formatKeyTimestamp(key.disabled_time),
-                  },
-                  {
-                    id: 'quota-window',
-                    header: t('Window:'),
-                    className: 'w-40',
-                    cell: (key) => {
-                      if (!key.quota_window) return '-'
-                      if (key.quota_window === 'monthly_no_subscription') {
-                        return `${t('Monthly')} (${t('Manual Disabled')})`
-                      }
-                      return t(
-                        key.quota_window === 'weekly'
-                          ? 'Weekly'
-                          : '5-Hour Window'
-                      )
-                    },
-                  },
-                  {
-                    id: 'recovery-time',
-                    header: t('Reset at:'),
-                    className: 'w-44',
-                    cellClassName: 'text-muted-foreground text-sm',
-                    cell: (key) => formatKeyTimestamp(key.recovery_time),
                   },
                   {
                     id: 'actions',
@@ -837,7 +504,7 @@ export function MultiKeyManageDialog({
                         keyIndex={key.index}
                         status={key.status}
                         canDelete={canEditSensitive}
-                        onAction={setConfirmAction}
+                        onAction={openConfirm}
                       />
                     ),
                   },
@@ -887,6 +554,7 @@ export function MultiKeyManageDialog({
         destructive={isDestructiveAction(confirmAction)}
         isLoading={isPerformingAction}
         handleConfirm={performAction}
+        finalFocus={getConfirmFinalFocus}
       />
     </>
   )

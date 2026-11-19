@@ -18,8 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
-import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
-
 import {
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_TYPE_NEW_API,
@@ -43,18 +41,7 @@ import {
   validateAdvancedCustomConfig,
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
-import {
-  formatInputTokenRoutingRanges,
-  parseInputTokenRoutingRanges,
-  type InputTokenRoutingEstimationMode,
-  type InputTokenRoutingRange,
-} from './input-token-routing'
 import { supportsResponsesWebSocket } from './responses-websocket'
-import {
-  VIDEO_COMPATIBILITY_DEFAULTS,
-  readVideoCompatibility,
-  videoCompatibilitySchema,
-} from './video-compatibility'
 
 // ============================================================================
 // Form Validation Schema
@@ -68,39 +55,33 @@ const SUPPORTED_PROXY_PROTOCOLS = new Set([
 ])
 
 function isOptionalProxyURL(value: string | undefined): boolean {
-  const values = (value || '')
-    .replaceAll('\r\n', '\n')
-    .split('\n')
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (values.length > MAX_PROXY_URLS) return false
-  return values.every((trimmedValue) => {
-    const schemeSeparatorIndex = trimmedValue.indexOf('://')
-    if (schemeSeparatorIndex <= 0) return false
+  const trimmedValue = value?.trim() || ''
+  if (!trimmedValue) return true
 
-    const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
-    const suffixIndex = authorityAndSuffix.search(/[/?#]/)
-    if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
-      return false
-    }
+  const schemeSeparatorIndex = trimmedValue.indexOf('://')
+  if (schemeSeparatorIndex <= 0) return false
 
-    try {
-      const parsedURL = new URL(trimmedValue)
-      return (
-        SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
-        Boolean(parsedURL.hostname) &&
-        parsedURL.port !== '0'
-      )
-    } catch {
-      return false
-    }
-  })
+  const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
+  const suffixIndex = authorityAndSuffix.search(/[/?#]/)
+  if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
+    return false
+  }
+
+  try {
+    const parsedURL = new URL(trimmedValue)
+    return (
+      SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
+      Boolean(parsedURL.hostname) &&
+      parsedURL.port !== '0'
+    )
+  } catch {
+    return false
+  }
 }
 
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
-export const MAX_PROXY_URLS = 16
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -142,31 +123,6 @@ function isOptionalJsonObject(value: string | undefined): boolean {
   try {
     const parsed = parseOptionalJson(value)
     return parsed === undefined || isJsonObjectValue(parsed)
-  } catch {
-    return false
-  }
-}
-
-function isOptionalHeaderRewriteRule(value: string | undefined): boolean {
-  try {
-    const parsed = parseOptionalJson(value)
-    if (parsed === undefined) return true
-    if (!isJsonObjectValue(parsed)) return false
-    if (Object.keys(parsed).some((key) => key !== 'remove' && key !== 'set')) {
-      return false
-    }
-    if (
-      parsed.remove !== undefined &&
-      (!Array.isArray(parsed.remove) ||
-        parsed.remove.some((item) => typeof item !== 'string'))
-    ) {
-      return false
-    }
-    return (
-      parsed.set === undefined ||
-      (isJsonObjectValue(parsed.set) &&
-        Object.values(parsed.set).every((item) => typeof item === 'string'))
-    )
   } catch {
     return false
   }
@@ -246,85 +202,6 @@ function addRequiredIssue(
   })
 }
 
-function readFiniteNumberProperty(
-  values: Record<string, unknown>,
-  field: string
-): number | undefined {
-  const value = values[field]
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-export const DEFAULT_STATUS_CODE_RETRY_STATUS_CODES =
-  '100-199,300-399,401-407,409-499,500-503,505-523,525-599'
-export const DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS = 50
-export const DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS = 180
-
-const CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO: Channel['channel_info'] = {
-  is_multi_key: false,
-  multi_key_size: 0,
-  multi_key_polling_index: 0,
-  multi_key_affinity_ttl_seconds: 3600,
-  multi_key_least_requests_window_seconds: 60,
-  multi_key_cache_affinity_threshold_percent: 35,
-  multi_key_mode: 'random',
-  channel_overload_protection: {
-    enabled: false,
-    requests_per_second: 0,
-    requests_per_minute: 0,
-    tokens_per_minute: 0,
-    concurrent_requests: 0,
-    recovery_seconds: 2,
-  },
-  multi_key_overload_protection: {
-    enabled: false,
-    requests_per_second: 0,
-    requests_per_minute: 0,
-    tokens_per_minute: 0,
-    concurrent_requests: 0,
-    recovery_seconds: 2,
-  },
-}
-
-function overloadPayload(
-  formData: ChannelFormValues,
-  scope: 'channel' | 'multi_key'
-) {
-  return {
-    enabled: Boolean(formData[`${scope}_overload_enabled`]),
-    requests_per_second: Number(
-      formData[`${scope}_overload_requests_per_second`]
-    ),
-    requests_per_minute: Number(
-      formData[`${scope}_overload_requests_per_minute`]
-    ),
-    tokens_per_minute:
-      scope === 'multi_key'
-        ? Number(formData.multi_key_overload_tokens_per_minute)
-        : 0,
-    concurrent_requests: Number(
-      formData[`${scope}_overload_concurrent_requests`]
-    ),
-    recovery_seconds: Number(formData[`${scope}_overload_recovery_seconds`]),
-  }
-}
-
-export const groupSchedulingSchema = z.object({
-  enabled: z.boolean(),
-  groups: z.array(z.string()),
-  cost_factor: z.number().finite().min(0),
-  probe_models: z.array(z.string()),
-  interval_seconds: z.number().int().min(1).max(86400),
-  timeout_seconds: z.number().int().min(1).max(600),
-})
-export const defaultGroupScheduling: z.infer<typeof groupSchedulingSchema> = {
-  enabled: false,
-  groups: [],
-  cost_factor: 1,
-  probe_models: [],
-  interval_seconds: 30,
-  timeout_seconds: 30,
-}
-
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -332,34 +209,11 @@ export const channelFormSchema = z
     base_url: z.string().optional(),
     task_plugin_key: z.string().optional(),
     task_extend_plugin_keys: z.array(z.string()).optional(),
+    request_plugins: z.array(z.string()).optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
     group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
-    group_scheduling: groupSchedulingSchema.optional(),
-    response_model_mapping_enabled: z.boolean().optional(),
-    response_model_mapping: z
-      .string()
-      .optional()
-      .refine((value) => {
-        if (!value?.trim()) return true
-        try {
-          const mapping: unknown = JSON.parse(value)
-          return (
-            mapping !== null &&
-            typeof mapping === 'object' &&
-            !Array.isArray(mapping) &&
-            Object.entries(mapping).every(
-              ([source, target]) =>
-                source.trim() !== '' &&
-                typeof target === 'string' &&
-                target.trim() !== ''
-            )
-          )
-        } catch {
-          return false
-        }
-      }, 'Response model mapping must be a JSON object with non-blank model names'),
     model_mapping: z
       .string()
       .optional()
@@ -396,11 +250,6 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
-    header_rewrite_preset_id: z.string().max(64).optional(),
-    header_rewrite: z
-      .string()
-      .optional()
-      .refine(isOptionalHeaderRewriteRule, ERROR_MESSAGES.INVALID_JSON),
     settings: z
       .string()
       .optional()
@@ -409,29 +258,7 @@ export const channelFormSchema = z
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
-    multi_key_type: z
-      .enum([
-        'random',
-        'polling',
-        'affinity',
-        'least_requests',
-        'cache_affinity_least_requests',
-      ])
-      .optional(),
-    multi_key_affinity_ttl_seconds: z.number().optional(),
-    multi_key_least_requests_window_seconds: z.number().optional(),
-    multi_key_cache_affinity_threshold_percent: z.number().optional(),
-    multi_key_overload_enabled: z.boolean().optional(),
-    multi_key_overload_requests_per_second: z.number().optional(),
-    multi_key_overload_requests_per_minute: z.number().optional(),
-    multi_key_overload_tokens_per_minute: z.number().optional(),
-    multi_key_overload_concurrent_requests: z.number().optional(),
-    multi_key_overload_recovery_seconds: z.number().optional(),
-    channel_overload_enabled: z.boolean().optional(),
-    channel_overload_requests_per_second: z.number().optional(),
-    channel_overload_requests_per_minute: z.number().optional(),
-    channel_overload_concurrent_requests: z.number().optional(),
-    channel_overload_recovery_seconds: z.number().optional(),
+    multi_key_type: z.enum(['random', 'polling']).optional(),
     batch_add_set_key_prefix_2_name: z.boolean().optional(),
     key_mode: z.enum(['append', 'replace']).optional(), // For editing multi-key channels
     // Channel extra settings (stored in setting JSON, not sent directly)
@@ -441,25 +268,20 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
-    proxy_fallback_direct: z.boolean().optional(),
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
     tls_insecure_skip_verify: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
-    tnt_tencent_openai_conversion: z.boolean().optional(),
-    anthropic_input_includes_cache: z.boolean().optional(),
-    kimi_k3_official_compatibility: z.boolean().optional(),
-    glm_5_3_official_compatibility: z.boolean().optional(),
-    deepseek_v4_official_compatibility: z.boolean().optional(),
-    moonshot_quota_auto_disable_enabled: z.boolean().optional(),
-    moonshot_monthly_no_subscription_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
+    vertex_project_id: z.string().optional(), // Vertex AI specific (api_key mode only)
+    vertex_api_version: z.enum(['v1', 'v1beta1']).optional(), // Vertex AI Google model (Gemini, Imagen) path version
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
+    aws_api_type: z.enum(['invoke_model', 'mantle']).optional(),
     azure_responses_version: z.string().optional(), // Azure specific
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
@@ -470,88 +292,20 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     ollama_openai_chat: z.boolean().optional(), // Ollama: OpenAI-compatible /v1/chat/completions instead of native /api/chat
-    clear_volcengine_traits: z.boolean().optional(),
     disable_task_polling_sleep: z.boolean().optional(),
-    deepseek_v4_request_sanitization_enabled: z.boolean().optional(),
-    cache_usage_validation_split: z.boolean().optional(),
-    retry_zero_output: z.boolean().optional(),
-    usage_estimation_enabled: z.boolean().optional(),
-    usage_estimation_model_family: z
-      .enum(['glm', 'kimi', 'deepseek'])
-      .optional(),
-    usage_estimation_input_multiplier: z.number().min(0.01).max(100).optional(),
-    usage_estimation_output_multiplier: z
-      .number()
-      .min(0.01)
-      .max(100)
-      .optional(),
-    disable_stream: z.boolean().optional(),
-    disable_non_stream: z.boolean().optional(),
-    disable_video_understanding: z.boolean().optional(),
-    video_compatibility: videoCompatibilitySchema.optional(),
-    usage_token_limit_input_tokens: z.number().optional(),
-    usage_token_limit_output_tokens: z.number().optional(),
-    simulated_model_cache_enabled: z.boolean().optional(),
-    simulated_model_cache_ttl_seconds: z.number().optional(),
-    simulated_model_cache_min_match_ratio: z.number().optional(),
-    simulated_model_cache_multimodal_enabled: z.boolean().optional(),
-    simulated_model_cache_image_tokens_per_megapixel: z.number().optional(),
-    simulated_model_cache_video_tokens_per_second_megapixel: z
-      .number()
-      .optional(),
-    simulated_model_cache_audio_tokens_per_second: z.number().optional(),
-    simulated_model_cache_file_tokens_per_mib: z.number().optional(),
-    simulated_model_cache_image_fallback_tokens: z.number().optional(),
-    simulated_model_cache_video_fallback_tokens: z.number().optional(),
-    simulated_model_cache_audio_fallback_tokens: z.number().optional(),
-    simulated_model_cache_file_fallback_tokens: z.number().optional(),
-    status_code_retry_enabled: z.boolean().optional(),
-    status_code_retry_times: z.number().optional(),
-    status_code_retry_interval_ms: z.number().optional(),
-    status_code_retry_status_codes: z.string().optional(),
-    response_header_timeout_enabled: z.boolean().optional(),
-    response_header_timeout_seconds: z.number().optional(),
-    input_token_routing_enabled: z.boolean().optional(),
-    input_token_routing_estimation_mode: z
-      .enum(['default', 'glm_5_2', 'kimi_k3'])
-      .optional(),
-    input_token_routing_ranges: z.string().optional(),
-    stream_interruption_billing_mode: z
-      .enum(['off', 'input_only_free', 'all_interrupted_free'])
-      .optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
+    // The bound plugin's channel settings (type 61, stored in settings JSON)
+    plugin_config: z.record(z.string(), z.unknown()).optional(),
+    // Their values as typed, null until edited (not sent to backend)
+    plugin_config_draft: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .optional(),
   })
   .superRefine((data, ctx) => {
-    const scheduling = data.group_scheduling
-    if (scheduling?.enabled) {
-      if (
-        !scheduling.groups.length ||
-        scheduling.groups.some((group) => !data.group.includes(group))
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['group_scheduling', 'groups'],
-          message: 'Select groups assigned to this channel',
-        })
-      }
-      const models = new Set(
-        data.models.split(',').map((model) => model.trim())
-      )
-      if (
-        !scheduling.probe_models.length ||
-        scheduling.probe_models.some((model) => !models.has(model))
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['group_scheduling', 'probe_models'],
-          message: 'Select probe models supported by this channel',
-        })
-      }
-    }
-
     if (
       [
         3,
@@ -660,368 +414,6 @@ export const channelFormSchema = z
       )
     }
 
-    if (data.multi_key_type === 'affinity') {
-      if (
-        !Number.isInteger(data.multi_key_affinity_ttl_seconds) ||
-        Number(data.multi_key_affinity_ttl_seconds) < 1
-      ) {
-        addRequiredIssue(
-          ctx,
-          'multi_key_affinity_ttl_seconds',
-          'Affinity TTL seconds must be at least 1.'
-        )
-      }
-    }
-
-    if (
-      data.multi_key_type === 'least_requests' ||
-      data.multi_key_type === 'cache_affinity_least_requests'
-    ) {
-      const windowSeconds = Number(data.multi_key_least_requests_window_seconds)
-      if (
-        !Number.isInteger(windowSeconds) ||
-        windowSeconds < 10 ||
-        windowSeconds > 3600 ||
-        windowSeconds % 10 !== 0
-      ) {
-        addRequiredIssue(
-          ctx,
-          'multi_key_least_requests_window_seconds',
-          'Least requests window must be between 10 and 3600 seconds and a multiple of 10.'
-        )
-      }
-      if (data.multi_key_type === 'cache_affinity_least_requests') {
-        const threshold = Number(
-          data.multi_key_cache_affinity_threshold_percent
-        )
-        if (!Number.isInteger(threshold) || threshold < 0 || threshold > 100) {
-          addRequiredIssue(
-            ctx,
-            'multi_key_cache_affinity_threshold_percent',
-            'Cache affinity threshold must be an integer between 0 and 100.'
-          )
-        }
-      }
-    }
-
-    const overloadConfigs = [
-      {
-        enabledField: 'channel_overload_enabled',
-        recoveryField: 'channel_overload_recovery_seconds',
-        thresholdFields: [
-          'channel_overload_requests_per_second',
-          'channel_overload_requests_per_minute',
-          'channel_overload_concurrent_requests',
-        ],
-      },
-      {
-        enabledField: 'multi_key_overload_enabled',
-        recoveryField: 'multi_key_overload_recovery_seconds',
-        thresholdFields: [
-          'multi_key_overload_requests_per_second',
-          'multi_key_overload_requests_per_minute',
-          'multi_key_overload_tokens_per_minute',
-          'multi_key_overload_concurrent_requests',
-        ],
-      },
-    ] as const
-    for (const config of overloadConfigs) {
-      for (const fieldName of config.thresholdFields) {
-        const value = data[fieldName]
-        const isTokensPerMinute =
-          fieldName === 'multi_key_overload_tokens_per_minute'
-        const maximum = isTokensPerMinute ? Number.MAX_SAFE_INTEGER : 2147483647
-        if (
-          !Number.isSafeInteger(value) ||
-          Number(value) < 0 ||
-          Number(value) > maximum
-        ) {
-          addRequiredIssue(
-            ctx,
-            fieldName,
-            isTokensPerMinute
-              ? 'Tokens per minute must be a non-negative safe integer.'
-              : 'Overload thresholds must be integers from 0 to 2147483647.'
-          )
-        }
-      }
-      const recoverySeconds = data[config.recoveryField]
-      if (
-        !Number.isInteger(recoverySeconds) ||
-        Number(recoverySeconds) < 0 ||
-        Number(recoverySeconds) > 86400
-      ) {
-        addRequiredIssue(
-          ctx,
-          config.recoveryField,
-          'Recovery time must be an integer from 0 to 86400 seconds.'
-        )
-      }
-      if (
-        data[config.enabledField] &&
-        config.thresholdFields.every(
-          (fieldName) => Number(data[fieldName]) === 0
-        )
-      ) {
-        addRequiredIssue(
-          ctx,
-          config.thresholdFields[0],
-          'Set at least one overload threshold above zero.'
-        )
-      }
-    }
-
-    const simulatedModelCacheRuntimeActive =
-      data.simulated_model_cache_enabled ||
-      data.multi_key_type === 'cache_affinity_least_requests'
-    if (
-      data.type === CHANNEL_TYPE_TASK_PLUGIN &&
-      data.video_compatibility?.enabled
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['video_compatibility', 'enabled'],
-        message: 'video_compatibility is unavailable for task plugin channels',
-      })
-    }
-    if (data.disable_video_understanding && data.video_compatibility?.enabled) {
-      const message =
-        'Video compatibility cannot be enabled when video understanding is disabled.'
-      addRequiredIssue(ctx, 'disable_video_understanding', message)
-      ctx.addIssue({
-        code: 'custom',
-        path: ['video_compatibility', 'enabled'],
-        message,
-      })
-    }
-    if (data.disable_stream && data.disable_non_stream) {
-      const message =
-        'Stream and non-stream request disabling cannot both be enabled.'
-      addRequiredIssue(ctx, 'disable_stream', message)
-      addRequiredIssue(ctx, 'disable_non_stream', message)
-    }
-    if (
-      data.type === 14 &&
-      data.tnt_tencent_openai_conversion &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'TNT Tencent-style OpenAI conversion cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'tnt_tencent_openai_conversion', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      data.type === 14 &&
-      data.anthropic_input_includes_cache &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'Anthropic input cache conversion cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'anthropic_input_includes_cache', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      [1, 14, 25].includes(data.type) &&
-      data.kimi_k3_official_compatibility &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'Kimi K3 official compatibility cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      [1, 14].includes(data.type) &&
-      data.glm_5_3_official_compatibility &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'GLM 5.3 official compatibility cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      data.glm_5_3_official_compatibility &&
-      data.kimi_k3_official_compatibility
-    ) {
-      const message =
-        'GLM 5.3 and Kimi K3 official compatibility cannot both be enabled.'
-      addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
-      addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
-    }
-    if (
-      [1, 14, 43].includes(data.type) &&
-      data.deepseek_v4_official_compatibility &&
-      data.pass_through_body_enabled
-    ) {
-      const message =
-        'DeepSeek V4 official compatibility cannot be enabled with request body passthrough.'
-      addRequiredIssue(ctx, 'deepseek_v4_official_compatibility', message)
-      addRequiredIssue(ctx, 'pass_through_body_enabled', message)
-    }
-    if (
-      data.deepseek_v4_official_compatibility &&
-      (data.kimi_k3_official_compatibility ||
-        data.glm_5_3_official_compatibility)
-    ) {
-      const message =
-        'DeepSeek V4 official compatibility cannot be enabled with Kimi K3 or GLM 5.3 official compatibility.'
-      addRequiredIssue(ctx, 'deepseek_v4_official_compatibility', message)
-      if (data.kimi_k3_official_compatibility) {
-        addRequiredIssue(ctx, 'kimi_k3_official_compatibility', message)
-      }
-      if (data.glm_5_3_official_compatibility) {
-        addRequiredIssue(ctx, 'glm_5_3_official_compatibility', message)
-      }
-    }
-    for (const fieldName of [
-      'usage_token_limit_input_tokens',
-      'usage_token_limit_output_tokens',
-    ] as const) {
-      if (data[fieldName] === undefined) continue
-      const tokenLimit = Number(data[fieldName])
-      if (
-        !Number.isInteger(tokenLimit) ||
-        tokenLimit < 0 ||
-        tokenLimit > 2147483647
-      ) {
-        addRequiredIssue(
-          ctx,
-          fieldName,
-          'Token limit must be an integer from 0 to 2147483647.'
-        )
-      }
-    }
-    if (simulatedModelCacheRuntimeActive) {
-      if (
-        !Number.isInteger(data.simulated_model_cache_ttl_seconds) ||
-        Number(data.simulated_model_cache_ttl_seconds) < 1
-      ) {
-        addRequiredIssue(
-          ctx,
-          'simulated_model_cache_ttl_seconds',
-          'TTL seconds must be at least 1.'
-        )
-      }
-    }
-    if (simulatedModelCacheRuntimeActive) {
-      const minMatchRatio = Number(data.simulated_model_cache_min_match_ratio)
-      if (
-        !Number.isFinite(minMatchRatio) ||
-        minMatchRatio < 0.01 ||
-        minMatchRatio > 1
-      ) {
-        addRequiredIssue(
-          ctx,
-          'simulated_model_cache_min_match_ratio',
-          'Minimum match ratio must be between 0.01 and 1.'
-        )
-      }
-    }
-    if (
-      simulatedModelCacheRuntimeActive &&
-      data.simulated_model_cache_multimodal_enabled
-    ) {
-      const rateFields = [
-        'simulated_model_cache_image_tokens_per_megapixel',
-        'simulated_model_cache_video_tokens_per_second_megapixel',
-        'simulated_model_cache_audio_tokens_per_second',
-        'simulated_model_cache_file_tokens_per_mib',
-      ] as const
-      for (const fieldName of rateFields) {
-        const value = data[fieldName]
-        if (
-          !Number.isFinite(value) ||
-          Number(value) < 0.000001 ||
-          Number(value) > 1_000_000
-        ) {
-          addRequiredIssue(
-            ctx,
-            fieldName,
-            'Multimedia cache rates must be finite numbers between 0.000001 and 1000000.'
-          )
-        }
-      }
-
-      const fallbackFields = [
-        'simulated_model_cache_image_fallback_tokens',
-        'simulated_model_cache_video_fallback_tokens',
-        'simulated_model_cache_audio_fallback_tokens',
-        'simulated_model_cache_file_fallback_tokens',
-      ] as const
-      for (const fieldName of fallbackFields) {
-        const value = data[fieldName]
-        if (
-          !Number.isInteger(value) ||
-          Number(value) < 1 ||
-          Number(value) > 1_000_000
-        ) {
-          addRequiredIssue(
-            ctx,
-            fieldName,
-            'Multimedia cache fallback tokens must be integers between 1 and 1000000.'
-          )
-        }
-      }
-    }
-
-    if (data.status_code_retry_enabled) {
-      if (
-        !Number.isInteger(data.status_code_retry_times) ||
-        Number(data.status_code_retry_times) < 0
-      ) {
-        addRequiredIssue(
-          ctx,
-          'status_code_retry_times',
-          'Retry times must be 0 or greater.'
-        )
-      }
-      if (
-        !Number.isInteger(data.status_code_retry_interval_ms) ||
-        Number(data.status_code_retry_interval_ms) < 0
-      ) {
-        addRequiredIssue(
-          ctx,
-          'status_code_retry_interval_ms',
-          'Retry interval must be 0 or greater.'
-        )
-      }
-      const parsed = parseHttpStatusCodeRules(
-        data.status_code_retry_status_codes || ''
-      )
-      if (!parsed.ok) {
-        addRequiredIssue(
-          ctx,
-          'status_code_retry_status_codes',
-          'Invalid status code rules.'
-        )
-      }
-    }
-
-    if (
-      data.response_header_timeout_enabled &&
-      (!Number.isInteger(data.response_header_timeout_seconds) ||
-        Number(data.response_header_timeout_seconds) < 1 ||
-        Number(data.response_header_timeout_seconds) > 86400)
-    ) {
-      addRequiredIssue(
-        ctx,
-        'response_header_timeout_seconds',
-        'Response header timeout must be an integer between 1 and 86400.'
-      )
-    }
-
-    if (
-      data.input_token_routing_enabled &&
-      !parseInputTokenRoutingRanges(data.input_token_routing_ranges).ok
-    ) {
-      addRequiredIssue(
-        ctx,
-        'input_token_routing_ranges',
-        'Invalid input token ranges.'
-      )
-    }
-
     const protocol = normalizeHttpProtocol(data.http_protocol)
     const shards = data.http2_connection_shards ?? 1
     if (shards < 1 || shards > MAX_HTTP2_CONNECTION_SHARDS) {
@@ -1052,13 +444,11 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   base_url: '',
   task_plugin_key: '',
   task_extend_plugin_keys: [],
+  request_plugins: [],
   key: '',
   openai_organization: '',
   models: '',
   group: ['default'],
-  group_scheduling: defaultGroupScheduling,
-  response_model_mapping_enabled: false,
-  response_model_mapping: '',
   model_mapping: '',
   priority: 0,
   weight: 0,
@@ -1071,51 +461,30 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   setting: '',
   param_override: '',
   header_override: '',
-  header_rewrite_preset_id: '',
-  header_rewrite: '',
   settings: '{}',
   other: '',
   multi_key_mode: 'single',
   multi_key_type: 'random',
-  multi_key_affinity_ttl_seconds: 3600,
-  multi_key_least_requests_window_seconds: 60,
-  multi_key_cache_affinity_threshold_percent: 35,
-  multi_key_overload_enabled: false,
-  multi_key_overload_requests_per_second: 0,
-  multi_key_overload_requests_per_minute: 0,
-  multi_key_overload_tokens_per_minute: 0,
-  multi_key_overload_concurrent_requests: 0,
-  multi_key_overload_recovery_seconds: 2,
-  channel_overload_enabled: false,
-  channel_overload_requests_per_second: 0,
-  channel_overload_requests_per_minute: 0,
-  channel_overload_concurrent_requests: 0,
-  channel_overload_recovery_seconds: 2,
   batch_add_set_key_prefix_2_name: false,
   key_mode: 'append',
   // Channel extra settings
   force_format: false,
   thinking_to_content: false,
   proxy: '',
-  proxy_fallback_direct: false,
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
   tls_insecure_skip_verify: false,
   pass_through_body_enabled: false,
-  tnt_tencent_openai_conversion: false,
-  anthropic_input_includes_cache: false,
-  kimi_k3_official_compatibility: false,
-  glm_5_3_official_compatibility: false,
-  deepseek_v4_official_compatibility: false,
-  moonshot_quota_auto_disable_enabled: false,
-  moonshot_monthly_no_subscription_enabled: false,
   responses_websocket_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
+  vertex_project_id: '',
+  vertex_api_version: 'v1',
   aws_key_type: 'ak_sk',
+  aws_api_type: 'invoke_model',
   azure_responses_version: '',
   // Field passthrough controls
   allow_service_tier: false,
@@ -1126,47 +495,13 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   ollama_openai_chat: false,
-  clear_volcengine_traits: false,
   disable_task_polling_sleep: false,
-  deepseek_v4_request_sanitization_enabled: false,
-  cache_usage_validation_split: false,
-  retry_zero_output: false,
-  usage_estimation_enabled: false,
-  usage_estimation_model_family: 'glm',
-  usage_estimation_input_multiplier: 1,
-  usage_estimation_output_multiplier: 1,
-  disable_stream: false,
-  disable_non_stream: false,
-  disable_video_understanding: false,
-  video_compatibility: { ...VIDEO_COMPATIBILITY_DEFAULTS },
-  usage_token_limit_input_tokens: 0,
-  usage_token_limit_output_tokens: 0,
-  simulated_model_cache_enabled: false,
-  simulated_model_cache_ttl_seconds: 86400,
-  simulated_model_cache_min_match_ratio: 0.01,
-  simulated_model_cache_multimodal_enabled: false,
-  simulated_model_cache_image_tokens_per_megapixel: undefined,
-  simulated_model_cache_video_tokens_per_second_megapixel: undefined,
-  simulated_model_cache_audio_tokens_per_second: undefined,
-  simulated_model_cache_file_tokens_per_mib: undefined,
-  simulated_model_cache_image_fallback_tokens: undefined,
-  simulated_model_cache_video_fallback_tokens: undefined,
-  simulated_model_cache_audio_fallback_tokens: undefined,
-  simulated_model_cache_file_fallback_tokens: undefined,
-  status_code_retry_enabled: false,
-  status_code_retry_times: 10,
-  status_code_retry_interval_ms: DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS,
-  status_code_retry_status_codes: DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
-  response_header_timeout_enabled: true,
-  response_header_timeout_seconds: DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS,
-  input_token_routing_enabled: false,
-  input_token_routing_estimation_mode: 'default',
-  input_token_routing_ranges: '',
-  stream_interruption_billing_mode: 'off',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
   advanced_custom: '',
+  plugin_config: {},
+  plugin_config_draft: null,
 }
 
 // ============================================================================
@@ -1183,10 +518,10 @@ export function transformChannelToFormDefaults(
   let extraSettings = {
     task_plugin_key: '',
     task_extend_plugin_keys: [] as string[],
+    request_plugins: [] as string[],
     force_format: false,
     thinking_to_content: false,
     proxy: '',
-    proxy_fallback_direct: false,
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
     tls_insecure_skip_verify: false,
@@ -1194,8 +529,6 @@ export function transformChannelToFormDefaults(
     responses_websocket_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
-    header_rewrite_preset_id: '',
-    header_rewrite: '',
   }
 
   if (channel.setting) {
@@ -1208,10 +541,14 @@ export function transformChannelToFormDefaults(
       extraSettings = {
         task_plugin_key: parsed.task_plugin_key || '',
         task_extend_plugin_keys: readTaskExtendPluginKeys(channel.type, parsed),
+        request_plugins: Array.isArray(parsed.request_plugins)
+          ? parsed.request_plugins.filter(
+              (id: unknown): id is string => typeof id === 'string'
+            )
+          : [],
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
-        proxy_fallback_direct: parsed.proxy_fallback_direct === true,
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         tls_insecure_skip_verify: parsed.tls_insecure_skip_verify === true,
@@ -1220,22 +557,6 @@ export function transformChannelToFormDefaults(
           parsed.responses_websocket_enabled === true,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
-        header_rewrite_preset_id: parsed.header_rewrite?.preset_id || '',
-        header_rewrite:
-          parsed.header_rewrite?.remove || parsed.header_rewrite?.set
-            ? JSON.stringify(
-                {
-                  ...(parsed.header_rewrite.remove
-                    ? { remove: parsed.header_rewrite.remove }
-                    : {}),
-                  ...(parsed.header_rewrite.set
-                    ? { set: parsed.header_rewrite.set }
-                    : {}),
-                },
-                null,
-                2
-              )
-            : '',
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -1244,12 +565,13 @@ export function transformChannelToFormDefaults(
   }
 
   // Parse type-specific settings from settings field
-  let responseModelMappingEnabled = false
-  let responseModelMapping = ''
   let vertexKeyType: 'json' | 'api_key' = 'json'
+  let vertexProjectId = ''
+  let vertexApiVersion: 'v1' | 'v1beta1' = 'v1'
   let azureResponsesVersion = ''
   let isEnterpriseAccount = false
   let awsKeyType: 'ak_sk' | 'api_key' = 'ak_sk'
+  let awsApiType: 'invoke_model' | 'mantle' = 'invoke_model'
   let allowServiceTier = false
   let disableStore = false
   let allowSafetyIdentifier = false
@@ -1259,86 +581,23 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let ollamaOpenAIChat = false
   let disableTaskPollingSleep = false
-  let tntTencentOpenAIConversion = false
-  let anthropicInputIncludesCache = false
-  let kimiK3OfficialCompatibility = false
-  let glm53OfficialCompatibility = false
-  let deepSeekV4OfficialCompatibility = false
-  let cacheUsageValidationSplit = false
-  let retryZeroOutput = false
-  let usageEstimationEnabled = false
-  let usageEstimationModelFamily: 'glm' | 'kimi' | 'deepseek' = 'glm'
-  let usageEstimationInputMultiplier = 1
-  let usageEstimationOutputMultiplier = 1
-  let disableStream = false
-  let disableNonStream = false
-  let disableVideoUnderstanding = false
-  let videoCompatibility = { ...VIDEO_COMPATIBILITY_DEFAULTS }
-  let usageTokenLimitInputTokens = 0
-  let usageTokenLimitOutputTokens = 0
-  let simulatedModelCacheEnabled = false
-  let simulatedModelCacheTTLSeconds = 86400
-  let simulatedModelCacheMinMatchRatio = 0.01
-  let simulatedModelCacheMultimodalEnabled = false
-  let simulatedModelCacheImageTokensPerMegapixel: number | undefined
-  let simulatedModelCacheVideoTokensPerSecondMegapixel: number | undefined
-  let simulatedModelCacheAudioTokensPerSecond: number | undefined
-  let simulatedModelCacheFileTokensPerMiB: number | undefined
-  let simulatedModelCacheImageFallbackTokens: number | undefined
-  let simulatedModelCacheVideoFallbackTokens: number | undefined
-  let simulatedModelCacheAudioFallbackTokens: number | undefined
-  let simulatedModelCacheFileFallbackTokens: number | undefined
-  let statusCodeRetryEnabled = false
-  let statusCodeRetryTimes = 10
-  let statusCodeRetryIntervalMS = DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
-  let statusCodeRetryStatusCodes = DEFAULT_STATUS_CODE_RETRY_STATUS_CODES
-  let responseHeaderTimeoutEnabled = true
-  let responseHeaderTimeoutSeconds = DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
-  let inputTokenRoutingEnabled = false
-  let inputTokenRoutingEstimationMode: InputTokenRoutingEstimationMode =
-    'default'
-  let inputTokenRoutingRanges = ''
-  let streamInterruptionBillingMode:
-    | 'off'
-    | 'input_only_free'
-    | 'all_interrupted_free' = 'off'
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
-  let deepSeekV4RequestSanitizationEnabled = false
-  let clearVolcengineTraits = false
-  let moonshotQuotaAutoDisableEnabled = false
-  let moonshotMonthlyNoSubscriptionEnabled = false
-  let groupScheduling = defaultGroupScheduling
   let advancedCustom = ''
+  let pluginConfig: Record<string, unknown> = {}
 
   if (channel.settings) {
     try {
       const parsed = JSON.parse(channel.settings)
-      const scheduling = groupSchedulingSchema.safeParse({
-        ...defaultGroupScheduling,
-        ...parsed.group_scheduling,
-        cost_factor: parsed.group_scheduling?.cost_factor ?? 1,
-        interval_seconds: parsed.group_scheduling?.interval_seconds || 30,
-        timeout_seconds: parsed.group_scheduling?.timeout_seconds || 30,
-      })
-      if (scheduling.success) groupScheduling = scheduling.data
-      if (
-        parsed.response_model_mapping &&
-        typeof parsed.response_model_mapping === 'object'
-      ) {
-        responseModelMappingEnabled =
-          parsed.response_model_mapping.enabled === true
-        responseModelMapping = JSON.stringify(
-          parsed.response_model_mapping.mapping || {},
-          null,
-          2
-        )
-      }
       vertexKeyType = parsed.vertex_key_type || 'json'
+      vertexProjectId = parsed.vertex_project_id || ''
+      vertexApiVersion =
+        parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
       azureResponsesVersion = parsed.azure_responses_version || ''
       isEnterpriseAccount = parsed.openrouter_enterprise === true
       awsKeyType = parsed.aws_key_type || 'ak_sk'
+      awsApiType = parsed.aws_api_type || 'invoke_model'
       allowServiceTier = parsed.allow_service_tier === true
       disableStore = parsed.disable_store === true
       allowSafetyIdentifier = parsed.allow_safety_identifier === true
@@ -1347,267 +606,7 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       ollamaOpenAIChat = parsed.ollama_openai_chat === true
-      clearVolcengineTraits = parsed.clear_volcengine_traits === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
-      tntTencentOpenAIConversion =
-        channel.type === 14 && parsed.tnt_tencent_openai_conversion === true
-      anthropicInputIncludesCache =
-        channel.type === 14 && parsed.anthropic_input_includes_cache === true
-      kimiK3OfficialCompatibility =
-        [1, 14, 25].includes(channel.type) &&
-        parsed.kimi_k3_official_compatibility === true
-      glm53OfficialCompatibility =
-        [1, 14].includes(channel.type) &&
-        parsed.glm_5_3_official_compatibility === true
-      deepSeekV4OfficialCompatibility =
-        [1, 14, 43].includes(channel.type) &&
-        parsed.deepseek_v4_official_compatibility === true
-      if (
-        parsed.moonshot_quota_auto_disable &&
-        typeof parsed.moonshot_quota_auto_disable === 'object'
-      ) {
-        moonshotQuotaAutoDisableEnabled =
-          parsed.moonshot_quota_auto_disable.enabled === true
-        moonshotMonthlyNoSubscriptionEnabled =
-          parsed.moonshot_quota_auto_disable.monthly_no_subscription_enabled ===
-          true
-      }
-      cacheUsageValidationSplit = parsed.cache_usage_validation_split === true
-      retryZeroOutput = parsed.retry_zero_output === true
-      if (
-        parsed.usage_estimation &&
-        typeof parsed.usage_estimation === 'object'
-      ) {
-        const usageEstimation = parsed.usage_estimation as Record<
-          string,
-          unknown
-        >
-        usageEstimationEnabled = usageEstimation.enabled === true
-        if (
-          ['glm', 'kimi', 'deepseek'].includes(
-            String(usageEstimation.model_family)
-          )
-        ) {
-          usageEstimationModelFamily = usageEstimation.model_family as
-            | 'glm'
-            | 'kimi'
-            | 'deepseek'
-        }
-        const inputMultiplier = Number(usageEstimation.input_multiplier)
-        const outputMultiplier = Number(usageEstimation.output_multiplier)
-        if (
-          Number.isFinite(inputMultiplier) &&
-          inputMultiplier >= 0.01 &&
-          inputMultiplier <= 100
-        ) {
-          usageEstimationInputMultiplier = inputMultiplier
-        }
-        if (
-          Number.isFinite(outputMultiplier) &&
-          outputMultiplier >= 0.01 &&
-          outputMultiplier <= 100
-        ) {
-          usageEstimationOutputMultiplier = outputMultiplier
-        }
-      }
-      disableStream = parsed.disable_stream === true
-      disableNonStream = parsed.disable_non_stream === true
-      disableVideoUnderstanding = parsed.disable_video_understanding === true
-      videoCompatibility = readVideoCompatibility(parsed.video_compatibility)
-      if (
-        parsed.usage_token_limit &&
-        typeof parsed.usage_token_limit === 'object'
-      ) {
-        const usageTokenLimit = parsed.usage_token_limit as Record<
-          string,
-          unknown
-        >
-        const inputTokens = Number(usageTokenLimit.input_tokens)
-        const outputTokens = Number(usageTokenLimit.output_tokens)
-        if (Number.isInteger(inputTokens) && inputTokens > 0) {
-          usageTokenLimitInputTokens = inputTokens
-        }
-        if (Number.isInteger(outputTokens) && outputTokens > 0) {
-          usageTokenLimitOutputTokens = outputTokens
-        }
-      }
-      deepSeekV4RequestSanitizationEnabled =
-        parsed.deepseek_v4_request_sanitization === true
-      if (
-        parsed.simulated_model_cache &&
-        typeof parsed.simulated_model_cache === 'object'
-      ) {
-        const simulatedCache = parsed.simulated_model_cache as Record<
-          string,
-          unknown
-        >
-        simulatedModelCacheEnabled = simulatedCache.enabled === true
-        const ttlSeconds = Number(simulatedCache.ttl_seconds)
-        if (Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
-          simulatedModelCacheTTLSeconds = ttlSeconds
-        }
-        const minMatchRatio = Number(simulatedCache.min_match_ratio)
-        if (
-          Number.isFinite(minMatchRatio) &&
-          minMatchRatio >= 0 &&
-          minMatchRatio <= 1
-        ) {
-          simulatedModelCacheMinMatchRatio = minMatchRatio
-        }
-        if (
-          simulatedCache.multimodal &&
-          typeof simulatedCache.multimodal === 'object'
-        ) {
-          const multimodal = simulatedCache.multimodal as Record<
-            string,
-            unknown
-          >
-          simulatedModelCacheMultimodalEnabled = multimodal.enabled === true
-          simulatedModelCacheImageTokensPerMegapixel = readFiniteNumberProperty(
-            multimodal,
-            'image_tokens_per_megapixel'
-          )
-          simulatedModelCacheVideoTokensPerSecondMegapixel =
-            readFiniteNumberProperty(
-              multimodal,
-              'video_tokens_per_second_megapixel'
-            )
-          simulatedModelCacheAudioTokensPerSecond = readFiniteNumberProperty(
-            multimodal,
-            'audio_tokens_per_second'
-          )
-          simulatedModelCacheFileTokensPerMiB = readFiniteNumberProperty(
-            multimodal,
-            'file_tokens_per_mib'
-          )
-          simulatedModelCacheImageFallbackTokens = readFiniteNumberProperty(
-            multimodal,
-            'image_fallback_tokens'
-          )
-          simulatedModelCacheVideoFallbackTokens = readFiniteNumberProperty(
-            multimodal,
-            'video_fallback_tokens'
-          )
-          simulatedModelCacheAudioFallbackTokens = readFiniteNumberProperty(
-            multimodal,
-            'audio_fallback_tokens'
-          )
-          simulatedModelCacheFileFallbackTokens = readFiniteNumberProperty(
-            multimodal,
-            'file_fallback_tokens'
-          )
-        }
-      }
-      if (
-        parsed.status_code_retry &&
-        typeof parsed.status_code_retry === 'object'
-      ) {
-        const statusCodeRetry = parsed.status_code_retry as Record<
-          string,
-          unknown
-        >
-        statusCodeRetryEnabled = statusCodeRetry.enabled === true
-        const retryTimes = Number(statusCodeRetry.retry_times)
-        if (Number.isInteger(retryTimes) && retryTimes >= 0) {
-          statusCodeRetryTimes = retryTimes
-        }
-        const retryIntervalMS = Number(statusCodeRetry.retry_interval_ms)
-        if (Number.isInteger(retryIntervalMS) && retryIntervalMS >= 0) {
-          statusCodeRetryIntervalMS = retryIntervalMS
-        }
-        if (
-          typeof statusCodeRetry.status_codes === 'string' &&
-          statusCodeRetry.status_codes.trim()
-        ) {
-          statusCodeRetryStatusCodes = statusCodeRetry.status_codes
-        }
-      }
-      if (
-        parsed.response_header_timeout &&
-        typeof parsed.response_header_timeout === 'object'
-      ) {
-        const responseHeaderTimeout = parsed.response_header_timeout as Record<
-          string,
-          unknown
-        >
-        responseHeaderTimeoutEnabled = responseHeaderTimeout.enabled !== false
-        const timeoutSeconds = Number(responseHeaderTimeout.timeout_seconds)
-        if (
-          Number.isInteger(timeoutSeconds) &&
-          timeoutSeconds >= 1 &&
-          timeoutSeconds <= 86400
-        ) {
-          responseHeaderTimeoutSeconds = timeoutSeconds
-        }
-      }
-      if (
-        parsed.input_token_routing &&
-        typeof parsed.input_token_routing === 'object'
-      ) {
-        const inputTokenRouting = parsed.input_token_routing as Record<
-          string,
-          unknown
-        >
-        inputTokenRoutingEnabled = inputTokenRouting.enabled === true
-        if (inputTokenRouting.kimi_k3_mode === true) {
-          inputTokenRoutingEstimationMode = 'kimi_k3'
-        } else if (inputTokenRouting.glm_5_2_mode === true) {
-          inputTokenRoutingEstimationMode = 'glm_5_2'
-        }
-        const ranges: InputTokenRoutingRange[] = []
-        if (Array.isArray(inputTokenRouting.ranges)) {
-          for (const item of inputTokenRouting.ranges) {
-            if (!item || typeof item !== 'object') continue
-            const range = item as Record<string, unknown>
-            const minTokens = Number(range.min_tokens ?? 0)
-            const maxTokens = Number(range.max_tokens ?? 0)
-            if (
-              Number.isSafeInteger(minTokens) &&
-              Number.isSafeInteger(maxTokens) &&
-              minTokens >= 0 &&
-              maxTokens >= 0 &&
-              (minTokens > 0 || maxTokens > 0)
-            ) {
-              if (maxTokens === 0 && minTokens > 0) {
-                ranges.push({ min_tokens: minTokens, max_tokens: 0 })
-              } else {
-                ranges.push({
-                  min_tokens: Math.min(minTokens, maxTokens),
-                  max_tokens: Math.max(minTokens, maxTokens),
-                })
-              }
-            }
-          }
-        } else {
-          const minTokens = Number(inputTokenRouting.min_tokens ?? 0)
-          const maxTokens = Number(inputTokenRouting.max_tokens ?? 0)
-          if (
-            Number.isSafeInteger(minTokens) &&
-            Number.isSafeInteger(maxTokens) &&
-            minTokens >= 0 &&
-            maxTokens >= 0 &&
-            (minTokens > 0 || maxTokens > 0)
-          ) {
-            if (maxTokens === 0 && minTokens > 0) {
-              ranges.push({ min_tokens: minTokens, max_tokens: 0 })
-            } else {
-              ranges.push({
-                min_tokens: Math.min(minTokens, maxTokens),
-                max_tokens: Math.max(minTokens, maxTokens),
-              })
-            }
-          }
-        }
-        inputTokenRoutingRanges = formatInputTokenRoutingRanges(ranges)
-      }
-      const configuredStreamInterruptionMode =
-        parsed.stream_interruption_billing?.mode
-      if (
-        configuredStreamInterruptionMode === 'input_only_free' ||
-        configuredStreamInterruptionMode === 'all_interrupted_free'
-      ) {
-        streamInterruptionBillingMode = configuredStreamInterruptionMode
-      }
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -1619,6 +618,9 @@ export function transformChannelToFormDefaults(
         : ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
+      }
+      if (isJsonObjectValue(parsed.plugin_config)) {
+        pluginConfig = parsed.plugin_config
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -1634,9 +636,6 @@ export function transformChannelToFormDefaults(
     openai_organization: channel.openai_organization || '',
     models: channel.models || '',
     group: parseGroups(channel.group || 'default'),
-    group_scheduling: groupScheduling,
-    response_model_mapping_enabled: responseModelMappingEnabled,
-    response_model_mapping: responseModelMapping,
     model_mapping: channel.model_mapping || '',
     priority: channel.priority || 0,
     weight: channel.weight || 0,
@@ -1651,45 +650,8 @@ export function transformChannelToFormDefaults(
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
     other: channel.other || '',
-    multi_key_mode: channel.channel_info.is_multi_key
-      ? 'multi_to_single'
-      : 'single',
+    multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
-    multi_key_affinity_ttl_seconds:
-      channel.channel_info.multi_key_affinity_ttl_seconds || 3600,
-    multi_key_least_requests_window_seconds:
-      channel.channel_info.multi_key_least_requests_window_seconds || 60,
-    multi_key_cache_affinity_threshold_percent:
-      channel.channel_info.multi_key_cache_affinity_threshold_percent ?? 35,
-    multi_key_overload_enabled:
-      channel.channel_info.multi_key_overload_protection?.enabled === true,
-    multi_key_overload_requests_per_second:
-      channel.channel_info.multi_key_overload_protection?.requests_per_second ||
-      0,
-    multi_key_overload_requests_per_minute:
-      channel.channel_info.multi_key_overload_protection?.requests_per_minute ||
-      0,
-    multi_key_overload_tokens_per_minute:
-      channel.channel_info.multi_key_overload_protection?.tokens_per_minute ||
-      0,
-    multi_key_overload_concurrent_requests:
-      channel.channel_info.multi_key_overload_protection?.concurrent_requests ||
-      0,
-    multi_key_overload_recovery_seconds:
-      channel.channel_info.multi_key_overload_protection?.recovery_seconds || 2,
-    channel_overload_enabled:
-      channel.channel_info.channel_overload_protection?.enabled === true,
-    channel_overload_requests_per_second:
-      channel.channel_info.channel_overload_protection?.requests_per_second ||
-      0,
-    channel_overload_requests_per_minute:
-      channel.channel_info.channel_overload_protection?.requests_per_minute ||
-      0,
-    channel_overload_concurrent_requests:
-      channel.channel_info.channel_overload_protection?.concurrent_requests ||
-      0,
-    channel_overload_recovery_seconds:
-      channel.channel_info.channel_overload_protection?.recovery_seconds || 2,
     batch_add_set_key_prefix_2_name: false,
     key_mode: 'append', // Default to append mode for editing multi-key channels
     // Channel extra settings
@@ -1697,8 +659,11 @@ export function transformChannelToFormDefaults(
     // Type-specific settings
     is_enterprise_account: isEnterpriseAccount,
     vertex_key_type: vertexKeyType,
+    vertex_project_id: vertexProjectId,
+    vertex_api_version: vertexApiVersion,
     azure_responses_version: azureResponsesVersion,
     aws_key_type: awsKeyType,
+    aws_api_type: awsApiType,
     allow_service_tier: allowServiceTier,
     disable_store: disableStore,
     allow_include_obfuscation: allowIncludeObfuscation,
@@ -1706,66 +671,14 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     ollama_openai_chat: ollamaOpenAIChat,
-    clear_volcengine_traits: clearVolcengineTraits,
     disable_task_polling_sleep: disableTaskPollingSleep,
-    tnt_tencent_openai_conversion: tntTencentOpenAIConversion,
-    anthropic_input_includes_cache: anthropicInputIncludesCache,
-    kimi_k3_official_compatibility: kimiK3OfficialCompatibility,
-    glm_5_3_official_compatibility: glm53OfficialCompatibility,
-    deepseek_v4_official_compatibility: deepSeekV4OfficialCompatibility,
-    moonshot_quota_auto_disable_enabled: moonshotQuotaAutoDisableEnabled,
-    moonshot_monthly_no_subscription_enabled:
-      moonshotMonthlyNoSubscriptionEnabled,
-    deepseek_v4_request_sanitization_enabled:
-      deepSeekV4RequestSanitizationEnabled,
-    cache_usage_validation_split: cacheUsageValidationSplit,
-    retry_zero_output: retryZeroOutput,
-    usage_estimation_enabled: usageEstimationEnabled,
-    usage_estimation_model_family: usageEstimationModelFamily,
-    usage_estimation_input_multiplier: usageEstimationInputMultiplier,
-    usage_estimation_output_multiplier: usageEstimationOutputMultiplier,
-    disable_stream: disableStream,
-    disable_non_stream: disableNonStream,
-    disable_video_understanding: disableVideoUnderstanding,
-    video_compatibility: videoCompatibility,
-    usage_token_limit_input_tokens: usageTokenLimitInputTokens,
-    usage_token_limit_output_tokens: usageTokenLimitOutputTokens,
-    simulated_model_cache_enabled: simulatedModelCacheEnabled,
-    simulated_model_cache_ttl_seconds: simulatedModelCacheTTLSeconds,
-    simulated_model_cache_min_match_ratio: simulatedModelCacheMinMatchRatio,
-    simulated_model_cache_multimodal_enabled:
-      simulatedModelCacheMultimodalEnabled,
-    simulated_model_cache_image_tokens_per_megapixel:
-      simulatedModelCacheImageTokensPerMegapixel,
-    simulated_model_cache_video_tokens_per_second_megapixel:
-      simulatedModelCacheVideoTokensPerSecondMegapixel,
-    simulated_model_cache_audio_tokens_per_second:
-      simulatedModelCacheAudioTokensPerSecond,
-    simulated_model_cache_file_tokens_per_mib:
-      simulatedModelCacheFileTokensPerMiB,
-    simulated_model_cache_image_fallback_tokens:
-      simulatedModelCacheImageFallbackTokens,
-    simulated_model_cache_video_fallback_tokens:
-      simulatedModelCacheVideoFallbackTokens,
-    simulated_model_cache_audio_fallback_tokens:
-      simulatedModelCacheAudioFallbackTokens,
-    simulated_model_cache_file_fallback_tokens:
-      simulatedModelCacheFileFallbackTokens,
-    status_code_retry_enabled: statusCodeRetryEnabled,
-    status_code_retry_times: statusCodeRetryTimes,
-    status_code_retry_interval_ms: statusCodeRetryIntervalMS,
-    status_code_retry_status_codes: statusCodeRetryStatusCodes,
-    response_header_timeout_enabled: responseHeaderTimeoutEnabled,
-    response_header_timeout_seconds: responseHeaderTimeoutSeconds,
-    input_token_routing_enabled: inputTokenRoutingEnabled,
-    input_token_routing_estimation_mode: inputTokenRoutingEstimationMode,
-    input_token_routing_ranges: inputTokenRoutingRanges,
-    stream_interruption_billing_mode: streamInterruptionBillingMode,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    plugin_config: pluginConfig,
+    plugin_config_draft: null,
   }
 }
 
@@ -1783,33 +696,20 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.task_extend_plugin_keys?.length
         ? formData.task_extend_plugin_keys
         : undefined,
+    request_plugins: formData.request_plugins?.length
+      ? formData.request_plugins
+      : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
-    proxy_fallback_direct: formData.proxy_fallback_direct || false,
-    pass_through_body_enabled:
-      formData.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
-      formData.pass_through_body_enabled === true,
+    pass_through_body_enabled: formData.pass_through_body_enabled === true,
+    // A plugin channel shows the switch only when its plugin can serve it.
     responses_websocket_enabled:
-      supportsResponsesWebSocket(formData.type) &&
+      (supportsResponsesWebSocket(formData.type) ||
+        formData.type === CHANNEL_TYPE_TASK_PLUGIN) &&
       formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
-  }
-
-  let channelHeaderRewrite: Record<string, unknown> = {}
-  if (formData.header_rewrite?.trim()) {
-    try {
-      channelHeaderRewrite = JSON.parse(formData.header_rewrite)
-    } catch {
-      channelHeaderRewrite = {}
-    }
-  }
-  if (formData.header_rewrite_preset_id?.trim()) {
-    channelHeaderRewrite.preset_id = formData.header_rewrite_preset_id.trim()
-  }
-  if (Object.keys(channelHeaderRewrite).length > 0) {
-    settingObj.header_rewrite = channelHeaderRewrite
   }
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)
@@ -1831,8 +731,6 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
   return JSON.stringify(settingObj)
 }
 
-export const buildChannelSettingJSON = buildSettingJSON
-
 /**
  * Build the settings JSON string (for type-specific config like vertex_key_type)
  */
@@ -1849,25 +747,20 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
-  if (formData.group_scheduling?.enabled || settingsObj.group_scheduling) {
-    settingsObj.group_scheduling =
-      formData.group_scheduling ?? defaultGroupScheduling
-  }
-  const responseMapping = formData.response_model_mapping?.trim()
-  if (formData.response_model_mapping_enabled || responseMapping) {
-    settingsObj.response_model_mapping = {
-      enabled: formData.response_model_mapping_enabled === true,
-      mapping: responseMapping ? JSON.parse(responseMapping) : {},
-    }
-  } else {
-    delete settingsObj.response_model_mapping
-  }
-
   // Add vertex_key_type for Vertex AI channels (type 41)
   if (formData.type === 41) {
     settingsObj.vertex_key_type = formData.vertex_key_type || 'json'
-  } else if ('vertex_key_type' in settingsObj) {
+    const vertexProjectId = formData.vertex_project_id?.trim()
+    if (settingsObj.vertex_key_type === 'api_key' && vertexProjectId) {
+      settingsObj.vertex_project_id = vertexProjectId
+    } else {
+      delete settingsObj.vertex_project_id
+    }
+    settingsObj.vertex_api_version = formData.vertex_api_version || 'v1'
+  } else {
     delete settingsObj.vertex_key_type
+    delete settingsObj.vertex_project_id
+    delete settingsObj.vertex_api_version
   }
 
   // Add azure_responses_version for Azure channels (type 3)
@@ -1884,11 +777,13 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.openrouter_enterprise
   }
 
-  // Add aws_key_type for AWS channels (type 33)
+  // AWS interface selection is opt-in; existing channels retain InvokeModel.
   if (formData.type === 33) {
     settingsObj.aws_key_type = formData.aws_key_type || 'ak_sk'
-  } else if ('aws_key_type' in settingsObj) {
+    settingsObj.aws_api_type = formData.aws_api_type || 'invoke_model'
+  } else {
     delete settingsObj.aws_key_type
+    delete settingsObj.aws_api_type
   }
 
   // Field passthrough controls:
@@ -1937,71 +832,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   // Only the Anthropic adaptor supports forcing the Claude beta query.
   if (formData.type === 14) {
     settingsObj.claude_beta_query = formData.claude_beta_query === true
-    if (formData.tnt_tencent_openai_conversion === true) {
-      settingsObj.tnt_tencent_openai_conversion = true
-    } else if ('tnt_tencent_openai_conversion' in settingsObj) {
-      delete settingsObj.tnt_tencent_openai_conversion
-    }
-    if (formData.anthropic_input_includes_cache === true) {
-      settingsObj.anthropic_input_includes_cache = true
-    } else if ('anthropic_input_includes_cache' in settingsObj) {
-      delete settingsObj.anthropic_input_includes_cache
-    }
-  } else {
-    if ('allow_speed' in settingsObj) {
-      delete settingsObj.allow_speed
-    }
-    if ('claude_beta_query' in settingsObj) {
-      delete settingsObj.claude_beta_query
-    }
-    if ('tnt_tencent_openai_conversion' in settingsObj) {
-      delete settingsObj.tnt_tencent_openai_conversion
-    }
-    if ('anthropic_input_includes_cache' in settingsObj) {
-      delete settingsObj.anthropic_input_includes_cache
-    }
-  }
-
-  if (
-    [1, 14, 25].includes(formData.type) &&
-    formData.kimi_k3_official_compatibility === true
-  ) {
-    settingsObj.kimi_k3_official_compatibility = true
-  } else if ('kimi_k3_official_compatibility' in settingsObj) {
-    delete settingsObj.kimi_k3_official_compatibility
-  }
-
-  if (
-    formData.type === 25 &&
-    formData.multi_key_mode === 'multi_to_single' &&
-    (formData.moonshot_quota_auto_disable_enabled === true ||
-      formData.moonshot_monthly_no_subscription_enabled === true)
-  ) {
-    settingsObj.moonshot_quota_auto_disable = {
-      enabled: formData.moonshot_quota_auto_disable_enabled === true,
-      monthly_no_subscription_enabled:
-        formData.moonshot_monthly_no_subscription_enabled === true,
-    }
-  } else if ('moonshot_quota_auto_disable' in settingsObj) {
-    delete settingsObj.moonshot_quota_auto_disable
-  }
-
-  if (
-    [1, 14].includes(formData.type) &&
-    formData.glm_5_3_official_compatibility === true
-  ) {
-    settingsObj.glm_5_3_official_compatibility = true
-  } else if ('glm_5_3_official_compatibility' in settingsObj) {
-    delete settingsObj.glm_5_3_official_compatibility
-  }
-
-  if (
-    [1, 14, 43].includes(formData.type) &&
-    formData.deepseek_v4_official_compatibility === true
-  ) {
-    settingsObj.deepseek_v4_official_compatibility = true
-  } else if ('deepseek_v4_official_compatibility' in settingsObj) {
-    delete settingsObj.deepseek_v4_official_compatibility
+  } else if ('claude_beta_query' in settingsObj) {
+    delete settingsObj.claude_beta_query
   }
 
   // Only the Ollama adaptor can switch chat completions to the OpenAI-compatible endpoint.
@@ -2011,231 +843,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.ollama_openai_chat
   }
 
-  if (formData.clear_volcengine_traits === true) {
-    settingsObj.clear_volcengine_traits = true
-  } else if ('clear_volcengine_traits' in settingsObj) {
-    delete settingsObj.clear_volcengine_traits
-  }
-
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
 
+  // Upstream model update settings (for model-fetchable channel types; a
+  // plugin channel shows them when its plugin can list models)
   if (
-    formData.type === 43 &&
-    formData.deepseek_v4_request_sanitization_enabled === true
+    MODEL_FETCHABLE_TYPES.has(formData.type) ||
+    formData.type === CHANNEL_TYPE_TASK_PLUGIN
   ) {
-    settingsObj.deepseek_v4_request_sanitization = true
-  } else if ('deepseek_v4_request_sanitization' in settingsObj) {
-    delete settingsObj.deepseek_v4_request_sanitization
-  }
-
-  if (formData.cache_usage_validation_split === true) {
-    settingsObj.cache_usage_validation_split = true
-  } else if ('cache_usage_validation_split' in settingsObj) {
-    delete settingsObj.cache_usage_validation_split
-  }
-
-  if (formData.retry_zero_output === true) {
-    settingsObj.retry_zero_output = true
-  } else if ('retry_zero_output' in settingsObj) {
-    delete settingsObj.retry_zero_output
-  }
-
-  if (formData.usage_estimation_enabled === true) {
-    settingsObj.usage_estimation = {
-      enabled: true,
-      model_family: formData.usage_estimation_model_family || 'glm',
-      input_multiplier: Math.min(
-        100,
-        Math.max(0.01, Number(formData.usage_estimation_input_multiplier) || 1)
-      ),
-      output_multiplier: Math.min(
-        100,
-        Math.max(0.01, Number(formData.usage_estimation_output_multiplier) || 1)
-      ),
-    }
-  } else {
-    delete settingsObj.usage_estimation
-  }
-
-  delete settingsObj.retry_zero_billed_output
-  delete settingsObj.missing_output_token_multiplier
-  if (formData.disable_stream === true) {
-    settingsObj.disable_stream = true
-  } else if ('disable_stream' in settingsObj) {
-    delete settingsObj.disable_stream
-  }
-  if (formData.disable_non_stream === true) {
-    settingsObj.disable_non_stream = true
-  } else if ('disable_non_stream' in settingsObj) {
-    delete settingsObj.disable_non_stream
-  }
-
-  if (formData.disable_video_understanding === true) {
-    settingsObj.disable_video_understanding = true
-  } else if ('disable_video_understanding' in settingsObj) {
-    delete settingsObj.disable_video_understanding
-  }
-  if (
-    formData.video_compatibility &&
-    (formData.video_compatibility.enabled ||
-      'video_compatibility' in settingsObj ||
-      JSON.stringify(formData.video_compatibility) !==
-        JSON.stringify(VIDEO_COMPATIBILITY_DEFAULTS))
-  ) {
-    settingsObj.video_compatibility = { ...formData.video_compatibility }
-  } else {
-    delete settingsObj.video_compatibility
-  }
-  const usageTokenLimitInputTokens = Math.trunc(
-    Number(formData.usage_token_limit_input_tokens) || 0
-  )
-  const usageTokenLimitOutputTokens = Math.trunc(
-    Number(formData.usage_token_limit_output_tokens) || 0
-  )
-  if (usageTokenLimitInputTokens > 0 || usageTokenLimitOutputTokens > 0) {
-    settingsObj.usage_token_limit = {
-      input_tokens: Math.max(0, usageTokenLimitInputTokens),
-      output_tokens: Math.max(0, usageTokenLimitOutputTokens),
-    }
-  } else {
-    delete settingsObj.usage_token_limit
-  }
-
-  const simulatedModelCacheEnabled =
-    formData.simulated_model_cache_enabled === true
-  const simulatedModelCacheRuntimeActive =
-    simulatedModelCacheEnabled ||
-    formData.multi_key_type === 'cache_affinity_least_requests'
-  if (simulatedModelCacheRuntimeActive) {
-    const minMatchRatio = Number(formData.simulated_model_cache_min_match_ratio)
-    const simulatedModelCache: Record<string, unknown> = {
-      enabled: simulatedModelCacheEnabled,
-      ttl_seconds: Math.max(
-        1,
-        Math.trunc(Number(formData.simulated_model_cache_ttl_seconds) || 86400)
-      ),
-    }
-    simulatedModelCache.min_match_ratio = Math.min(
-      1,
-      Math.max(0.01, Number.isFinite(minMatchRatio) ? minMatchRatio : 0.01)
-    )
-    const multimodalEnabled =
-      formData.simulated_model_cache_multimodal_enabled === true
-    const multimodalValues = [
-      formData.simulated_model_cache_image_tokens_per_megapixel,
-      formData.simulated_model_cache_video_tokens_per_second_megapixel,
-      formData.simulated_model_cache_audio_tokens_per_second,
-      formData.simulated_model_cache_file_tokens_per_mib,
-      formData.simulated_model_cache_image_fallback_tokens,
-      formData.simulated_model_cache_video_fallback_tokens,
-      formData.simulated_model_cache_audio_fallback_tokens,
-      formData.simulated_model_cache_file_fallback_tokens,
-    ]
-    if (
-      multimodalEnabled ||
-      multimodalValues.some((value) => value !== undefined)
-    ) {
-      simulatedModelCache.multimodal = {
-        enabled: multimodalEnabled,
-        image_tokens_per_megapixel:
-          formData.simulated_model_cache_image_tokens_per_megapixel,
-        video_tokens_per_second_megapixel:
-          formData.simulated_model_cache_video_tokens_per_second_megapixel,
-        audio_tokens_per_second:
-          formData.simulated_model_cache_audio_tokens_per_second,
-        file_tokens_per_mib: formData.simulated_model_cache_file_tokens_per_mib,
-        image_fallback_tokens:
-          formData.simulated_model_cache_image_fallback_tokens,
-        video_fallback_tokens:
-          formData.simulated_model_cache_video_fallback_tokens,
-        audio_fallback_tokens:
-          formData.simulated_model_cache_audio_fallback_tokens,
-        file_fallback_tokens:
-          formData.simulated_model_cache_file_fallback_tokens,
-      }
-    }
-    settingsObj.simulated_model_cache = simulatedModelCache
-  } else if ('simulated_model_cache' in settingsObj) {
-    delete settingsObj.simulated_model_cache
-  }
-
-  if (formData.status_code_retry_enabled === true) {
-    const retryTimes = Number(formData.status_code_retry_times)
-    const retryIntervalMS = Number(formData.status_code_retry_interval_ms)
-    const parsedStatusCodes = parseHttpStatusCodeRules(
-      formData.status_code_retry_status_codes || ''
-    )
-    settingsObj.status_code_retry = {
-      enabled: true,
-      retry_times: Math.max(
-        0,
-        Math.trunc(Number.isFinite(retryTimes) ? retryTimes : 10)
-      ),
-      retry_interval_ms: Math.max(
-        0,
-        Math.trunc(
-          Number.isFinite(retryIntervalMS)
-            ? retryIntervalMS
-            : DEFAULT_STATUS_CODE_RETRY_INTERVAL_MS
-        )
-      ),
-      status_codes:
-        parsedStatusCodes.ok && parsedStatusCodes.normalized
-          ? parsedStatusCodes.normalized
-          : DEFAULT_STATUS_CODE_RETRY_STATUS_CODES,
-    }
-  } else if ('status_code_retry' in settingsObj) {
-    delete settingsObj.status_code_retry
-  }
-
-  if (formData.response_header_timeout_enabled === true) {
-    const timeoutSeconds = Number(formData.response_header_timeout_seconds)
-    settingsObj.response_header_timeout = {
-      enabled: true,
-      timeout_seconds: Math.trunc(
-        Number.isFinite(timeoutSeconds)
-          ? timeoutSeconds
-          : DEFAULT_RESPONSE_HEADER_TIMEOUT_SECONDS
-      ),
-    }
-  } else {
-    settingsObj.response_header_timeout = { enabled: false }
-  }
-
-  if (formData.input_token_routing_enabled === true) {
-    const parsedRanges = parseInputTokenRoutingRanges(
-      formData.input_token_routing_ranges
-    )
-    if (parsedRanges.ok) {
-      const inputTokenRouting: Record<string, unknown> = {
-        enabled: true,
-        ranges: parsedRanges.ranges,
-      }
-      if (formData.input_token_routing_estimation_mode === 'glm_5_2') {
-        inputTokenRouting.glm_5_2_mode = true
-      } else if (formData.input_token_routing_estimation_mode === 'kimi_k3') {
-        inputTokenRouting.kimi_k3_mode = true
-      }
-      settingsObj.input_token_routing = inputTokenRouting
-    }
-  } else if ('input_token_routing' in settingsObj) {
-    delete settingsObj.input_token_routing
-  }
-
-  if (
-    formData.stream_interruption_billing_mode === 'input_only_free' ||
-    formData.stream_interruption_billing_mode === 'all_interrupted_free'
-  ) {
-    settingsObj.stream_interruption_billing = {
-      mode: formData.stream_interruption_billing_mode,
-    }
-  } else if ('stream_interruption_billing' in settingsObj) {
-    delete settingsObj.stream_interruption_billing
-  }
-
-  // Upstream model update settings (for model-fetchable channel types)
-  if (MODEL_FETCHABLE_TYPES.has(formData.type)) {
     settingsObj.upstream_model_update_check_enabled =
       formData.upstream_model_update_check_enabled === true
     settingsObj.upstream_model_update_auto_sync_enabled =
@@ -2271,6 +887,16 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.advanced_custom
   }
 
+  // Only set values are kept; the plugin's defaults apply to the rest.
+  if (
+    formData.type === CHANNEL_TYPE_TASK_PLUGIN &&
+    Object.keys(formData.plugin_config ?? {}).length > 0
+  ) {
+    settingsObj.plugin_config = formData.plugin_config
+  } else {
+    delete settingsObj.plugin_config
+  }
+
   return JSON.stringify(settingsObj)
 }
 
@@ -2285,15 +911,7 @@ function normalizeBaseUrl(value: string | undefined): string {
  */
 export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   mode: 'single' | 'batch' | 'multi_to_single'
-  multi_key_mode?:
-    | 'random'
-    | 'polling'
-    | 'affinity'
-    | 'least_requests'
-    | 'cache_affinity_least_requests'
-  multi_key_affinity_ttl_seconds?: number
-  multi_key_least_requests_window_seconds?: number
-  multi_key_cache_affinity_threshold_percent?: number
+  multi_key_mode?: 'random' | 'polling'
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
 } {
@@ -2316,18 +934,11 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
-    setting: buildChannelSettingJSON(formData),
+    setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
-    channel_info: {
-      ...CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO,
-      is_multi_key: mode === 'multi_to_single',
-      multi_key_mode: formData.multi_key_type || 'random',
-      channel_overload_protection: overloadPayload(formData, 'channel'),
-      multi_key_overload_protection: overloadPayload(formData, 'multi_key'),
-    },
   }
 
   // Clean up empty strings to null for optional fields
@@ -2341,24 +952,6 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     mode,
     multi_key_mode:
       mode === 'multi_to_single' ? formData.multi_key_type : undefined,
-    multi_key_affinity_ttl_seconds:
-      mode === 'multi_to_single'
-        ? Math.max(
-            1,
-            Math.trunc(Number(formData.multi_key_affinity_ttl_seconds) || 3600)
-          )
-        : undefined,
-    multi_key_least_requests_window_seconds:
-      mode === 'multi_to_single' &&
-      (formData.multi_key_type === 'least_requests' ||
-        formData.multi_key_type === 'cache_affinity_least_requests')
-        ? Number(formData.multi_key_least_requests_window_seconds) || 60
-        : undefined,
-    multi_key_cache_affinity_threshold_percent:
-      mode === 'multi_to_single' &&
-      formData.multi_key_type === 'cache_affinity_least_requests'
-        ? Number(formData.multi_key_cache_affinity_threshold_percent) || 0
-        : undefined,
     batch_add_set_key_prefix_2_name:
       mode === 'batch' ? formData.batch_add_set_key_prefix_2_name : undefined,
     channel,
@@ -2388,16 +981,11 @@ export function transformFormDataToUpdatePayload(
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
-    setting: buildChannelSettingJSON(formData),
+    setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
-    channel_info: {
-      ...CHANNEL_FORM_DEFAULT_VALUES_CHANNEL_INFO,
-      channel_overload_protection: overloadPayload(formData, 'channel'),
-      multi_key_overload_protection: overloadPayload(formData, 'multi_key'),
-    },
   }
 
   // Only include key if it was changed (not empty)

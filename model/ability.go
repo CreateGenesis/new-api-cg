@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -109,6 +110,16 @@ func GetChannelExcludingPriority(group string, model string, retry int, requestP
 		filters = append(append([]dto.ChannelFilter{}, filters...), dto.ChannelFilter{Kind: dto.FilterRequestPath, RequestPath: requestPath})
 	}
 	abilities = filterAbilitiesByConstraints(abilities, model, filters)
+	if len(abilities) == 0 {
+		normalized := ratio_setting.RoutingMatchModelName(model)
+		if normalized != "" && normalized != model {
+			err = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalized, true).Order("weight DESC").Find(&abilities).Error
+			if err != nil {
+				return nil, err
+			}
+			abilities = filterAbilitiesByConstraints(abilities, model, filters)
+		}
+	}
 	abilities = filterAbilitiesByInputTokens(abilities, inputTokenEstimates)
 	if len(excluded) > 0 {
 		filtered := make([]Ability, 0, len(abilities))
@@ -472,5 +483,6 @@ func FixAbility() (int, int, error) {
 		}
 	}
 	InitChannelCache()
+	BumpSyncTopic(SyncTopicChannels)
 	return successCount, failCount, nil
 }

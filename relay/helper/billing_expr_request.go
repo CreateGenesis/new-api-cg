@@ -31,12 +31,24 @@ func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.Re
 		merged := cloneStringMap(info.RequestHeaders)
 		maps.Copy(merged, input.Headers)
 		input.Headers = merged
+		// A later expression, such as compact repricing, may read a body the
+		// first expression did not need.
+		if readsBody && input.Body == nil {
+			bodyBytes, err := readIncomingBillingExprBody(c)
+			if err != nil {
+				return billingexpr.RequestInput{}, err
+			}
+			input.Body = bodyBytes
+		}
 		return input, nil
 	}
 
 	input := billingexpr.RequestInput{}
 	if info != nil {
 		input.Headers = cloneStringMap(info.RequestHeaders)
+	}
+	if !readsBody {
+		return input, nil
 	}
 
 	bodyBytes, err := readIncomingBillingExprBody(c)

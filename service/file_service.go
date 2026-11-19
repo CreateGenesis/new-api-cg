@@ -2,8 +2,6 @@ package service
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -14,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
@@ -31,10 +30,16 @@ func getContextCacheKey(url string) string {
 	return fmt.Sprintf("file_cache_%s", common.GenerateHMAC(url))
 }
 
-// getBase64ContextCacheKey hashes the entire payload; equal JPEG headers do not identify images.
+// getBase64ContextCacheKey 生成 base64 context 缓存的 key
+// 使用 length + MIME + 前 128 字符作为输入，避免对整个 base64 数据做 hash
 func getBase64ContextCacheKey(data string, mimeType string) string {
-	digest := sha256.Sum256([]byte(data))
-	return fmt.Sprintf("b64_cache_%s_%x", mimeType, digest)
+	keyMaterial := fmt.Sprintf("%d:%s:", len(data), mimeType)
+	if len(data) > 128 {
+		keyMaterial += data[:128]
+	} else {
+		keyMaterial += data
+	}
+	return fmt.Sprintf("b64_cache_%s", common.GenerateHMAC(keyMaterial))
 }
 
 // LoadFileSource 加载文件源数据

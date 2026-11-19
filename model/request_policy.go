@@ -52,6 +52,7 @@ func requestPolicyDefaultOptions() map[string]string {
 		}
 	}
 	defaults[operation_setting.ResponseContentRetryPolicyOptionKey] = operation_setting.ResponseContentRetryPolicy2JSONString()
+	defaults[operation_setting.ResponseContentRetryPolicyOptionKey] = operation_setting.ResponseContentRetryPolicy2JSONString()
 	defaults["RetryTimes"] = strconv.Itoa(common.RetryTimes)
 	defaults["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	defaults["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
@@ -141,6 +142,9 @@ func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, erro
 	}
 	snapshot.DisableCodes, err = operation_setting.ParseHTTPStatusCodeRanges(raw["AutomaticDisableStatusCodes"])
 	if err != nil {
+		return nil, err
+	}
+	if _, err := operation_setting.ParseResponseContentRetryPolicyJSONString(raw[operation_setting.ResponseContentRetryPolicyOptionKey]); err != nil {
 		return nil, err
 	}
 	if _, err := operation_setting.ParseResponseContentRetryPolicyJSONString(raw[operation_setting.ResponseContentRetryPolicyOptionKey]); err != nil {

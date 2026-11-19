@@ -38,6 +38,11 @@ type RequestHeaderFinalizer interface {
 	FinalizeRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error
 }
 
+// ResponsesRequestFinalizer applies provider-specific rules to the effective JSON request.
+type ResponsesRequestFinalizer interface {
+	FinalizeResponsesRequest(info *relaycommon.RelayInfo, body []byte) ([]byte, error)
+}
+
 type TaskAdaptor interface {
 	Init(info *relaycommon.RelayInfo)
 

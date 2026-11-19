@@ -5,10 +5,12 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 )
 
 var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterRequestPath,
+	dto.FilterTaskPluginEndpoint,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterVideoUnderstanding,
 	dto.FilterResponsesWebSocket,
@@ -104,7 +106,7 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		return config != nil && config.SupportsPathForModel(filter.RequestPath, modelName)
 	case dto.FilterTaskPluginIdentity:
 		if filter.TaskPluginKey == "" {
-			return ch.Type != constant.ChannelTypeTaskPlugin
+			return ch.Type != constant.ChannelTypeTaskPlugin || providerChannelServes(ch, filter.RequestPath, modelName)
 		}
 		if ch.Type == constant.ChannelTypeTaskPlugin || ch.Type == constant.ChannelTypeNewAPI {
 			// A New API channel serves every plugin it is extended with; the
@@ -113,22 +115,54 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 			return setting.BindsTaskPlugin(filter.TaskPluginKey) || slices.ContainsFunc(filter.TaskPluginKeys, setting.BindsTaskPlugin)
 		}
 		return slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
+	case dto.FilterTaskPluginEndpoint:
+		pluginChannel := slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
+		if ch.Type == constant.ChannelTypeTaskPlugin || ch.Type == constant.ChannelTypeNewAPI {
+			pluginChannel = slices.ContainsFunc(filter.TaskPluginKeys, ch.GetSetting().BindsTaskPlugin)
+		}
+		relayChannel := ch.Type != constant.ChannelTypeTaskPlugin || providerChannelServes(ch, filter.RequestPath, modelName)
+		if filter.TaskPluginRelayOnly {
+			return relayChannel && !pluginChannel
+		}
+		// Ordinary channels and matching plugin channels compete using the same
+		// group, priority, weight, affinity, and pin rules. Unrelated type-61
+		// plugins cannot execute this endpoint unless their relay routes do.
+		return relayChannel || pluginChannel
 	case dto.FilterResponsesWebSocket:
 		if !ch.GetSetting().ResponsesWebSocketEnabled {
 			return false
 		}
 		switch ch.Type {
-		case constant.ChannelTypeOpenAI, constant.ChannelTypeCodex, constant.ChannelTypeSub2API, constant.ChannelTypeNewAPI:
+		case constant.ChannelTypeOpenAI, constant.ChannelTypeAzure, constant.ChannelTypeCodex, constant.ChannelTypeSub2API, constant.ChannelTypeNewAPI:
 			return true
 		case constant.ChannelTypeAdvancedCustom:
 			// The session forwards native Responses events without protocol
 			// conversion, so only a converter-free /v1/responses route qualifies.
 			route, ok := ch.GetOtherSettings().AdvancedCustom.MatchPathForModel("/v1/responses", modelName)
 			return ok && route.IsNative()
+		case constant.ChannelTypeTaskPlugin:
+			// The same rule on the relay routes of the channel's plugin.
+			plugin, ok := jsplugin.DefaultRegistry.Get(ch.GetSetting().TaskPluginKey)
+			return ok && plugin.Meta.ServesResponsesWebSocket(modelName)
 		default:
 			return false
 		}
 	default:
 		return true
 	}
+}
+
+// providerChannelServes reports a task plugin channel whose plugin relays
+// requestPath for modelName through its relay routes, as an Advanced Custom
+// channel with those routes would.
+func providerChannelServes(ch *Channel, requestPath, modelName string) bool {
+	if ch.Type != constant.ChannelTypeTaskPlugin || requestPath == "" {
+		return false
+	}
+	plugin, ok := jsplugin.DefaultRegistry.Get(ch.GetSetting().TaskPluginKey)
+	if !ok || !plugin.Meta.HasProviderPart() {
+		return false
+	}
+	_, ok = plugin.Meta.RelayRoute(requestPath, modelName)
+	return ok
 }

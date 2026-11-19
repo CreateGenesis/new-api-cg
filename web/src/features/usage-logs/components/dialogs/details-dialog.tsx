@@ -49,9 +49,8 @@ import {
   UserCog,
   Info,
   LogIn,
-  SearchCode,
+  Workflow,
 } from 'lucide-react'
-import { lazy, Suspense, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -66,23 +65,18 @@ import { PolicyDecisionRecord } from '@/features/system-settings/request-policie
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
-import { ROLE } from '@/lib/roles'
 import { translateServerText } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/stores/auth-store'
 
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
-import {
-  getCacheBillingUsage,
-  shouldShowCacheBillingPrices,
-} from '../../lib/cache-billing'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
   decodeBillingExprB64,
   getTieredBillingSummary,
+  hasAnyCacheTokens,
   isViolationFeeLog,
   getFirstResponseTimeColor,
   getResponseTimeColor,
@@ -93,31 +87,18 @@ import {
 } from '../../lib/format'
 import { buildQuotaAuditOperation } from '../../lib/quota-audit-operation'
 import {
-  getUsageAccountingModeLabelKey,
-  getUsageNormalizationSourceLabelKey,
-  getUsageNormalizationStatusLabelKey,
-  isUsageNormalizationWarning,
-} from '../../lib/usage-normalization'
-import {
   getLogTypeConfig,
   isPerCallBilling,
   isTimingLogType,
 } from '../../lib/utils'
-import {
-  USAGE_BILLING_PATH,
-  type LogOtherData,
-  type UsageNormalizationAudit,
-} from '../../types'
+import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
+import {
+  RequestPluginAdminSteps,
+  RequestPluginRecord,
+} from '../request-plugin-record'
 import { DetailRow, DetailSection } from './log-detail-layout'
-import { RelayRetrySummarySection } from './relay-retry-summary'
-
-const RelayDebugViewer = lazy(() =>
-  import('./relay-debug-viewer').then((module) => ({
-    default: module.RelayDebugViewer,
-  }))
-)
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -189,73 +170,6 @@ function quotaSaturationKindLabel(
   return t('Invalid (NaN)')
 }
 
-function UsageNormalizationDetails(props: { audit: UsageNormalizationAudit }) {
-  const { t } = useTranslation()
-  const warning = isUsageNormalizationWarning(props.audit)
-
-  return (
-    <DetailSection
-      icon={
-        warning ? (
-          <AlertTriangle className='size-3.5' aria-hidden='true' />
-        ) : (
-          <Info className='size-3.5' aria-hidden='true' />
-        )
-      }
-      label={t('Cache Validation Split')}
-      variant={warning ? 'danger' : 'default'}
-    >
-      <DetailRow
-        label={t('Mode')}
-        value={t(getUsageAccountingModeLabelKey(props.audit.mode))}
-      />
-      <DetailRow
-        label={t('Source')}
-        value={t(getUsageNormalizationSourceLabelKey(props.audit.source))}
-      />
-      <DetailRow
-        label={t('Status')}
-        value={t(getUsageNormalizationStatusLabelKey(props.audit.status))}
-      />
-      <DetailRow
-        label={t('Reported Input')}
-        value={props.audit.reported_input_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Reported Output')}
-        value={props.audit.reported_output_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Reported Total')}
-        value={props.audit.reported_total_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Cache Read')}
-        value={props.audit.cache_read_input_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Cache Creation')}
-        value={props.audit.cache_creation_input_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Normalized Input')}
-        value={props.audit.normalized_uncached_input_tokens.toLocaleString()}
-        mono
-      />
-      <DetailRow
-        label={t('Total Input')}
-        value={props.audit.normalized_total_input_tokens.toLocaleString()}
-        mono
-      />
-    </DetailSection>
-  )
-}
-
 function BillingBreakdown(props: {
   log: UsageLog
   other: LogOtherData
@@ -264,9 +178,11 @@ function BillingBreakdown(props: {
   const { t } = useTranslation()
   const { log, other, isAdmin } = props
   const isPerCall = isPerCallBilling(other.model_price)
+  const isClaude = other.claude === true
+  // OpenAI 12-hour cache writes have their own price, listed like Claude's.
+  const hasCacheWrite12h = (other.cache_creation_tokens_12h || 0) > 0
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
-  const cacheBillingUsage = getCacheBillingUsage(other)
 
   const rows: Array<{ label: string; value: string }> = []
   const priceOpts = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
@@ -331,29 +247,29 @@ function BillingBreakdown(props: {
     })
   }
 
-  if (shouldShowCacheBillingPrices(other)) {
-    if (
-      cacheBillingUsage.read &&
-      other.cache_ratio != null &&
-      other.cache_ratio !== 1
-    ) {
+  if (
+    !isTieredExpr &&
+    (isClaude || hasCacheWrite12h) &&
+    hasAnyCacheTokens(other)
+  ) {
+    if (other.cache_ratio != null && other.cache_ratio !== 1) {
       rows.push({
         label: t('Cache Read'),
         value: `${fmtPrice(baseInputUSD * other.cache_ratio)}/M`,
       })
     }
     if (
-      cacheBillingUsage.creation &&
       other.cache_creation_ratio != null &&
       other.cache_creation_ratio !== 1
     ) {
       rows.push({
-        label: t('Cache Creation'),
+        label: hasCacheWrite12h
+          ? t('Cache Creation (30m)')
+          : t('Cache Creation'),
         value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio)}/M`,
       })
     }
     if (
-      cacheBillingUsage.creation5m &&
       other.cache_creation_ratio_5m != null &&
       other.cache_creation_ratio_5m !== 0
     ) {
@@ -363,13 +279,21 @@ function BillingBreakdown(props: {
       })
     }
     if (
-      cacheBillingUsage.creation1h &&
       other.cache_creation_ratio_1h != null &&
       other.cache_creation_ratio_1h !== 0
     ) {
       rows.push({
         label: t('Cache Creation (1h)'),
         value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio_1h)}/M`,
+      })
+    }
+    if (
+      other.cache_creation_ratio_12h != null &&
+      other.cache_creation_ratio_12h !== 0
+    ) {
+      rows.push({
+        label: t('Cache Creation (12h)'),
+        value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio_12h)}/M`,
       })
     }
   }
@@ -481,6 +405,10 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
+  const cacheWrite12h = other.cache_creation_tokens_12h || 0
+  // cache_creation_tokens counts OpenAI 30-minute and 12-hour writes together.
+  const cacheWrite30m =
+    cacheWrite12h > 0 ? Math.max(cacheWrite - cacheWrite12h, 0) : 0
   const hasTokens = promptTokens > 0 || completionTokens > 0
 
   if (!hasTokens) return null
@@ -507,7 +435,12 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
-  if (cacheWrite > 0 && cacheWrite5m === 0 && cacheWrite1h === 0) {
+  if (
+    cacheWrite > 0 &&
+    cacheWrite5m === 0 &&
+    cacheWrite1h === 0 &&
+    cacheWrite12h === 0
+  ) {
     rows.push({
       label: t('Cache Write'),
       value: cacheWrite.toLocaleString(),
@@ -525,6 +458,20 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     rows.push({
       label: t('Cache Write (1h)'),
       value: cacheWrite1h.toLocaleString(),
+    })
+  }
+
+  if (cacheWrite30m > 0) {
+    rows.push({
+      label: t('Cache Write (30m)'),
+      value: cacheWrite30m.toLocaleString(),
+    })
+  }
+
+  if (cacheWrite12h > 0) {
+    rows.push({
+      label: t('Cache Write (12h)'),
+      value: cacheWrite12h.toLocaleString(),
     })
   }
 
@@ -577,10 +524,6 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
-  const [showRelayTrace, setShowRelayTrace] = useState(false)
-  const isRoot = useAuthStore(
-    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
-  )
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
@@ -588,7 +531,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const isViolation = isViolationFeeLog(other)
   const isRefund = props.log.type === 6
   const isConsume = props.log.type === 2
-  const isError = props.log.type === 5
   const isTopup = props.log.type === 1
   const isManage = props.log.type === 3
   const isSubscription = other?.billing_source === 'subscription'
@@ -609,7 +551,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
-  const relayRetry = props.isAdmin ? adminInfo?.relay_retry : undefined
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
       ? ([
@@ -727,12 +668,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
-  const errorStatusCode = props.isAdmin
-    ? (other?.admin_info?.upstream_status_code ?? other?.status_code)
-    : undefined
-  const upstreamResponse = props.isAdmin
-    ? other?.admin_info?.upstream_response
-    : undefined
   const reasoningEffortVariant = getReasoningEffortVariant(
     other?.reasoning_effort
   )
@@ -756,9 +691,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-(--dialog-available-height) max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling || relayRetry
-          ? 'sm:max-w-4xl lg:max-w-5xl'
-          : 'sm:max-w-lg'
+        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -872,77 +805,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
         </div>
 
-        {isError && (
-          <DetailSection
-            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
-            label={t('Error')}
-            variant='danger'
-          >
-            {errorStatusCode != null && (
-              <DetailRow
-                label={t('Status Code')}
-                value={`HTTP ${errorStatusCode}`}
-                mono
-              />
-            )}
-            {details && (
-              <DetailRow label={t('Error Message')} value={details} mono />
-            )}
-            {upstreamResponse && (
-              <div className='min-w-0 space-y-1 pt-1'>
-                <Label className='text-muted-foreground text-xs'>
-                  {t('Upstream Response')}
-                </Label>
-                <pre className='bg-background/60 max-h-56 overflow-auto rounded border p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap sm:wrap-break-word'>
-                  {upstreamResponse}
-                </pre>
-              </div>
-            )}
-          </DetailSection>
-        )}
-
-        {relayRetry && (
-          <>
-            <RelayRetrySummarySection summary={relayRetry} />
-            {isRoot && props.log.request_id && (
-              <div className='min-w-0 space-y-2'>
-                {relayRetry.trace_available ? (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() => setShowRelayTrace((visible) => !visible)}
-                    aria-expanded={showRelayTrace}
-                  >
-                    <SearchCode data-icon='inline-start' aria-hidden='true' />
-                    {showRelayTrace
-                      ? t('Hide full relay trace')
-                      : t('View full relay trace')}
-                  </Button>
-                ) : (
-                  <span className='text-muted-foreground text-xs'>
-                    {t('Full relay trace is unavailable.')}
-                  </span>
-                )}
-                {showRelayTrace && relayRetry.trace_available && (
-                  <Suspense
-                    fallback={
-                      <div
-                        className='text-muted-foreground flex min-h-20 items-center justify-center text-xs'
-                        role='status'
-                      >
-                        {t('Loading relay trace')}
-                      </div>
-                    }
-                  >
-                    <RelayDebugViewer requestId={props.log.request_id} />
-                  </Suspense>
-                )}
-              </div>
-            )}
-          </>
-        )}
-
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (
           <DetailSection label={t('Request Conversion')}>
@@ -1026,12 +888,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </DetailSection>
         )}
 
-        {props.isAdmin && other?.admin_info?.usage_normalization ? (
-          <UsageNormalizationDetails
-            audit={other.admin_info.usage_normalization}
-          />
-        ) : null}
-
         {/* Reject reason (admin only) */}
         {props.isAdmin && adminInfo?.reject_reason && (
           <DetailSection
@@ -1112,6 +968,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 }
               />
             ) : null}
+          </DetailSection>
+        ) : null}
+
+        {props.isAdmin && adminInfo?.request_plugins?.length ? (
+          <DetailSection label={t('Request processing steps')}>
+            <RequestPluginAdminSteps steps={adminInfo.request_plugins} />
           </DetailSection>
         ) : null}
 
@@ -1384,7 +1246,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               matchedBillingUnit={other.billing_unit}
               matchedFixedPrice={other.fixed_price}
               requestRules={other.request_rules}
-              hideCacheColumns={!getCacheBillingUsage(other).hasAny}
+              hideCacheColumns={!hasAnyCacheTokens(other)}
               usageSchema={billingUsageSchema}
               usageFacts={other.usage_facts}
             />
@@ -1502,6 +1364,19 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </DetailSection>
         )}
 
+        {other?.request_plugins?.length ? (
+          <DetailSection
+            icon={<Workflow className='size-3.5' aria-hidden='true' />}
+            iconTone='chart-3'
+            label={t('Request processing')}
+          >
+            <RequestPluginRecord
+              items={other.request_plugins}
+              loadIcons={props.isRoot}
+            />
+          </DetailSection>
+        ) : null}
+
         {/* Param override */}
         {other?.po && Array.isArray(other.po) && other.po.length > 0 && (
           <DetailSection
@@ -1514,7 +1389,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               if (!parsed) return null
               return (
                 <div
-                  key={`${parsed.action}:${parsed.content}`}
+                  key={`${parsed.action}-${parsed.content}`}
                   className='bg-background/60 flex min-w-0 flex-col gap-1.5 rounded border p-2 sm:flex-row sm:items-start sm:gap-2'
                 >
                   <StatusBadge
@@ -1533,7 +1408,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Content */}
-        {details && !isError && (
+        {details && (
           <div className='space-y-1.5'>
             <Label className='text-xs font-semibold'>{t('Content')}</Label>
             <div className='bg-muted/30 relative min-w-0 overflow-hidden rounded-md border p-2.5'>

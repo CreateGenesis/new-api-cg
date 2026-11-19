@@ -39,101 +39,6 @@ export type UpdateOptionResponse = {
   message: string
 }
 
-export type SystemConfigChangeCounts = {
-  add: number
-  update: number
-  unchanged: number
-  skipped: number
-}
-
-export type SystemConfigIssue = {
-  code:
-    | 'unknown_option'
-    | 'new_channel_disabled'
-    | 'missing_vendor'
-    | 'ambiguous_channel'
-    | 'duplicate_vendor'
-    | 'duplicate_model'
-    | 'duplicate_channel'
-  item?: string
-}
-
-export type SystemConfigOmitted = {
-  option_groups: string[]
-  channel_fields: string[]
-  data: string[]
-}
-
-export type SystemConfigImportPreview = {
-  hash: string
-  options: SystemConfigChangeCounts
-  vendors: SystemConfigChangeCounts
-  models: SystemConfigChangeCounts
-  channels: SystemConfigChangeCounts
-  warnings: SystemConfigIssue[]
-  conflicts: SystemConfigIssue[]
-  omitted: SystemConfigOmitted
-  reload_needed: boolean
-}
-
-export type SystemConfigImportResponse = {
-  success: boolean
-  message: string
-  data?: SystemConfigImportPreview
-}
-
-export type SystemBackupProofScope =
-  | 'system.config.full.export'
-  | 'system.config.full.import'
-
-export type SystemBackupProof = {
-  proof_token: string
-  expires_at: number
-  method: 'password'
-  scope: SystemBackupProofScope
-}
-
-export type SystemBackupChangeCounts = {
-  add: number
-  update: number
-  delete: number
-  unchanged: number
-}
-
-export type SystemBackupSection =
-  | 'options'
-  | 'channels'
-  | 'catalog'
-  | 'oauth'
-  | 'authorization'
-  | 'users'
-  | 'tokens'
-  | 'redemptions'
-  | 'task_plugins'
-  | 'authentication'
-  | 'subscriptions'
-
-export type SystemBackupImportPreview = {
-  hash: string
-  record_count: number
-  sections: Record<SystemBackupSection, SystemBackupChangeCounts>
-  warnings: Array<{ code: 'runtime_history_preserved'; item?: string }>
-  conflicts: Array<{ code: string; item?: string }>
-  requires_logout: boolean
-}
-
-export type SystemBackupImportResponse = {
-  success: boolean
-  message: string
-  data?: SystemBackupImportPreview
-}
-
-export type SystemBackupProofResponse = {
-  success: boolean
-  message: string
-  data?: SystemBackupProof
-}
-
 export interface PasskeyDomainChange {
   rp_id: string
   legacy_rp_ids: string
@@ -241,7 +146,6 @@ export type SiteSettings = {
   Logo: string
   Footer: string
   About: string
-  TopUpHTML: string
   HomePageContent: string
   ServerAddress: string
   TaskPublicAddress: string
@@ -328,7 +232,6 @@ export type ModelSettings = {
   'global.chat_completions_to_responses_policy': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
-  HeaderRewritePresets: string
   'gemini.safety_settings': string
   'gemini.version_settings': string
   'gemini.supported_imagine_models': string
@@ -356,7 +259,6 @@ export type ModelSettings = {
   'billing_setting.plugin_billing_expr': string
   'tool_price_setting.prices': string
   TopupGroupRatio: string
-  GroupSchedulingTolerance: string
   GroupRatio: string
   UserUsableGroups: string
   GroupGroupRatio: string
@@ -397,7 +299,6 @@ export type BillingSettings = {
   'billing_setting.plugin_billing_expr': string
   'tool_price_setting.prices': string
   TopupGroupRatio: string
-  GroupSchedulingTolerance: string
   GroupRatio: string
   UserUsableGroups: string
   GroupGroupRatio: string
@@ -414,6 +315,9 @@ export type BillingSettings = {
   PayMethods: string
   'payment_setting.amount_options': string
   'payment_setting.amount_discount': string
+  'payment_setting.epay_sign_type': string
+  'payment_setting.epay_merchant_private_key': string
+  'payment_setting.epay_platform_public_key': string
   'payment_setting.compliance_confirmed': boolean
   'payment_setting.compliance_terms_version': string
   'payment_setting.compliance_confirmed_at': number
@@ -457,11 +361,15 @@ export type BillingSettings = {
 }
 
 export type OperationsSettings = {
-  'video_processing_setting.config': string
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean
+  QuotaRemindEnabled: boolean
   QuotaRemindThreshold: string
+  EmailProvider: 'smtp' | 'resend'
+  ResendApiKey: string
+  ResendKeyConfigured: boolean
+  ResendFrom: string
   SMTPServer: string
   SMTPPort: string
   SMTPAccount: string
@@ -475,11 +383,9 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
-  RelayDebugLogEnabled: boolean
-  RelayDebugLogTextLimitMB: number
-  'performance_setting.simulated_model_cache_memory_budget_mb': number
-  'performance_setting.simulated_model_cache_max_entries_per_scope': number
-  'performance_setting.simulated_model_cache_min_input_tokens': number
+  'log_setting.user_export_enabled': boolean
+  'log_setting.max_range_days': number
+  'system_task_setting.retention_days': number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -500,11 +406,6 @@ export type SecuritySettings = {
   ModelRequestRateLimitSuccessCount: number
   ModelRequestRateLimitDurationMinutes: number
   ModelRequestRateLimitGroup: string
-  UserConcurrentRequestLimit: number
-  UserTokensPerMinuteLimit: number
-  CheckSensitiveEnabled: boolean
-  CheckSensitiveOnPromptEnabled: boolean
-  SensitiveWords: string
   'fetch_setting.enable_ssrf_protection': boolean
   'fetch_setting.allow_private_ip': boolean
   'fetch_setting.domain_filter_mode': boolean
@@ -567,6 +468,7 @@ export type UpstreamConfig = {
 }
 
 export type FetchUpstreamRatiosRequest = {
+  include_unchanged?: boolean
   upstreams: UpstreamConfig[]
   timeout: number
 }

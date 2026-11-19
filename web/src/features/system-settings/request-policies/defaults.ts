@@ -1,4 +1,3 @@
-import type { ChannelAffinitySettings } from '../general/channel-affinity/types'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -17,11 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON } from '../models/response-content-retry-policy'
-import type { SecuritySettings } from '../types'
+import type { ChannelAffinitySettings } from '../general/channel-affinity/types'
 
 export type RetrySettings = {
-  ResponseContentRetryPolicy: string
   RetryTimes: number
   AutomaticRetryStatusCodes: string
 }
@@ -39,17 +36,11 @@ export type HealthSettings = {
     | 'auto_ban_only'
     | 'passive_recovery'
 }
-export type FilteringSettings = Pick<
-  SecuritySettings,
-  'CheckSensitiveEnabled' | 'CheckSensitiveOnPromptEnabled' | 'SensitiveWords'
->
 export type RequestPolicySettings = RetrySettings &
   HealthSettings &
-  FilteringSettings &
   Pick<ChannelAffinitySettings, keyof ChannelAffinitySettings>
 
 export const defaultRequestPolicySettings: RequestPolicySettings = {
-  ResponseContentRetryPolicy: DEFAULT_RESPONSE_CONTENT_RETRY_POLICY_JSON,
   RetryTimes: 0,
   AutomaticRetryStatusCodes:
     '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
@@ -69,7 +60,4 @@ export const defaultRequestPolicySettings: RequestPolicySettings = {
   'channel_affinity_setting.max_entries': 100000,
   'channel_affinity_setting.default_ttl_seconds': 3600,
   'channel_affinity_setting.rules': '[]',
-  CheckSensitiveEnabled: false,
-  CheckSensitiveOnPromptEnabled: false,
-  SensitiveWords: '',
 }

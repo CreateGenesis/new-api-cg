@@ -164,7 +164,7 @@ func ApplyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
 	dst.UpstreamInputReported = dst.UpstreamInputReported || src.UpstreamInputReported || src.InputTokens > 0 || src.PromptTokens > 0
 	dst.UpstreamOutputReported = dst.UpstreamOutputReported || src.UpstreamOutputReported || src.OutputTokens > 0 || src.CompletionTokens > 0
 	if src.InputTokensDetails != nil {
-		inputDetails := *src.InputTokensDetails
+		inputDetails := src.InputTokensDetails.Clone()
 		incoming.InputTokensDetails = &inputDetails
 	}
 	if src.OutputTokensDetails != nil {

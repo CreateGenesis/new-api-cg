@@ -28,10 +28,9 @@ import { translateServerText } from '@/lib/server-error-message'
 
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
-import { hasAnyCacheTokens } from './cache-billing'
 import { buildQuotaAuditOperation } from './quota-audit-operation'
 
-export { hasAnyCacheTokens, normalizeTierLabel }
+export { normalizeTierLabel }
 
 const PARAM_OVERRIDE_ACTION_MAP: Record<string, string> = {
   set: 'Set',
@@ -322,6 +321,25 @@ export interface TieredBillingSummary {
     price: number
     unit?: 'request' | 'image'
   }>
+}
+
+/**
+ * Whether the request payload reports any cache-related token usage. Used to
+ * suppress cache pricing rows from the tiered breakdown when the request did
+ * not exercise the cache path.
+ */
+export function hasAnyCacheTokens(
+  other: LogOtherData | null | undefined
+): boolean {
+  if (!other) return false
+  return (
+    (other.cache_tokens || 0) > 0 ||
+    (other.image_cache_tokens || 0) > 0 ||
+    (other.cache_creation_tokens || 0) > 0 ||
+    (other.cache_creation_tokens_5m || 0) > 0 ||
+    (other.cache_creation_tokens_1h || 0) > 0 ||
+    (other.cache_creation_tokens_12h || 0) > 0
+  )
 }
 
 export function getTieredBillingSummary(

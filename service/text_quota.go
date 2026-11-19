@@ -43,6 +43,7 @@ type textQuotaSummary struct {
 	CacheCreationTokens       int
 	CacheCreationTokens5m     int
 	CacheCreationTokens1h     int
+	CacheCreationTokens12h    int
 	ImageTokens               int
 	AudioTokens               int
 	ModelName                 string
@@ -57,6 +58,7 @@ type textQuotaSummary struct {
 	CacheCreationRatio        float64
 	CacheCreationRatio5m      float64
 	CacheCreationRatio1h      float64
+	CacheCreationRatio12h     float64
 	Quota                     int
 	IsClaudeUsageSemantic     bool
 	UsageSemantic             string
@@ -69,11 +71,15 @@ type textQuotaSummary struct {
 }
 
 // hasBillableUsage reports whether this request should incur any charge.
-// A request can carry zero tokens yet still be billable via a tool-call
+// Claude reports cache tokens separately from ordinary input and output.
+// A request can carry zero ordinary tokens yet still be billable via cache or a tool-call
 // surcharge (e.g. /v1/alpha/search returns no usage but bills one web_search
 // call), so token count alone is not sufficient to decide.
 func (s *textQuotaSummary) hasBillableUsage() bool {
-	return s.FixedPriceBilling || s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
+	return s.FixedPriceBilling || s.TotalTokens > 0 ||
+		(s.IsClaudeUsageSemantic && (s.CacheTokens > 0 || s.CacheCreationTokens > 0 ||
+			s.CacheCreationTokens5m > 0 || s.CacheCreationTokens1h > 0)) ||
+		!s.ToolCallSurchargeQuota.IsZero()
 }
 
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
@@ -236,6 +242,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		CacheCreationRatio:        relayInfo.PriceData.CacheCreationRatio,
 		CacheCreationRatio5m:      relayInfo.PriceData.CacheCreation5mRatio,
 		CacheCreationRatio1h:      relayInfo.PriceData.CacheCreation1hRatio,
+		CacheCreationRatio12h:     relayInfo.PriceData.CacheCreation12hRatio,
 		CacheUsageValidationSplit: relayInfo.CacheUsageValidationSplitEnabled(),
 		UsageSemantic:             usageSemanticFromUsage(relayInfo, usage),
 	}
@@ -288,6 +295,9 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		summary.CacheCreationTokens1h = normalizedUsage.ClaudeCacheCreation1hTokens
 		summary.ImageTokens = normalizedUsage.PromptTokensDetails.ImageTokens
 		summary.AudioTokens = normalizedUsage.PromptTokensDetails.AudioTokens
+		if !summary.IsClaudeUsageSemantic {
+			summary.CacheCreationTokens12h = usage.PromptTokensDetails.CacheWrite12hTokens()
+		}
 	}
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
@@ -319,6 +329,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	dCacheCreationRatio := decimal.NewFromFloat(summary.CacheCreationRatio)
 	dCacheCreationRatio5m := decimal.NewFromFloat(summary.CacheCreationRatio5m)
 	dCacheCreationRatio1h := decimal.NewFromFloat(summary.CacheCreationRatio1h)
+	dCacheCreationRatio12h := decimal.NewFromFloat(summary.CacheCreationRatio12h)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 
 	ratio := dModelRatio.Mul(dGroupRatio)
@@ -341,14 +352,16 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		if !dCachedCreationTokens.IsZero() || hasSplitCacheCreationTokens {
 			if !summary.CacheUsageValidationSplit && !summary.IsClaudeUsageSemantic {
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
+				// The total includes the 12h writes, which have their own ratio.
+				dCachedCreationTokens12h := decimal.NewFromInt(int64(summary.CacheCreationTokens12h))
+				cachedCreationTokensWithRatio = dCachedCreationTokens.Sub(dCachedCreationTokens12h).Mul(dCacheCreationRatio)
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(dCachedCreationTokens12h.Mul(dCacheCreationRatio12h))
+			} else {
+				remaining := max(summary.CacheCreationTokens-summary.CacheCreationTokens5m-summary.CacheCreationTokens1h, 0)
+				cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
 			}
-			remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
-			if remaining < 0 {
-				remaining = 0
-			}
-			cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
-			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
-			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
 		}
 
 		var imageTokensWithRatio decimal.Decimal
@@ -546,6 +559,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if summary.CacheCreationTokens1h > 0 {
 		other.SetPublic("cache_creation_tokens_1h", summary.CacheCreationTokens1h)
 		other.SetPublic("cache_creation_ratio_1h", summary.CacheCreationRatio1h)
+	}
+	if summary.CacheCreationTokens12h > 0 {
+		other.SetPublic("cache_creation_tokens_12h", summary.CacheCreationTokens12h)
+		other.SetPublic("cache_creation_ratio_12h", summary.CacheCreationRatio12h)
 	}
 	cacheWriteTokens := cacheWriteTokensTotal(summary)
 	if cacheWriteTokens > 0 {

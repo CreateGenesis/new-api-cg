@@ -163,6 +163,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	if s.relayInfo != nil {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
 		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0 || s.relayInfo.StrictPreConsume
+		requireAvailableQuota = requireAvailableQuota || imageRequest
 	}
 	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
 		return nil

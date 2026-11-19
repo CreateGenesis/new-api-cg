@@ -96,6 +96,16 @@ func TestChatCompletionsResponseToResponsesDropsEmptyNameToolCalls(t *testing.T)
 	assert.Equal(t, usage.PromptTokensDetails.CachedTokens, convertedUsage.BillingUsage.OpenAIUsage.PromptTokensDetails.CachedTokens)
 }
 
+func TestUsageFromChatUsagePreservesCacheCreationInputTokensAlone(t *testing.T) {
+	usage := dto.Usage{PromptTokens: 12, TotalTokens: 12}
+	usage.PromptTokensDetails.CacheCreationInputTokens = 9
+
+	converted := UsageFromChatUsage(&usage)
+
+	require.NotNil(t, converted.InputTokensDetails)
+	assert.Equal(t, 9, converted.InputTokensDetails.CacheCreationInputTokens)
+}
+
 func TestChatCompletionsResponseToResponsesEmitsReasoningSummaryBeforeText(t *testing.T) {
 	message := dto.Message{Role: "assistant", Content: "final answer"}
 	message.ReasoningContent = lo.ToPtr("thinking summary")
@@ -245,6 +255,12 @@ func TestChatCompletionsStreamToResponsesEmitsReasoningSummaryPartLifecycle(t *t
 		responsesEventOutputItemDone,
 		responsesEventCompleted,
 	}, types)
+
+	// The Responses schema requires summary on every reasoning item, including
+	// the one announced before any summary text exists.
+	itemAdded, err := kitutil.Marshal(events[1].Payload)
+	require.NoError(t, err)
+	assert.Contains(t, string(itemAdded), `"summary":[]`)
 
 	partAdded := events[2].Payload
 	assert.Equal(t, "resp_1_reasoning_0", partAdded.ItemID)

@@ -45,6 +45,15 @@ const (
 	ContextKeyChannelOverloadTokens    ContextKey = "channel_overload_tokens_recorded"
 	ContextKeyChannelOverloadOwner     ContextKey = "channel_overload_owner"
 
+	// ContextKeyProviderPlugin holds the jsplugin.PinnedPlugin whose relay
+	// routes serve this request on a task plugin channel.
+	ContextKeyProviderPlugin ContextKey = "provider_plugin"
+
+	// ContextKeyUpstreamRequestOrigin is the scheme and host of the last upstream
+	// request, which differs from the base URL for absolute Advanced Custom routes
+	// and for adaptors that build official endpoints themselves.
+	ContextKeyUpstreamRequestOrigin ContextKey = "upstream_request_origin"
+
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
@@ -75,6 +84,8 @@ const (
 	ContextKeyLanguage             ContextKey = "language"
 	ContextKeyIsStream             ContextKey = "is_stream"
 	ContextKeyResponseStreamStatus ContextKey = "response_stream_status"
+	// ContextKeyConsumeLog holds the current request consume log for request plugin reports.
+	ContextKeyConsumeLog ContextKey = "consume_log"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

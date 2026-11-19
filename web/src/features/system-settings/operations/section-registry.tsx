@@ -20,13 +20,11 @@ import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
-import { ConfigMigrationSection } from '../maintenance/config-migration-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
-import { VideoProcessingSettingsSection } from './video-processing-settings-section'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -44,11 +42,10 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'alerts',
-    titleKey: 'Monitoring & Alerts',
+    titleKey: 'Model performance metrics',
     build: (settings: OperationsSettings) => (
       <MonitoringSettingsSection
         defaultValues={{
-          QuotaRemindThreshold: settings.QuotaRemindThreshold,
           'perf_metrics_setting.enabled':
             settings['perf_metrics_setting.enabled'] ?? true,
           'perf_metrics_setting.flush_interval':
@@ -63,10 +60,16 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'email',
-    titleKey: 'SMTP Email',
+    titleKey: 'Email & Notifications',
     build: (settings: OperationsSettings) => (
       <EmailSettingsSection
         defaultValues={{
+          QuotaRemindEnabled: settings.QuotaRemindEnabled,
+          QuotaRemindThreshold: settings.QuotaRemindThreshold,
+          EmailProvider: settings.EmailProvider,
+          ResendApiKey: settings.ResendApiKey,
+          ResendKeyConfigured: settings.ResendKeyConfigured,
+          ResendFrom: settings.ResendFrom,
           SMTPServer: settings.SMTPServer,
           SMTPPort: settings.SMTPPort,
           SMTPAccount: settings.SMTPAccount,
@@ -99,20 +102,15 @@ const OPERATIONS_SECTIONS = [
     titleKey: 'Log Maintenance',
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
-        defaultEnabled={Boolean(settings.LogConsumeEnabled)}
-        defaultRelayDebugEnabled={Boolean(settings.RelayDebugLogEnabled)}
-        defaultRelayDebugTextLimitMB={Number(
-          settings.RelayDebugLogTextLimitMB ?? 16
-        )}
-      />
-    ),
-  },
-  {
-    id: 'video-processing',
-    titleKey: 'Video processing',
-    build: (settings: OperationsSettings) => (
-      <VideoProcessingSettingsSection
-        defaultValue={settings['video_processing_setting.config']}
+        defaultValues={{
+          LogConsumeEnabled: Boolean(settings.LogConsumeEnabled),
+          'log_setting.user_export_enabled':
+            settings['log_setting.user_export_enabled'] ?? true,
+          'log_setting.max_range_days':
+            settings['log_setting.max_range_days'] ?? 365,
+          'system_task_setting.retention_days':
+            settings['system_task_setting.retention_days'] ?? 30,
+        }}
       />
     ),
   },
@@ -122,18 +120,6 @@ const OPERATIONS_SECTIONS = [
     build: (settings: OperationsSettings) => (
       <PerformanceSection
         defaultValues={{
-          'performance_setting.simulated_model_cache_memory_budget_mb':
-            settings[
-              'performance_setting.simulated_model_cache_memory_budget_mb'
-            ] ?? 1024,
-          'performance_setting.simulated_model_cache_max_entries_per_scope':
-            settings[
-              'performance_setting.simulated_model_cache_max_entries_per_scope'
-            ] ?? 100,
-          'performance_setting.simulated_model_cache_min_input_tokens':
-            settings[
-              'performance_setting.simulated_model_cache_min_input_tokens'
-            ] ?? 128,
           'performance_setting.disk_cache_enabled':
             settings['performance_setting.disk_cache_enabled'] ?? false,
           'performance_setting.disk_cache_threshold_mb':
@@ -167,11 +153,6 @@ const OPERATIONS_SECTIONS = [
         startTime={startTime}
       />
     ),
-  },
-  {
-    id: 'config-migration',
-    titleKey: 'Configuration Migration',
-    build: (_settings: OperationsSettings) => <ConfigMigrationSection />,
   },
 ] as const
 

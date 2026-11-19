@@ -21,6 +21,7 @@ For commercial licensing, please contact support@quantumnous.com
  */
 import type { RequestRuleTrace } from '@/features/pricing/lib/billing-expr'
 import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
+import type { LocalizedTextValue } from '@/lib/localized-text'
 
 import type { UsageLog } from './data/schema'
 // ============================================================================
@@ -94,108 +95,6 @@ export interface ChannelAffinityInfo {
   using_group?: string
 }
 
-export interface RelayRetryOccurrence {
-  attempt_index: number
-  stage: string
-  channel_id?: number
-  channel_name?: string
-  channel_type?: number
-  multi_key_index?: number
-  action: string
-  reason: string
-}
-
-export interface RelayRetryErrorSummary {
-  status_code: number
-  upstream_status_code?: number
-  type?: string
-  code?: string
-  message: string
-  response_preview?: string
-  occurrences: RelayRetryOccurrence[]
-}
-
-export interface RelayRetrySummary {
-  version: number
-  outcome: 'recovered' | 'failed' | string
-  method: string
-  path: string
-  content_type?: string
-  body_size: number
-  attempt_count: number
-  failure_count: number
-  unique_error_count: number
-  trace_available: boolean
-  errors: RelayRetryErrorSummary[]
-}
-
-export interface RelayDebugBody {
-  kind: string
-  content_type?: string
-  text?: string
-  size: number
-  original_length?: number
-  sha256?: string
-  truncated?: boolean
-  omitted_reason?: string
-}
-
-export interface RelayDebugHTTPMessage {
-  method?: string
-  url?: string
-  status?: number
-  headers?: Record<string, string[]>
-  body?: RelayDebugBody
-}
-
-export interface RelayDebugAttempt {
-  index: number
-  stage: string
-  channel_id?: number
-  channel_name?: string
-  channel_type?: number
-  multi_key_index?: number
-  started_at: number
-  duration_ms: number
-  succeeded: boolean
-  exchanges?: Array<{
-    index?: number
-    request: RelayDebugHTTPMessage
-    response: RelayDebugHTTPMessage
-  }>
-  error?: {
-    status_code: number
-    upstream_status_code?: number
-    type?: string
-    code?: string
-    message: string
-    local?: boolean
-    response?: RelayDebugBody
-  }
-  decision: {
-    action: string
-    reason: string
-  }
-}
-
-export interface RelayDebugTrace {
-  version: number
-  request_id: string
-  outcome: string
-  created_at: number
-  finalized_at: number
-  client: {
-    method: string
-    path: string
-    url: string
-    content_type?: string
-    headers?: Record<string, string[]>
-    body?: RelayDebugBody
-    body_size: number
-  }
-  attempts: RelayDebugAttempt[]
-}
-
 export const USAGE_BILLING_PATH = {
   LOCAL: 'local',
   UPSTREAM: 'upstream',
@@ -210,33 +109,100 @@ export const USAGE_BILLING_PATH = {
 export type UsageBillingPath =
   (typeof USAGE_BILLING_PATH)[keyof typeof USAGE_BILLING_PATH]
 
-export interface UsageNormalizationAudit {
-  mode: 'included' | 'separate'
-  source:
-    | 'billing_usage'
-    | 'usage_source'
-    | 'usage_semantic'
-    | 'total_tokens'
-    | 'fallback'
-  status: 'matched' | 'not_checked' | 'mismatch'
-  reported_input_tokens: number
-  reported_output_tokens: number
-  reported_total_tokens: number
-  cache_read_input_tokens: number
-  cache_creation_input_tokens: number
-  normalized_uncached_input_tokens: number
-  normalized_total_input_tokens: number
-}
-
 export interface ToolSurchargeItem {
   name: string
   count: number
   price: number
 }
 
+/** One change a request processing plugin made, as the log owner sees it. */
+export type RequestPluginRecordChange = {
+  op: string
+  path: string
+  /** Set for move and copy: where the value came from. */
+  from?: string
+  /** The new value, when it is safe to show. */
+  value?: unknown
+  /** Otherwise the kind of value and its length. */
+  type?: string
+  length?: number
+  /** The channel's own settings ran later and replaced this change. */
+  overridden?: boolean
+}
+
+/**
+ * What a plugin did with one attachment of the request. The record never
+ * holds the file's name or content.
+ */
+export type RequestPluginRecordAttachment = {
+  kind: string
+  mime: string
+  /** checked, truncated (only the first part was read) or unchecked. */
+  status: string
+  /** Why an unchecked attachment was left out, when known. */
+  reason?: string
+  /** The plugin replaced the attachment's text. */
+  rewritten?: boolean
+}
+
+/** What one request processing plugin did to a request, public on the log. */
+export type RequestPluginRecordEntry = {
+  plugin: string
+  name?: LocalizedTextValue
+  stage: string
+  changes?: RequestPluginRecordChange[]
+  more_changes?: number
+  headers?: {
+    set?: string[]
+    remove?: string[]
+    /** Header names the channel's own settings replaced afterwards. */
+    overridden?: string[]
+  }
+  reasoning_effort?: string
+  media?: {
+    index: number
+    from: { mime: string; bytes: number }
+    to: { mime: string; bytes: number }
+    lossless?: boolean
+  }[]
+  findings?: { category: string; count: number }[]
+  notice?: LocalizedTextValue
+  rejected?: { code: string }
+  /** How many parts of the answer a reply check masked. */
+  masked?: number
+  /** The plugin could not read the request body or the answer, so it did not run. */
+  unchecked?: boolean
+  /** With unchecked: the audio input of a Realtime session went unchecked. */
+  audio?: boolean
+  /** The attachments the plugin looked at, in request order. */
+  attachments?: RequestPluginRecordAttachment[]
+  more_attachments?: number
+}
+
+/** The record ends with a count of the entries left out, when it was cut. */
+export type RequestPluginRecordItem =
+  | RequestPluginRecordEntry
+  | { truncated: number }
+
+/** One request processing run as administrators see it. */
+export type RequestPluginAdminStep = {
+  instance: string
+  name?: string
+  plugin: string
+  version?: string
+  stage: string
+  action?: string
+  duration_ms?: number
+  error?: string
+  error_class?: string
+  rule?: string
+  findings?: { rule: string; category?: string; count: number }[]
+}
+
 export interface LogOtherData {
   admin_info?: {
     request_policy?: PolicyEvent[]
+    request_plugins?: RequestPluginAdminStep[]
     is_multi_key?: boolean
     multi_key_index?: number
     use_channel?: number[]
@@ -255,8 +221,6 @@ export interface LogOtherData {
     admin_id?: number | string
     admin_role?: number
     auth_method?: 'session' | 'access_token' | string
-    upstream_status_code?: number
-    upstream_response?: string
     // Quota saturation marker: set when a quota conversion clamped at the
     // supported single-request bound (overflow/underflow) or hit a NaN fallback while computing
     // this request's charge. Admin-only (nested under admin_info).
@@ -266,8 +230,6 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
-    usage_normalization?: UsageNormalizationAudit
-    relay_retry?: RelayRetrySummary
     // Reject / intercept reason (admin only)
     reject_reason?: string
     task_plugin?: TaskPluginInfo
@@ -301,9 +263,6 @@ export interface LogOtherData {
   // Login audit fields (type=7); visible to the log owner
   login_method?: string
   user_agent?: string
-  error_type?: string
-  error_code?: string
-  status_code?: number
   request_path?: string
   request_conversion?: string[]
   ws?: boolean
@@ -318,8 +277,7 @@ export interface LogOtherData {
   cache_creation_tokens?: number
   cache_creation_tokens_5m?: number
   cache_creation_tokens_1h?: number
-  cache_write_tokens?: number
-  input_tokens_total?: number
+  cache_creation_tokens_12h?: number
   claude?: boolean
   model_ratio?: number
   completion_ratio?: number
@@ -330,6 +288,7 @@ export interface LogOtherData {
   cache_creation_ratio?: number
   cache_creation_ratio_5m?: number
   cache_creation_ratio_1h?: number
+  cache_creation_ratio_12h?: number
   is_model_mapped?: boolean
   upstream_model_name?: string
   // Diagnostic only. Whether the names disagree is derived in the UI via
@@ -373,6 +332,7 @@ export interface LogOtherData {
   image_generation_call_count?: number
   is_system_prompt_overwritten?: boolean
   po?: string[]
+  request_plugins?: RequestPluginRecordItem[]
   billing_source?: string
   group?: string
   stream_status?: {

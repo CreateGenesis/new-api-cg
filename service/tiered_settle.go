@@ -7,7 +7,9 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -62,7 +64,12 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	)
 	cr := float64(input.CacheReadInputTokens)
 	cc5m := float64(cacheCreation5m)
+	cc := cc5m
 	cc1h := float64(cacheCreation1h)
+	cc12h := float64(0)
+	if semantic != UsageSemanticAnthropic && usage != nil {
+		cc12h = float64(usage.PromptTokensDetails.CacheWrite12hTokens())
+	}
 	inputLen := float64(input.TotalInputTokens)
 	// Direct overrides price their own categories from canonical totals.
 	rawP, rawC := inputLen, c
@@ -105,12 +112,36 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		if !usedVars["cr"] {
 			p += cr
 		}
+		if !usedVars["cc1h"] {
+			cc += cc1h * hosttypes.ClaudeCacheCreation1hMultiplier
+			cc1h = 0
+		}
+		if !usedVars["cc"] {
+			p += cc
+			cc = 0
+		}
 	} else {
 		if usedVars["cr"] {
 			p -= cr
 		}
+		// prompt_tokens counts every cache write once. A 12h write without
+		// its own price joins cc at twice its count; ccTokens keeps the real
+		// count that cc takes out of p, and an unpriced cc leaves p the extra.
+		cc12h = float64(usage.PromptTokensDetails.CacheWrite12hTokens())
+		cc -= cc12h
+		ccTokens := cc
+		if usedVars["cc12h"] {
+			p -= cc12h
+		} else {
+			ccTokens += cc12h
+			cc += cc12h * hosttypes.OpenAICacheCreation12hMultiplier
+			cc12h = 0
+		}
 		if usedVars["cc"] {
-			p -= cc5m
+			p -= ccTokens
+		} else {
+			p += cc - ccTokens
+			cc = 0
 		}
 		if usedVars["cc1h"] {
 			p -= cc1h
@@ -135,7 +166,7 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	p, c = max(p, 0), max(c, 0)
 	return billingexpr.TokenParams{
 		P: p, C: c, RawP: rawP, RawC: rawC, Len: inputLen,
-		CR: cr, CC: cc5m, CC1h: cc1h, Img: img, ImgCR: imgCR,
+		CR: cr, CC: cc, CC1h: cc1h, CC12h: cc12h, Img: img, ImgCR: imgCR,
 		ImgO: imgO, AI: ai, AO: ao,
 	}
 }

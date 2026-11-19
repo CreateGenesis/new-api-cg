@@ -54,7 +54,6 @@ import {
   USD_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
-import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
 import { useBillingTime } from '@/features/pricing/hooks/use-billing-time'
 import {
   BILLING_EXTRA_VARS,
@@ -67,7 +66,6 @@ import {
   MATCH_LTE,
   MATCH_RANGE,
   SOURCE_HEADER,
-  SOURCE_MULTIPART,
   SOURCE_PARAM,
   SOURCE_TIME,
   buildRequestRuleExpr,
@@ -79,7 +77,6 @@ import {
   splitBillingExprAndRequestRules,
   tryParseRequestRuleExpr,
   type ParamHeaderCondition,
-  type RequestPriceOverride,
   type RequestCondition,
   type RequestRuleGroup,
   type TimeCondition,
@@ -302,59 +299,6 @@ const PRESET_GROUPS: PresetGroup[] = [
   },
 ]
 
-function useStableListKeys(prefix: string) {
-  const keys = useRef<string[]>([])
-  const nextId = useRef(0)
-
-  const keyAt = (index: number): string => {
-    while (keys.current.length <= index) {
-      keys.current.push(`${prefix}-${nextId.current}`)
-      nextId.current += 1
-    }
-    return keys.current[index]
-  }
-
-  const removeAt = (index: number) => {
-    keys.current.splice(index, 1)
-  }
-
-  return { keyAt, removeAt }
-}
-
-type PriceFieldProps = {
-  currency: PricingCurrency
-  label: string
-  hint?: string
-  value: number
-  onChange: (next: number) => void
-}
-
-function PriceField({
-  label,
-  hint,
-  value,
-  onChange,
-  currency,
-}: PriceFieldProps) {
-  const id = useId()
-  return (
-    <div className='w-36 space-y-0.5'>
-      <Label htmlFor={id} className='text-muted-foreground text-xs'>
-        {label}
-      </Label>
-      <PricingAmountInput
-        id={id}
-        currency={currency}
-        aria-label={label}
-        value={value}
-        onChange={(next) => onChange(Number(next))}
-        className='h-8 w-full'
-      />
-      {hint && <p className='text-muted-foreground text-xs'>{hint}</p>}
-    </div>
-  )
-}
-
 // Raw expression editor
 // ---------------------------------------------------------------------------
 
@@ -372,20 +316,14 @@ function RawExprEditor({ exprString, onChange }: RawExprEditorProps) {
           <div>
             {t('Variables')}: <code>len</code>, <code>p</code>, <code>c</code>,{' '}
             <code>cr</code>, <code>cc</code>, <code>cc1h</code>,{' '}
-            <code>img</code>, <code>img_cr</code>, <code>img_o</code>,{' '}
-            <code>ai</code>, <code>ao</code>, <code>p_total</code>,{' '}
-            <code>c_total</code>, <code>cr_total</code>, <code>cc_total</code>,{' '}
-            <code>cc1h_total</code>, <code>img_total</code>,{' '}
-            <code>img_o_total</code>, <code>ai_total</code>,{' '}
-            <code>ao_total</code>
+            <code>cc12h</code>, <code>img</code>, <code>img_cr</code>,{' '}
+            <code>img_o</code>, <code>ai</code>, <code>ao</code>
           </div>
           <div>
             {t('Functions')}: <code>tier(name, value)</code>,{' '}
             <code>fixed(amount)</code>, <code>max</code>, <code>min</code>,{' '}
             <code>ceil</code>, <code>floor</code>, <code>abs</code>,{' '}
             <code>header(name)</code>, <code>param(path)</code>,{' '}
-            <code>multipart_param(path)</code>,{' '}
-            <code>rule_override_tier(base, matched, override, name)</code>,{' '}
             <code>has(source, text)</code>
           </div>
           <div>
@@ -450,21 +388,14 @@ function RuleConditionRow({
   let sourceLabel = t('Time')
   if (condition.source === SOURCE_PARAM) sourceLabel = t('Body param')
   else if (condition.source === SOURCE_HEADER) sourceLabel = t('Header')
-  else if (condition.source === SOURCE_MULTIPART) {
-    sourceLabel = t('Multipart parameter')
-  }
 
   const handleSourceChange = (source: string) => {
     if (source === SOURCE_TIME) {
       onChange(createEmptyTimeCondition())
-    } else if (
-      source === SOURCE_HEADER ||
-      source === SOURCE_PARAM ||
-      source === SOURCE_MULTIPART
-    ) {
+    } else if (source === SOURCE_HEADER || source === SOURCE_PARAM) {
       onChange({
         ...createEmptyCondition(),
-        source: source as 'param' | 'header' | 'multipart',
+        source: source as 'param' | 'header',
       })
     }
   }
@@ -530,13 +461,9 @@ function RuleConditionRow({
       <Input
         value={phCond.path}
         onChange={(event) => onChange({ ...phCond, path: event.target.value })}
-        placeholder={(() => {
-          if (phCond.source === SOURCE_HEADER) return 'X-Header-Name'
-          if (phCond.source === SOURCE_MULTIPART) {
-            return 'files.input_reference.0.content_type'
-          }
-          return 'service_tier'
-        })()}
+        placeholder={
+          phCond.source === SOURCE_HEADER ? 'X-Header-Name' : 'service_tier'
+        }
         className='w-44'
       />
       <Select
@@ -579,7 +506,6 @@ function RuleConditionRow({
         items={[
           { value: SOURCE_PARAM, label: t('Body param') },
           { value: SOURCE_HEADER, label: t('Header') },
-          { value: SOURCE_MULTIPART, label: t('Multipart parameter') },
           { value: SOURCE_TIME, label: t('Time') },
         ]}
         value={condition.source}
@@ -592,9 +518,6 @@ function RuleConditionRow({
           <SelectGroup>
             <SelectItem value={SOURCE_PARAM}>{t('Body param')}</SelectItem>
             <SelectItem value={SOURCE_HEADER}>{t('Header')}</SelectItem>
-            <SelectItem value={SOURCE_MULTIPART}>
-              {t('Multipart parameter')}
-            </SelectItem>
             <SelectItem value={SOURCE_TIME}>{t('Time')}</SelectItem>
           </SelectGroup>
         </SelectContent>
@@ -625,24 +548,19 @@ function RuleConditionRow({
 // ---------------------------------------------------------------------------
 
 type RuleGroupCardProps = {
-  currency: PricingCurrency
   group: RequestRuleGroup
   index: number
-  defaultPrices: RequestPriceOverride
   onChange: (next: RequestRuleGroup) => void
   onRemove: () => void
 }
 
 function RuleGroupCard({
-  currency,
   group,
   index,
-  defaultPrices,
   onChange,
   onRemove,
 }: RuleGroupCardProps) {
   const { t } = useTranslation()
-  const conditionKeys = useStableListKeys('rule-condition')
 
   const handleConditionChange = (
     conditionIndex: number,
@@ -663,32 +581,6 @@ function RuleGroupCard({
     })
   }
 
-  const handleActionChange = (action: string) => {
-    if (action === 'override') {
-      onChange({
-        ...group,
-        action: 'override',
-        override: group.override || { ...defaultPrices },
-      })
-      return
-    }
-    onChange({ ...group, action: 'multiplier' })
-  }
-
-  const handleOverridePriceChange = (
-    field: keyof RequestPriceOverride,
-    value: number
-  ) => {
-    const normalizedValue = Number.isFinite(value) && value >= 0 ? value : 0
-    onChange({
-      ...group,
-      action: 'override',
-      override: {
-        ...(group.override || defaultPrices),
-        [field]: normalizedValue,
-      },
-    })
-  }
   return (
     <div className='bg-muted/30 space-y-3 rounded-md border p-3'>
       <div className='flex items-center justify-between gap-2'>
@@ -706,24 +598,22 @@ function RuleGroupCard({
       </div>
 
       <div className='space-y-2'>
-        {group.conditions.map((condition, conditionIndex) => {
-          return (
-            <RuleConditionRow
-              key={conditionKeys.keyAt(conditionIndex)}
-              condition={condition}
-              onChange={(next) => handleConditionChange(conditionIndex, next)}
-              onRemove={() => {
-                conditionKeys.removeAt(conditionIndex)
-                onChange({
-                  ...group,
-                  conditions: group.conditions.filter(
-                    (_, i) => i !== conditionIndex
-                  ),
-                })
-              }}
-            />
-          )
-        })}
+        {group.conditions.map((condition, conditionIndex) => (
+          <RuleConditionRow
+            // eslint-disable-next-line react/no-array-index-key -- Parsed editor rows have no IDs; preserve input identity while their editable labels and values change.
+            key={conditionIndex}
+            condition={condition}
+            onChange={(next) => handleConditionChange(conditionIndex, next)}
+            onRemove={() =>
+              onChange({
+                ...group,
+                conditions: group.conditions.filter(
+                  (_, i) => i !== conditionIndex
+                ),
+              })
+            }
+          />
+        ))}
         <div className='flex flex-wrap gap-2'>
           <Button
             variant='ghost'
@@ -731,7 +621,7 @@ function RuleGroupCard({
             onClick={() => handleAddCondition(false)}
           >
             <Plus className='mr-1 h-3 w-3' />
-            {t('Add request condition')}
+            {t('Add param/header')}
           </Button>
           <Button
             variant='ghost'
@@ -744,146 +634,22 @@ function RuleGroupCard({
         </div>
       </div>
 
-      <div className='flex flex-wrap items-center gap-2'>
-        <Label className='text-xs'>{t('Rule action')}</Label>
-        <Select
-          items={[
-            { value: 'multiplier', label: t('Multiplier') },
-            { value: 'override', label: t('Override prices') },
-          ]}
-          value={group.action || 'multiplier'}
-          onValueChange={(value) => value !== null && handleActionChange(value)}
-        >
-          <SelectTrigger className='w-40' size='sm'>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false}>
-            <SelectGroup>
-              <SelectItem value='multiplier'>{t('Multiplier')}</SelectItem>
-              <SelectItem value='override'>{t('Override prices')}</SelectItem>
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+      <div className='flex items-center gap-2'>
+        <Label className='text-xs'>{t('Multiplier')}</Label>
+        <DraftNumberInput
+          min={0}
+          step={0.000001}
+          value={group.multiplier}
+          onValueChange={(value) =>
+            onChange({ ...group, multiplier: String(value) })
+          }
+          className='w-32'
+          placeholder='1.0'
+        />
+        <span className='text-muted-foreground text-xs'>
+          {t('Final cost = base × multiplier when conditions match')}
+        </span>
       </div>
-
-      {(group.action || 'multiplier') === 'override' ? (
-        <div className='space-y-2 rounded-md border p-2'>
-          <div className='flex items-center gap-2'>
-            <Label className='text-xs'>{t('Override name')}</Label>
-            <Input
-              value={group.override?.label || ''}
-              onChange={(event) =>
-                onChange({
-                  ...group,
-                  action: 'override',
-                  override: {
-                    ...(group.override || defaultPrices),
-                    label: event.target.value,
-                  },
-                })
-              }
-              placeholder='override'
-              className='h-8 w-48'
-            />
-          </div>
-          <div className='flex flex-wrap gap-x-4 gap-y-2'>
-            <PriceField
-              currency={currency}
-              label={t('Input price')}
-              value={Number(group.override?.input_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('input_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Output price')}
-              value={Number(group.override?.output_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('output_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Cache read price')}
-              value={Number(group.override?.cache_read_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('cache_read_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Cache write price')}
-              value={Number(group.override?.cache_create_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('cache_create_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Cache write (1h) price')}
-              value={Number(group.override?.cache_create_1h_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('cache_create_1h_unit_cost', value)
-              }
-            />
-          </div>
-          <div className='flex flex-wrap gap-x-4 gap-y-2'>
-            <PriceField
-              currency={currency}
-              label={t('Image input price')}
-              value={Number(group.override?.image_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('image_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Image output price')}
-              value={Number(group.override?.image_output_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('image_output_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Audio input price')}
-              value={Number(group.override?.audio_input_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('audio_input_unit_cost', value)
-              }
-            />
-            <PriceField
-              currency={currency}
-              label={t('Audio output price')}
-              value={Number(group.override?.audio_output_unit_cost) || 0}
-              onChange={(value) =>
-                handleOverridePriceChange('audio_output_unit_cost', value)
-              }
-            />
-          </div>
-          <span className='text-muted-foreground text-xs'>
-            {t('Matched rules use these prices directly.')}
-          </span>
-        </div>
-      ) : (
-        <div className='flex items-center gap-2'>
-          <Label className='text-xs'>{t('Multiplier')}</Label>
-          <DraftNumberInput
-            min={0}
-            step={0.000001}
-            value={group.multiplier}
-            onValueChange={(value) =>
-              onChange({ ...group, multiplier: String(value) })
-            }
-            className='w-32'
-            placeholder='1.0'
-          />
-          <span className='text-muted-foreground text-xs'>
-            {t('Final cost = base × multiplier when conditions match')}
-          </span>
-        </div>
-      )}
     </div>
   )
 }
@@ -967,6 +733,7 @@ function CostEstimator({ effectiveExpr, fullExpr, currency }: EstimatorProps) {
     cacheReadTokens: 0,
     cacheCreateTokens: 0,
     cacheCreate1hTokens: 0,
+    cacheCreate12hTokens: 0,
     imageTokens: 0,
     imageCacheTokens: 0,
     imageOutputTokens: 0,
@@ -980,10 +747,15 @@ function CostEstimator({ effectiveExpr, fullExpr, currency }: EstimatorProps) {
   )
 
   const tokens = useMemo(() => {
-    const values = buildEstimatorTokens(promptTokens, completionTokens, extras)
+    const values = buildEstimatorTokens(
+      promptTokens,
+      completionTokens,
+      extras,
+      effectiveExpr
+    )
     if (lengthOverride.trim()) values.len = Number(lengthOverride)
     return values
-  }, [promptTokens, completionTokens, extras, lengthOverride])
+  }, [promptTokens, completionTokens, extras, lengthOverride, effectiveExpr])
 
   const result = useMemo(
     () =>
@@ -1135,8 +907,9 @@ Input side:
 - p — input token count (for pricing). Automatically excludes sub-categories priced separately (e.g., if cr is used, cache tokens are deducted from p)
 - len — total input context length (for condition checks). Not affected by auto-exclusion; always reflects the full input length. Use in tier conditions
 - cr — cache-hit (read) token count
-- cc — cache-create token count (5-min TTL)
+- cc — cache-create token count (Claude 5-min TTL, OpenAI 30-min TTL)
 - cc1h — cache-create token count (1-hour TTL, Claude-specific)
+- cc12h — cache-create token count (12-hour TTL, OpenAI-specific)
 - img — image input token count
 - ai — audio input token count
 
@@ -1337,33 +1110,6 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     !ruleExpr || tryParseRequestRuleExpr(ruleExpr) !== null
   const effectiveExpr = baseExpr
 
-  const defaultOverridePrices = useMemo<RequestPriceOverride>(() => {
-    let node = visualDocument?.root
-    while (node?.kind === 'branch') node = node.yes
-    if (!node || node.billingUnit !== 'token') return {}
-    const prices: RequestPriceOverride = {
-      input_unit_cost: 0,
-      output_unit_cost: 0,
-    }
-    for (const price of node.prices) {
-      if (price.variable === 'p') {
-        prices.input_unit_cost = Number(price.value) || 0
-      }
-      if (price.variable === 'c') {
-        prices.output_unit_cost = Number(price.value) || 0
-      }
-      const variable = BILLING_EXTRA_VARS.find(
-        (item) => item.key === price.variable
-      )
-      if (variable && variable.key !== 'img_cr') {
-        prices[
-          variable.tierField as Exclude<keyof RequestPriceOverride, 'label'>
-        ] = Number(price.value) || 0
-      }
-    }
-    return prices
-  }, [visualDocument])
-
   const handleDocumentChange = useCallback(
     (next: VisualBillingDocument) => {
       setVisualDocument(next)
@@ -1439,7 +1185,6 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     [onRequestRuleExprChange]
   )
 
-  const requestRuleKeys = useStableListKeys('request-rule')
   return (
     <div className='space-y-5' data-billing-invalid={invalidDraft || undefined}>
       <div className='grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end'>
@@ -1512,7 +1257,7 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
               </h4>
               <p className='text-muted-foreground text-xs'>
                 {t(
-                  'Multiplier rules multiply the base price. Override rules use their listed prices directly.'
+                  'When conditions match, the final price is multiplied by X. Multiple matches multiply together; values < 1 act as discounts.'
                 )}
               </p>
             </div>
@@ -1527,28 +1272,24 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
               </Alert>
             ) : (
               <>
-                {requestRuleGroups.map((group, groupIndex) => {
-                  return (
-                    <RuleGroupCard
-                      currency={currency}
-                      key={requestRuleKeys.keyAt(groupIndex)}
-                      group={group}
-                      index={groupIndex}
-                      defaultPrices={defaultOverridePrices}
-                      onChange={(next) => {
-                        const updated = [...requestRuleGroups]
-                        updated[groupIndex] = next
-                        handleRuleGroupsChange(updated)
-                      }}
-                      onRemove={() => {
-                        requestRuleKeys.removeAt(groupIndex)
-                        handleRuleGroupsChange(
-                          requestRuleGroups.filter((_, i) => i !== groupIndex)
-                        )
-                      }}
-                    />
-                  )
-                })}
+                {requestRuleGroups.map((group, groupIndex) => (
+                  <RuleGroupCard
+                    // eslint-disable-next-line react/no-array-index-key -- Parsed editor rows have no IDs; preserve input identity while their editable labels and values change.
+                    key={groupIndex}
+                    group={group}
+                    index={groupIndex}
+                    onChange={(next) => {
+                      const updated = [...requestRuleGroups]
+                      updated[groupIndex] = next
+                      handleRuleGroupsChange(updated)
+                    }}
+                    onRemove={() =>
+                      handleRuleGroupsChange(
+                        requestRuleGroups.filter((_, i) => i !== groupIndex)
+                      )
+                    }
+                  />
+                ))}
                 <Button
                   variant='outline'
                   size='sm'

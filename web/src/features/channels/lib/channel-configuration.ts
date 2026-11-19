@@ -18,18 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { FieldErrors, FieldPath } from 'react-hook-form'
 
+import type { TaskPluginOption } from '../api'
 import {
   CHANNEL_TYPE_OLLAMA,
+  CHANNEL_TYPE_TASK_PLUGIN,
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../constants'
 import { CHANNEL_TYPE_ADVANCED_CUSTOM } from './advanced-custom'
-import {
-  CHANNEL_FORM_DEFAULT_VALUES,
-  channelFormSchema,
-  type ChannelFormValues,
-} from './channel-form'
+import { channelFormSchema, type ChannelFormValues } from './channel-form'
 import { supportsResponsesWebSocket } from './responses-websocket'
 
 export type ChannelProviderTarget =
@@ -49,40 +47,18 @@ export type ChannelConfigurationStatus =
   | 'error'
 
 const CONFIGURATION_BLOCKS = {
-  modelMapping: {
-    section: 'routing',
-    fields: [
-      'model_mapping',
-      'response_model_mapping',
-      'response_model_mapping_enabled',
-    ],
-  },
+  modelMapping: { section: 'routing', fields: ['model_mapping'] },
   routingStrategy: {
     section: 'routing',
-    fields: [
-      'priority',
-      'weight',
-      'test_model',
-      'auto_ban',
-      'group_scheduling',
-      'input_token_routing_enabled',
-      'input_token_routing_estimation_mode',
-      'input_token_routing_ranges',
-      'channel_overload_enabled',
-      'channel_overload_requests_per_second',
-      'channel_overload_requests_per_minute',
-      'channel_overload_concurrent_requests',
-      'channel_overload_recovery_seconds',
-    ],
+    fields: ['priority', 'weight', 'test_model', 'auto_ban'],
   },
   overrideRules: {
     section: 'request',
     fields: [
       'status_code_mapping',
       'param_override',
+      'request_plugins',
       'header_override',
-      'header_rewrite_preset_id',
-      'header_rewrite',
     ],
   },
   requestProcessing: {
@@ -93,36 +69,8 @@ const CONFIGURATION_BLOCKS = {
       'pass_through_body_enabled',
       'responses_websocket_enabled',
       'ollama_openai_chat',
-      'clear_volcengine_traits',
       'system_prompt',
       'system_prompt_override',
-      'tnt_tencent_openai_conversion',
-      'anthropic_input_includes_cache',
-      'kimi_k3_official_compatibility',
-      'glm_5_3_official_compatibility',
-      'deepseek_v4_official_compatibility',
-      'deepseek_v4_request_sanitization_enabled',
-      'response_header_timeout_enabled',
-      'response_header_timeout_seconds',
-      'status_code_retry_enabled',
-      'status_code_retry_times',
-      'status_code_retry_interval_ms',
-      'status_code_retry_status_codes',
-      'retry_zero_output',
-      'usage_estimation_enabled',
-      'usage_estimation_model_family',
-      'usage_estimation_input_multiplier',
-      'usage_estimation_output_multiplier',
-      'disable_stream',
-      'disable_non_stream',
-      'disable_video_understanding',
-      'video_compatibility',
-      'usage_token_limit_input_tokens',
-      'usage_token_limit_output_tokens',
-      'stream_interruption_billing_mode',
-      'cache_usage_validation_split',
-      'simulated_model_cache_enabled',
-      'simulated_model_cache_multimodal_enabled',
     ],
   },
   fieldPassthrough: {
@@ -141,7 +89,6 @@ const CONFIGURATION_BLOCKS = {
     section: 'other',
     fields: [
       'proxy',
-      'proxy_fallback_direct',
       'http_protocol',
       'http2_connection_shards',
       'tls_insecure_skip_verify',
@@ -191,74 +138,48 @@ function hasConfiguredJson(value: string | undefined): boolean {
   return true
 }
 
+/**
+ * `keyOptional` is true when the form may save without a key: edits keep the
+ * stored key, and login plugins get theirs from the login dialog. `plugin` is
+ * the plugin a plugin channel is bound to; what it can serve decides which
+ * settings apply.
+ */
 export function getChannelConfigurationState(
   values: ChannelFormValues,
   errors: FieldErrors<ChannelFormValues>,
-  isEditing: boolean
+  keyOptional: boolean,
+  plugin?: Pick<TaskPluginOption, 'provider' | 'responsesWebsocket'>
 ) {
-  const openaiPassthrough = OPENAI_FIELD_PASSTHROUGH_TYPES.has(values.type)
-  const claudePassthrough = CLAUDE_FIELD_PASSTHROUGH_TYPES.has(values.type)
+  const pluginChannel = values.type === CHANNEL_TYPE_TASK_PLUGIN
+  const relays = !pluginChannel || plugin?.provider === true
+  const openaiPassthrough =
+    relays && OPENAI_FIELD_PASSTHROUGH_TYPES.has(values.type)
+  const claudePassthrough =
+    relays && CLAUDE_FIELD_PASSTHROUGH_TYPES.has(values.type)
   const configured: Record<ChannelConfigurationBlock, boolean> = {
-    modelMapping:
-      hasConfiguredJson(values.model_mapping) ||
-      Boolean(values.response_model_mapping_enabled) ||
-      hasConfiguredJson(values.response_model_mapping),
+    modelMapping: hasConfiguredJson(values.model_mapping),
     routingStrategy: Boolean(
       values.priority ||
       values.weight ||
       values.test_model?.trim() ||
-      (values.auto_ban ?? 1) !== 1 ||
-      values.group_scheduling?.enabled ||
-      values.input_token_routing_enabled ||
-      values.input_token_routing_estimation_mode !== 'default' ||
-      values.input_token_routing_ranges?.trim() ||
-      values.channel_overload_enabled
+      (values.auto_ban ?? 1) !== 1
     ),
     overrideRules:
       hasConfiguredJson(values.status_code_mapping) ||
       hasConfiguredJson(values.param_override) ||
-      hasConfiguredJson(values.header_override) ||
-      Boolean(values.header_rewrite_preset_id?.trim()) ||
-      hasConfiguredJson(values.header_rewrite),
+      Boolean(values.request_plugins?.length) ||
+      hasConfiguredJson(values.header_override),
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||
       (values.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
         values.pass_through_body_enabled) ||
-      (supportsResponsesWebSocket(values.type) &&
+      ((supportsResponsesWebSocket(values.type) ||
+        (pluginChannel && plugin?.responsesWebsocket === true)) &&
         values.responses_websocket_enabled) ||
       (values.type === CHANNEL_TYPE_OLLAMA && values.ollama_openai_chat) ||
       values.system_prompt?.trim() ||
-      values.system_prompt_override ||
-      (values.type === 14 &&
-        (values.tnt_tencent_openai_conversion ||
-          values.anthropic_input_includes_cache)) ||
-      ([1, 14, 25].includes(values.type) &&
-        values.kimi_k3_official_compatibility) ||
-      ([1, 14].includes(values.type) &&
-        values.glm_5_3_official_compatibility) ||
-      ([1, 14, 43].includes(values.type) &&
-        values.deepseek_v4_official_compatibility) ||
-      (values.type === 43 && values.deepseek_v4_request_sanitization_enabled) ||
-      values.retry_zero_output ||
-      values.usage_estimation_enabled ||
-      values.disable_stream ||
-      values.disable_non_stream ||
-      values.disable_video_understanding ||
-      values.video_compatibility?.enabled ||
-      (values.usage_token_limit_input_tokens ?? 0) > 0 ||
-      (values.usage_token_limit_output_tokens ?? 0) > 0 ||
-      values.status_code_retry_enabled ||
-      values.response_header_timeout_enabled !==
-        CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_enabled ||
-      values.response_header_timeout_seconds !==
-        CHANNEL_FORM_DEFAULT_VALUES.response_header_timeout_seconds ||
-      values.stream_interruption_billing_mode !== 'off' ||
-      values.cache_usage_validation_split ||
-      values.clear_volcengine_traits ||
-      values.simulated_model_cache_enabled ||
-      values.simulated_model_cache_multimodal_enabled ||
-      values.multi_key_type === 'cache_affinity_least_requests'
+      values.system_prompt_override
     ),
     fieldPassthrough: Boolean(
       ((openaiPassthrough || claudePassthrough) &&
@@ -273,14 +194,14 @@ export function getChannelConfigurationState(
     ),
     extraSettings: Boolean(
       values.proxy?.trim() ||
-      values.proxy_fallback_direct ||
       (values.http_protocol && values.http_protocol !== 'auto') ||
       (values.http2_connection_shards ?? 1) > 1 ||
       values.tls_insecure_skip_verify ||
       values.disable_task_polling_sleep
     ),
     upstreamModelDetection:
-      MODEL_FETCHABLE_TYPES.has(values.type) &&
+      (MODEL_FETCHABLE_TYPES.has(values.type) ||
+        (pluginChannel && plugin?.provider === true)) &&
       Boolean(
         values.upstream_model_update_check_enabled ||
         values.upstream_model_update_auto_sync_enabled ||
@@ -326,7 +247,7 @@ export function getChannelConfigurationState(
     values.name.trim() &&
     values.type > 0 &&
     values.models.trim() &&
-    (isEditing || values.key?.trim())
+    (keyOptional || values.key?.trim())
   ) {
     sections.connection = 'ready'
   }
