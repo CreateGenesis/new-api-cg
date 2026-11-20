@@ -110,6 +110,11 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
+	if simulatedCacheWriteEnabled(info) {
+		if _, apiErr := simulatedCacheWriteTTL(info); apiErr != nil {
+			return apiErr
+		}
+	}
 	if !tntTencentConversion && !info.RequiresRequestConversion() &&
 		!model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
@@ -235,7 +240,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
-	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt, httpResp)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
 		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newAPIError); policyErr != nil {

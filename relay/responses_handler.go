@@ -84,7 +84,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 	}
 
-	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt, httpResp)
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
 		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newAPIError); policyErr != nil {

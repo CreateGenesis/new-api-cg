@@ -265,6 +265,8 @@ export interface ChannelOtherSettings {
   }
   simulated_model_cache?: {
     enabled?: boolean
+    write_billing?: boolean
+    count_write_cache_hits?: boolean
     ttl_seconds?: number
     min_match_ratio?: number
     multimodal?: {

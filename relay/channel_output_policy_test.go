@@ -16,6 +16,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -23,10 +24,250 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestSimulatedCacheWriteSettlementAndWireUsage(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr(), MaxRetries: -1})
+	oldRedis, oldRedisEnabled := common.RDB, common.RedisEnabled
+	oldBatch, oldLog := common.BatchUpdateEnabled, common.LogConsumeEnabled
+	common.RDB, common.RedisEnabled = client, true
+	common.BatchUpdateEnabled, common.LogConsumeEnabled = true, false
+	t.Cleanup(func() {
+		common.RDB, common.RedisEnabled = oldRedis, oldRedisEnabled
+		common.BatchUpdateEnabled, common.LogConsumeEnabled = oldBatch, oldLog
+		_ = client.Close()
+	})
+
+	chatInput := `{"messages":[{"role":"user","content":"` + strings.Repeat("red green blue yellow ", 256) + `"}]}`
+	responsesInput := `{"input":"` + strings.Repeat("red green blue yellow ", 256) + `"}`
+	chatUsage := `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":10,"total_tokens":310}}`
+	responsesUsage := `{"status":"completed","usage":{"input_tokens":300,"output_tokens":10,"total_tokens":310}}`
+	claudeUsage := `{"type":"message","usage":{"input_tokens":300,"output_tokens":10}}`
+
+	for i, tc := range []struct {
+		name, request, response, writePath, hitPath, totalPath string
+		format                                                 types.RelayFormat
+		mode                                                   int
+		stream                                                 bool
+	}{
+		{"chat JSON", chatInput, chatUsage, "usage.prompt_tokens_details.cache_write_tokens", "usage.prompt_tokens_details.cached_tokens", "usage.prompt_tokens", types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, false},
+		{"chat SSE", chatInput, "data: " + chatUsage + "\n\ndata: [DONE]\n\n", "usage.prompt_tokens_details.cache_write_tokens", "usage.prompt_tokens_details.cached_tokens", "usage.prompt_tokens", types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions, true},
+		{"responses JSON", responsesInput, responsesUsage, "usage.input_tokens_details.cache_write_tokens", "usage.input_tokens_details.cached_tokens", "usage.input_tokens", types.RelayFormatOpenAIResponses, relayconstant.RelayModeResponses, false},
+		{"responses SSE", responsesInput, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + responsesUsage + "}\n\n", "response.usage.input_tokens_details.cache_write_tokens", "response.usage.input_tokens_details.cached_tokens", "response.usage.input_tokens", types.RelayFormatOpenAIResponses, relayconstant.RelayModeResponses, true},
+		{"messages JSON", chatInput, claudeUsage, "usage.cache_creation.ephemeral_1h_input_tokens", "usage.cache_read_input_tokens", "usage.input_tokens", types.RelayFormatClaude, 0, false},
+		{"messages SSE", chatInput, "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":300,\"output_tokens\":10}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", "usage.cache_creation.ephemeral_1h_input_tokens", "usage.cache_read_input_tokens", "usage.input_tokens", types.RelayFormatClaude, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, call := range []struct {
+				countHits, interrupted, showUsage bool
+				requestedTTL, writes, hits, quota int
+			}{
+				{false, true, true, 3600, 0, 0, 350},
+				{false, false, true, 3600, 256, 0, 606},
+				{false, false, true, 300, 0, 0, 350},
+				{true, false, true, 300, 0, 256, 120},
+				{true, false, false, 300, 0, 256, 120},
+			} {
+				if !tc.stream && call.interrupted {
+					continue
+				}
+				response := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(response)
+				c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+				settler := &recordedSettlement{}
+				settings := dto.SimulatedModelCacheSettings{WriteBilling: true, CountWriteCacheHits: call.countHits}
+				info := &relaycommon.RelayInfo{
+					RelayFormat: tc.format, RelayMode: tc.mode, IsStream: tc.stream, ShouldIncludeUsage: call.showUsage,
+					OriginModelName: "kimi-k3.1-pro", UserId: i + 1, UsingGroup: "default", Billing: settler,
+					ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 11, UpstreamModelName: "kimi-k3.1-pro",
+						ChannelOtherSettings: dto.ChannelOtherSettings{SimulatedModelCache: &settings}},
+				}
+				_, err := helper.ModelPriceHelper(c, info, 300, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				require.NotNil(t, info.TieredBillingSnapshot)
+				recorder := newChannelOutputRecorder(c.Writer, info, false, false, operation_setting.ResponseContentRetryPolicy{}, 64*1024)
+				recorder.cacheWrite = service.PrepareSimulatedCacheWrite(tc.format, info.UpstreamModelName, []byte(tc.request), settings, call.requestedTTL)
+				wire := tc.response
+				if tc.stream && tc.format == types.RelayFormatOpenAI && !call.showUsage {
+					wire = "data: [DONE]\n\n"
+				}
+				if call.interrupted {
+					info.StreamStatus = relaycommon.NewStreamStatus()
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, io.ErrUnexpectedEOF)
+				}
+				_, err = recorder.WriteString(wire)
+				require.NoError(t, err)
+				usage := &dto.Usage{PromptTokens: 300, CompletionTokens: 10, TotalTokens: 310, UpstreamInputReported: true}
+				require.Nil(t, recorder.finish(c, info, usage))
+				service.PostTextConsumeQuota(c, info, usage, nil)
+				logged, ok := common.GetContextKeyType[*model.RecordConsumeLogParams](c, constant.ContextKeyConsumeLog)
+				require.True(t, ok)
+				if call.interrupted {
+					assert.False(t, info.SimulatedCacheWriteSettled)
+					assert.Equal(t, "stream_interrupted", info.SimulatedCacheWriteAudit["bypass_reason"])
+					continue
+				}
+				assert.Equal(t, []int{call.quota}, settler.settled)
+				assert.Equal(t, call.quota, logged.Quota)
+				assert.EqualValues(t, call.writes, gjson.Get(logged.Other.JSONString(), "cache_creation_tokens_1h").Int())
+				if !call.showUsage && tc.stream && tc.format == types.RelayFormatOpenAI {
+					assert.Equal(t, "data: [DONE]\n\n", response.Body.String())
+					continue
+				}
+				payload := response.Body.Bytes()
+				if tc.stream {
+					payload, ok = simulatedModelCacheSSEData(splitSimulatedModelCacheSSEChunks(payload)[0])
+					require.True(t, ok)
+				}
+				assert.EqualValues(t, call.writes, gjson.GetBytes(payload, tc.writePath).Int())
+				assert.EqualValues(t, call.hits, gjson.GetBytes(payload, tc.hitPath).Int())
+				wantInput := 300
+				if tc.format == types.RelayFormatClaude {
+					wantInput -= call.hits + call.writes
+				}
+				assert.EqualValues(t, wantInput, gjson.GetBytes(payload, tc.totalPath).Int())
+				if tc.format == types.RelayFormatOpenAI && !tc.stream {
+					assert.Equal(t, fmt.Sprint(call.writes), response.Header().Get(cacheWrite1hHeader))
+				}
+				if tc.format == types.RelayFormatOpenAIResponses {
+					path := "prompt_cache_options.ttl"
+					if tc.stream {
+						path = "response." + path
+					}
+					assert.Equal(t, "1h", gjson.GetBytes(payload, path).String())
+				}
+			}
+		})
+	}
+}
+
+type uncertainCacheWriteSettlement struct{ recordedSettlement }
+
+func (s *uncertainCacheWriteSettlement) Settle(quota int) error {
+	_ = s.recordedSettlement.Settle(quota)
+	return errors.New("settlement confirmation lost")
+}
+
+func TestSimulatedCacheWriteChatRelay(t *testing.T) {
+	service.InitHttpClient()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	oldRedis, oldEnabled := common.RDB, common.RedisEnabled
+	oldBatch, oldLog := common.BatchUpdateEnabled, common.LogConsumeEnabled
+	common.RDB, common.RedisEnabled = client, true
+	common.BatchUpdateEnabled, common.LogConsumeEnabled = true, false
+	t.Cleanup(func() {
+		common.RDB, common.RedisEnabled = oldRedis, oldEnabled
+		common.BatchUpdateEnabled, common.LogConsumeEnabled = oldBatch, oldLog
+		_ = client.Close()
+	})
+
+	for _, test := range []struct {
+		name, cacheOption, bypassReason                      string
+		nativeWrite, uncertain, redisDown                    bool
+		channel, upstreamStatus, wantQuota, write5m, write1h int
+	}{
+		{name: "local 1h", cacheOption: `{"mode":"implicit","ttl":"1h"}`, channel: 30, wantQuota: 606, write1h: 256},
+		{name: "default 5m", channel: 31, wantQuota: 350, write5m: 256},
+		{name: "upstream owns write", cacheOption: `{"ttl":"5m"}`, channel: 32, nativeWrite: true, wantQuota: 606, write1h: 256},
+		{name: "invalid TTL", cacheOption: `{"ttl":"30m"}`, channel: 33},
+		{name: "upstream failure", channel: 34, upstreamStatus: http.StatusBadGateway},
+		{name: "after upstream failure", channel: 34, wantQuota: 350, write5m: 256},
+		{name: "uncertain debit", cacheOption: `{"ttl":"1h"}`, channel: 35, uncertain: true, wantQuota: 606, bypassReason: "settlement_unconfirmed"},
+		{name: "retry after uncertain debit", channel: 35, wantQuota: 350, bypassReason: "write_in_progress"},
+		{name: "redis unavailable", channel: 36, redisDown: true, wantQuota: 350, bypassReason: "redis_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			captured := make(chan []byte, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				captured <- body
+				w.Header().Set("Content-Type", "application/json")
+				if test.upstreamStatus != 0 {
+					w.WriteHeader(test.upstreamStatus)
+					_, _ = io.WriteString(w, `{"error":{"message":"upstream failed","type":"server_error"}}`)
+					return
+				}
+				if test.nativeWrite {
+					w.Header().Set(cacheWrite5mHeader, "0")
+					w.Header().Set(cacheWrite1hHeader, "256")
+				}
+				_, _ = io.WriteString(w, `{"id":"chat-test","object":"chat.completion","model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":300,"completion_tokens":10,"total_tokens":310}}`)
+			}))
+			defer upstream.Close()
+			if test.redisDown {
+				common.RedisEnabled = false
+				t.Cleanup(func() { common.RedisEnabled = true })
+			}
+
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			const modelName = "kimi-k3.1-pro"
+			body := `{"model":"kimi-k3.1-pro","messages":[{"role":"user","content":"` +
+				strings.Repeat("red green blue yellow ", 256) + `"}]`
+			if test.cacheOption != "" {
+				body += `,"prompt_cache_options":` + test.cacheOption
+			}
+			body += "}"
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, modelName)
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(c, constant.ContextKeyChannelId, test.channel)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+			common.SetContextKey(c, constant.ContextKeyChannelKey, "upstream-key")
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{
+				SimulatedModelCache: &dto.SimulatedModelCacheSettings{WriteBilling: true},
+			})
+			req, err := helper.GetAndValidateRequest(c, types.RelayFormatOpenAI)
+			require.NoError(t, err)
+			info, err := relaycommon.GenRelayInfo(c, types.RelayFormatOpenAI, req, nil)
+			require.NoError(t, err)
+			_, err = helper.ModelPriceHelper(c, info, 300, &types.TokenCountMeta{})
+			require.NoError(t, err)
+			settler := &recordedSettlement{}
+			info.Billing = settler
+			if test.uncertain {
+				uncertain := &uncertainCacheWriteSettlement{}
+				info.Billing, settler = uncertain, &uncertain.recordedSettlement
+			}
+
+			apiErr := TextHelper(c, info)
+			if test.upstreamStatus != 0 {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, test.upstreamStatus, apiErr.StatusCode)
+				assert.Empty(t, settler.settled)
+				return
+			}
+			if test.wantQuota == 0 {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+				assert.Empty(t, captured)
+				assert.Empty(t, settler.settled)
+				return
+			}
+			require.Nil(t, apiErr)
+			require.Len(t, captured, 1)
+			assert.False(t, gjson.GetBytes(<-captured, "prompt_cache_options").Exists())
+			assert.Equal(t, []int{test.wantQuota}, settler.settled)
+			assert.Equal(t, fmt.Sprint(test.write5m), response.Header().Get(cacheWrite5mHeader))
+			assert.Equal(t, fmt.Sprint(test.write1h), response.Header().Get(cacheWrite1hHeader))
+			assert.EqualValues(t, test.write5m+test.write1h, gjson.Get(response.Body.String(), "usage.prompt_tokens_details.cache_write_tokens").Int())
+			if test.bypassReason != "" {
+				assert.Equal(t, test.bypassReason, info.SimulatedCacheWriteAudit["bypass_reason"])
+			}
+		})
+	}
+}
 
 type failAfterWriteResponseWriter struct {
 	gin.ResponseWriter

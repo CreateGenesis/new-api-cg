@@ -37,6 +37,7 @@ type simulatedModelCacheAttempt struct {
 	responseContentRetryPolicy operation_setting.ResponseContentRetryPolicy
 	validateUsage              bool
 	estimateUsage              bool
+	cacheWrite                 *service.SimulatedCacheWrite
 }
 
 type simulatedModelCachePartialMatchTask interface {
@@ -578,6 +579,13 @@ func prepareSimulatedModelCacheAttempt(c *gin.Context, info *relaycommon.RelayIn
 		estimateUsage:              estimateUsage,
 		responseContentRetryPolicy: responseContentRetryPolicy,
 	}
+	if simulatedCacheWriteEnabled(info) {
+		ttl, apiErr := simulatedCacheWriteTTL(info)
+		if apiErr == nil {
+			attempt.cacheWrite = service.PrepareSimulatedCacheWrite(format, info.UpstreamModelName, requestBody, settings, ttl)
+		}
+		return attempt
+	}
 	if !isSimulatedModelCacheTextFormat(format) {
 		return attempt
 	}
@@ -633,7 +641,7 @@ func startSimulatedModelCachePartialMatch(c *gin.Context, info *relaycommon.Rela
 	attempt.setBypassReason(bypassReason)
 }
 
-func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt) *simulatedModelCacheRecorder {
+func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInfo, attempt *simulatedModelCacheAttempt, upstream ...*http.Response) *simulatedModelCacheRecorder {
 	if attempt == nil {
 		return nil
 	}
@@ -650,21 +658,25 @@ func beginSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayInf
 	}
 	bufferLimit := service.SimulatedModelCacheResponseBufferBytes()
 	var outputRecorder *channelOutputRecorder
-	if attempt.retryZeroOutput || attempt.validateUsage || attempt.estimateUsage || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
+	if attempt.cacheWrite != nil || attempt.retryZeroOutput || attempt.validateUsage || attempt.estimateUsage || (attempt.responseContentRetryPolicy.Enabled && len(attempt.responseContentRetryPolicy.Rules) > 0) {
 		outputRecorder = newChannelOutputRecorder(c.Writer, info, attempt.retryZeroOutput, attempt.validateUsage, attempt.responseContentRetryPolicy, int(bufferLimit))
+		outputRecorder.cacheWrite = attempt.cacheWrite
+		if len(upstream) > 0 && upstream[0] != nil {
+			outputRecorder.upstreamCacheHeaders = upstream[0].Header
+		}
 		c.Writer = outputRecorder
 	}
 	recorder := &simulatedModelCacheRecorder{
 		ResponseWriter:      c.Writer,
 		outputRecorder:      outputRecorder,
 		attempt:             attempt,
-		passThrough:         !attempt.visible || stream || (attempt.partialMatch == nil && attempt.precomputed == nil),
+		passThrough:         attempt.cacheWrite != nil || !attempt.visible || stream || (attempt.partialMatch == nil && attempt.precomputed == nil),
 		stream:              stream,
 		responseFormat:      responseFormat,
 		includeStreamUsage:  includeStreamUsage,
 		responseBufferLimit: int(bufferLimit),
 	}
-	if stream && (!attempt.visible || (attempt.partialMatch == nil && attempt.precomputed == nil)) {
+	if stream && (attempt.cacheWrite != nil || !attempt.visible || (attempt.partialMatch == nil && attempt.precomputed == nil)) {
 		recorder.streamInspectionDisabled = true
 	}
 	c.Writer = recorder
@@ -678,6 +690,9 @@ func finishSimulatedModelCacheRecorder(c *gin.Context, info *relaycommon.RelayIn
 	originalWriter := recorder.ResponseWriter
 	c.Writer = originalWriter
 	defer recorder.releaseResponseReservation()
+	if attempt.cacheWrite != nil {
+		return recorder.outputRecorder.finish(c, info, usage)
+	}
 	defer func() {
 		if recorder.outputRecorder != nil {
 			outputErr = recorder.outputRecorder.finish(c, info, usage)

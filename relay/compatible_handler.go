@@ -84,7 +84,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 	}
 
-	includeUsage := true
+	if simulatedCacheWriteEnabled(info) {
+		if _, apiErr := simulatedCacheWriteTTL(info); apiErr != nil {
+			return apiErr
+		}
+	}
+	includeUsage := !simulatedCacheWriteEnabled(info)
 	// 判断用户是否需要返回使用情况
 	if request.StreamOptions != nil {
 		includeUsage = request.StreamOptions.IncludeUsage
@@ -95,7 +100,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		request.StreamOptions = nil
 	} else {
 		// 如果支持StreamOptions，且请求中没有设置StreamOptions，根据配置文件设置StreamOptions
-		if constant.ForceStreamOption {
+		if constant.ForceStreamOption || simulatedCacheWriteEnabled(info) {
 			request.StreamOptions = &dto.StreamOptions{
 				IncludeUsage: true,
 			}
@@ -191,6 +196,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		jsonData, err = removeLocalCacheOptions(info, jsonData)
+		if err != nil {
+			return newConvertRequestFailedError(c, info, err)
+		}
 		if newAPIError = requestplugin.Egress(c, info, jsonData); newAPIError != nil {
 			return newAPIError
 		}
@@ -259,7 +268,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 	}
 
-	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt, httpResp)
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
 		if policyErr := restoreSimulatedModelCacheRecorder(c, recorder, newApiErr); policyErr != nil {

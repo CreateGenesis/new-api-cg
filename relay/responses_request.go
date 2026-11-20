@@ -25,6 +25,11 @@ import (
 // The returned adaptor retains route/conversion state for DoRequest/DoResponse.
 func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.OpenAIResponsesRequest) (relaychannel.Adaptor, common.ReplayableBody, io.Closer, *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	if simulatedCacheWriteEnabled(info) {
+		if _, apiErr := simulatedCacheWriteTTL(info); apiErr != nil {
+			return nil, nil, nil, apiErr
+		}
+	}
 	tntTencentConversion := info.IsTNTTencentOpenAIConversion()
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact &&
 		!common.SupportsResponsesCompact(info.ChannelType, info.ApiType) {
@@ -119,6 +124,10 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		if err != nil {
 			return nil, nil, nil, newConvertRequestFailedError(c, info, err)
 		}
+	}
+	jsonData, err = removeLocalCacheOptions(info, jsonData)
+	if err != nil {
+		return nil, nil, nil, newConvertRequestFailedError(c, info, err)
 	}
 	// egress reads the body as it is sent, after the channel finalized it.
 	if apiErr = requestplugin.Egress(c, info, jsonData); apiErr != nil {

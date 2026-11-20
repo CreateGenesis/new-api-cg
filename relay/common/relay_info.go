@@ -194,7 +194,9 @@ type RelayInfo struct {
 	// *bytes.Reader/Buffer/strings.Reader). 0 means "let net/http decide".
 	UpstreamRequestBodySize int64
 
-	SimulatedModelCacheInfo *SimulatedModelCacheInfo
+	SimulatedModelCacheInfo    *SimulatedModelCacheInfo
+	SimulatedCacheWriteSettled bool
+	SimulatedCacheWriteAudit   map[string]any
 	// RequestPluginSteps is the audit of request plugin runs.
 	// RequestPluginSteps is the audit of the request plugin runs, every
 	// stage and attempt in order.
@@ -623,6 +625,8 @@ func (info *RelayInfo) BeginUpstreamAttempt(c *gin.Context) {
 	info.DeepSeekV4OfficialCompatibilityActive = false
 	info.UpstreamRequestBodySize = 0
 	info.SimulatedModelCacheInfo = nil
+	info.SimulatedCacheWriteSettled = false
+	info.SimulatedCacheWriteAudit = nil
 	info.UsageTokenLimitAudit = nil
 	info.UsageEstimationAudit = nil
 	info.RequestConversionChain = nil

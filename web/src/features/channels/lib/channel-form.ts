@@ -31,7 +31,11 @@ import {
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../constants'
-import type { Channel } from '../types'
+import {
+  channelInfoSchema,
+  type Channel,
+  type ChannelOtherSettings,
+} from '../types'
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   advancedCustomConfigUsesRelativeUpstreamPath,
@@ -258,7 +262,7 @@ export const channelFormSchema = z
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
-    multi_key_type: z.enum(['random', 'polling']).optional(),
+    multi_key_type: channelInfoSchema.shape.multi_key_mode.unwrap().optional(),
     batch_add_set_key_prefix_2_name: z.boolean().optional(),
     key_mode: z.enum(['append', 'replace']).optional(), // For editing multi-key channels
     // Channel extra settings (stored in setting JSON, not sent directly)
@@ -285,6 +289,26 @@ export const channelFormSchema = z
     azure_responses_version: z.string().optional(), // Azure specific
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
+    simulated_model_cache_enabled: z.boolean().optional(),
+    simulated_model_cache_write_billing: z.boolean().optional(),
+    simulated_model_cache_count_write_hits: z.boolean().optional(),
+    simulated_model_cache_ttl_seconds: z.number().int().min(1).optional(),
+    simulated_model_cache_min_match_ratio: z
+      .number()
+      .min(0.01)
+      .max(1)
+      .optional(),
+    simulated_model_cache_multimodal_enabled: z.boolean().optional(),
+    simulated_model_cache_image_tokens_per_megapixel: z.number().optional(),
+    simulated_model_cache_video_tokens_per_second_megapixel: z
+      .number()
+      .optional(),
+    simulated_model_cache_audio_tokens_per_second: z.number().optional(),
+    simulated_model_cache_file_tokens_per_mib: z.number().optional(),
+    simulated_model_cache_image_fallback_tokens: z.number().optional(),
+    simulated_model_cache_video_fallback_tokens: z.number().optional(),
+    simulated_model_cache_audio_fallback_tokens: z.number().optional(),
+    simulated_model_cache_file_fallback_tokens: z.number().optional(),
     disable_store: z.boolean().optional(), // OpenAI only
     allow_safety_identifier: z.boolean().optional(), // OpenAI only
     allow_include_obfuscation: z.boolean().optional(), // OpenAI: include usage obfuscation
@@ -306,6 +330,50 @@ export const channelFormSchema = z
       .optional(),
   })
   .superRefine((data, ctx) => {
+    if (
+      data.simulated_model_cache_multimodal_enabled &&
+      (data.simulated_model_cache_enabled ||
+        data.simulated_model_cache_write_billing ||
+        data.multi_key_type === 'cache_affinity_least_requests')
+    ) {
+      const rates = [
+        'simulated_model_cache_image_tokens_per_megapixel',
+        'simulated_model_cache_video_tokens_per_second_megapixel',
+        'simulated_model_cache_audio_tokens_per_second',
+        'simulated_model_cache_file_tokens_per_mib',
+      ] as const
+      const fallbacks = [
+        'simulated_model_cache_image_fallback_tokens',
+        'simulated_model_cache_video_fallback_tokens',
+        'simulated_model_cache_audio_fallback_tokens',
+        'simulated_model_cache_file_fallback_tokens',
+      ] as const
+      for (const field of rates) {
+        const value = data[field]
+        if (value === undefined || value < 0.000001 || value > 1_000_000) {
+          addRequiredIssue(
+            ctx,
+            field,
+            'Multimedia cache rates must be finite numbers between 0.000001 and 1000000.'
+          )
+        }
+      }
+      for (const field of fallbacks) {
+        const value = data[field]
+        if (
+          value === undefined ||
+          !Number.isInteger(value) ||
+          value < 1 ||
+          value > 1_000_000
+        ) {
+          addRequiredIssue(
+            ctx,
+            field,
+            'Multimedia cache fallback tokens must be integers between 1 and 1000000.'
+          )
+        }
+      }
+    }
     if (
       [
         3,
@@ -462,6 +530,12 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   param_override: '',
   header_override: '',
   settings: '{}',
+  simulated_model_cache_enabled: false,
+  simulated_model_cache_write_billing: false,
+  simulated_model_cache_count_write_hits: false,
+  simulated_model_cache_ttl_seconds: 86400,
+  simulated_model_cache_min_match_ratio: 0.01,
+  simulated_model_cache_multimodal_enabled: false,
   other: '',
   multi_key_mode: 'single',
   multi_key_type: 'random',
@@ -586,6 +660,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
   let pluginConfig: Record<string, unknown> = {}
+  let simulatedCache: ChannelOtherSettings['simulated_model_cache']
 
   if (channel.settings) {
     try {
@@ -595,6 +670,7 @@ export function transformChannelToFormDefaults(
       vertexApiVersion =
         parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
       azureResponsesVersion = parsed.azure_responses_version || ''
+      simulatedCache = parsed.simulated_model_cache
       isEnterpriseAccount = parsed.openrouter_enterprise === true
       awsKeyType = parsed.aws_key_type || 'ak_sk'
       awsApiType = parsed.aws_api_type || 'invoke_model'
@@ -649,6 +725,31 @@ export function transformChannelToFormDefaults(
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
+    simulated_model_cache_enabled: simulatedCache?.enabled === true,
+    simulated_model_cache_write_billing: simulatedCache?.write_billing === true,
+    simulated_model_cache_count_write_hits:
+      simulatedCache?.count_write_cache_hits === true,
+    simulated_model_cache_ttl_seconds: simulatedCache?.ttl_seconds ?? 86400,
+    simulated_model_cache_min_match_ratio:
+      simulatedCache?.min_match_ratio ?? 0.01,
+    simulated_model_cache_multimodal_enabled:
+      simulatedCache?.multimodal?.enabled === true,
+    simulated_model_cache_image_tokens_per_megapixel:
+      simulatedCache?.multimodal?.image_tokens_per_megapixel,
+    simulated_model_cache_video_tokens_per_second_megapixel:
+      simulatedCache?.multimodal?.video_tokens_per_second_megapixel,
+    simulated_model_cache_audio_tokens_per_second:
+      simulatedCache?.multimodal?.audio_tokens_per_second,
+    simulated_model_cache_file_tokens_per_mib:
+      simulatedCache?.multimodal?.file_tokens_per_mib,
+    simulated_model_cache_image_fallback_tokens:
+      simulatedCache?.multimodal?.image_fallback_tokens,
+    simulated_model_cache_video_fallback_tokens:
+      simulatedCache?.multimodal?.video_fallback_tokens,
+    simulated_model_cache_audio_fallback_tokens:
+      simulatedCache?.multimodal?.audio_fallback_tokens,
+    simulated_model_cache_file_fallback_tokens:
+      simulatedCache?.multimodal?.file_fallback_tokens,
     other: channel.other || '',
     multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
@@ -744,6 +845,45 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to parse existing settings:', error)
+    }
+  }
+
+  if (
+    formData.simulated_model_cache_enabled ||
+    formData.simulated_model_cache_write_billing ||
+    formData.simulated_model_cache_multimodal_enabled ||
+    settingsObj.simulated_model_cache
+  ) {
+    settingsObj.simulated_model_cache = {
+      enabled: formData.simulated_model_cache_enabled === true,
+      ttl_seconds: formData.simulated_model_cache_ttl_seconds ?? 86400,
+      min_match_ratio: formData.simulated_model_cache_min_match_ratio ?? 0.01,
+      write_billing: formData.simulated_model_cache_write_billing || undefined,
+      count_write_cache_hits:
+        (formData.simulated_model_cache_write_billing &&
+          formData.simulated_model_cache_count_write_hits) ||
+        undefined,
+      multimodal: formData.simulated_model_cache_multimodal_enabled
+        ? {
+            enabled: true,
+            image_tokens_per_megapixel:
+              formData.simulated_model_cache_image_tokens_per_megapixel,
+            video_tokens_per_second_megapixel:
+              formData.simulated_model_cache_video_tokens_per_second_megapixel,
+            audio_tokens_per_second:
+              formData.simulated_model_cache_audio_tokens_per_second,
+            file_tokens_per_mib:
+              formData.simulated_model_cache_file_tokens_per_mib,
+            image_fallback_tokens:
+              formData.simulated_model_cache_image_fallback_tokens,
+            video_fallback_tokens:
+              formData.simulated_model_cache_video_fallback_tokens,
+            audio_fallback_tokens:
+              formData.simulated_model_cache_audio_fallback_tokens,
+            file_fallback_tokens:
+              formData.simulated_model_cache_file_fallback_tokens,
+          }
+        : undefined,
     }
   }
 
@@ -911,7 +1051,7 @@ function normalizeBaseUrl(value: string | undefined): string {
  */
 export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   mode: 'single' | 'batch' | 'multi_to_single'
-  multi_key_mode?: 'random' | 'polling'
+  multi_key_mode?: Channel['channel_info']['multi_key_mode']
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
 } {

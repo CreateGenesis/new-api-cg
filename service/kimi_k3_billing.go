@@ -30,7 +30,7 @@ func prepareKimiK3OfficialBilling(relayInfo *relaycommon.RelayInfo, usage *dto.U
 
 func canonicalKimiK3OpenAIUsage(usage *dto.Usage) (*dto.Usage, *dto.KimiK3BillingAudit) {
 	audit := &dto.KimiK3BillingAudit{}
-	var rawInput, rawOutput, rawCacheRead, rawCacheCreation int
+	var rawInput, rawOutput, rawCacheRead, rawCacheCreation, rawCacheCreation5m, rawCacheCreation1h int
 	var sourceUsage *dto.Usage
 
 	if usage.BillingUsage != nil {
@@ -42,8 +42,10 @@ func canonicalKimiK3OpenAIUsage(usage *dto.Usage) (*dto.Usage, *dto.KimiK3Billin
 			rawOutput = claudeUsage.OutputTokens
 			rawCacheRead = claudeUsage.CacheReadInputTokens
 			rawCacheCreation = claudeUsage.CacheCreationInputTokens
+			rawCacheCreation5m = claudeUsage.GetCacheCreation5mTokens()
+			rawCacheCreation1h = claudeUsage.GetCacheCreation1hTokens()
 			if rawCacheCreation == 0 {
-				rawCacheCreation = signedTokenAdd(claudeUsage.GetCacheCreation5mTokens(), claudeUsage.GetCacheCreation1hTokens())
+				rawCacheCreation = signedTokenAdd(rawCacheCreation5m, rawCacheCreation1h)
 			}
 			audit.Equation = "input_tokens + cache_read_input_tokens + cache_creation_input_tokens"
 		} else if usage.BillingUsage.OpenAIUsage != nil {
@@ -64,6 +66,8 @@ func canonicalKimiK3OpenAIUsage(usage *dto.Usage) (*dto.Usage, *dto.KimiK3Billin
 			rawOutput = sourceUsage.OutputTokens
 		}
 		rawCacheRead = sourceUsage.PromptTokensDetails.CachedTokens
+		rawCacheCreation5m = sourceUsage.ClaudeCacheCreation5mTokens
+		rawCacheCreation1h = sourceUsage.ClaudeCacheCreation1hTokens
 		rawCacheCreation = sourceUsage.PromptTokensDetails.CachedCreationTokens
 		if sourceUsage.PromptTokensDetails.CacheWriteTokens != 0 {
 			rawCacheCreation = sourceUsage.PromptTokensDetails.CacheWriteTokens
@@ -133,6 +137,8 @@ func canonicalKimiK3OpenAIUsage(usage *dto.Usage) (*dto.Usage, *dto.KimiK3Billin
 	canonical.PromptTokensDetails.CachedTokens = cacheRead
 	canonical.PromptTokensDetails.CachedCreationTokens = cacheCreation
 	canonical.PromptTokensDetails.CacheWriteTokens = cacheCreation
+	canonical.ClaudeCacheCreation1hTokens = min(positiveTokenCount(rawCacheCreation1h), cacheCreation)
+	canonical.ClaudeCacheCreation5mTokens = min(positiveTokenCount(rawCacheCreation5m), cacheCreation-canonical.ClaudeCacheCreation1hTokens)
 	if sourceUsage != nil {
 		canonical.PromptTokensDetails.TextTokens = positiveTokenCount(sourceUsage.PromptTokensDetails.TextTokens)
 		canonical.PromptTokensDetails.ImageTokens = positiveTokenCount(sourceUsage.PromptTokensDetails.ImageTokens)

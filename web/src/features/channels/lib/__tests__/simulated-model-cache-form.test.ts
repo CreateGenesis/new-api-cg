@@ -116,6 +116,31 @@ function channelWithSettings(settings: string): Channel {
 }
 
 describe('simulated model cache multimedia form settings', () => {
+  test('round-trips write billing and only saves hits when write billing is on', () => {
+    const form = transformChannelToFormDefaults(
+      channelWithSettings(
+        '{"simulated_model_cache":{"write_billing":true,"count_write_cache_hits":true}}'
+      )
+    )
+    assert.equal(form.simulated_model_cache_write_billing, true)
+    assert.equal(form.simulated_model_cache_count_write_hits, true)
+    const save = (values: Partial<ChannelFormValues>) =>
+      JSON.parse(
+        String(
+          transformFormDataToCreatePayload(validChannelForm(values)).channel
+            .settings
+        )
+      ).simulated_model_cache
+    assert.equal(save(form).write_billing, true)
+    assert.equal(save(form).count_write_cache_hits, true)
+    const disabled = save({
+      ...form,
+      simulated_model_cache_write_billing: false,
+    })
+    assert.equal(disabled.write_billing, undefined)
+    assert.equal(disabled.count_write_cache_hits, undefined)
+  })
+
   test('loads and saves all nested multimedia settings', () => {
     const nestedSettings = {
       enabled: true,

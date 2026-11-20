@@ -24,33 +24,36 @@ var errResponseContentMatched = errors.New("upstream response matched a configur
 
 type channelOutputRecorder struct {
 	gin.ResponseWriter
-	header               http.Header
-	format               types.RelayFormat
-	info                 *relaycommon.RelayInfo
-	relayMode            int
-	stream               bool
-	retryZeroOutput      bool
-	validateUsage        bool
-	estimateUsage        bool
-	bufferLimit          int
-	status               int
-	statusWritten        bool
-	committed            bool
-	nonStreamPassThrough bool
-	effectiveOutput      bool
-	inputUsageObserved   bool
-	outputUsageObserved  bool
-	holdingStreamTail    bool
-	body                 bytes.Buffer
-	streamPending        bytes.Buffer
-	streamPrefix         bytes.Buffer
-	streamTail           bytes.Buffer
-	outputText           strings.Builder
-	contentMatcher       *responseContentMatcher
-	policyErr            error
-	deliveryErr          error
-	usageEstimated       bool
-	usagePrepared        bool
+	header                   http.Header
+	format                   types.RelayFormat
+	info                     *relaycommon.RelayInfo
+	relayMode                int
+	stream                   bool
+	retryZeroOutput          bool
+	validateUsage            bool
+	estimateUsage            bool
+	bufferLimit              int
+	status                   int
+	statusWritten            bool
+	committed                bool
+	nonStreamPassThrough     bool
+	effectiveOutput          bool
+	inputUsageObserved       bool
+	outputUsageObserved      bool
+	holdingStreamTail        bool
+	body                     bytes.Buffer
+	streamPending            bytes.Buffer
+	streamPrefix             bytes.Buffer
+	streamTail               bytes.Buffer
+	outputText               strings.Builder
+	contentMatcher           *responseContentMatcher
+	policyErr                error
+	deliveryErr              error
+	usageEstimated           bool
+	usagePrepared            bool
+	cacheWrite               *service.SimulatedCacheWrite
+	upstreamCacheHeaders     http.Header
+	cacheWriteBufferExceeded bool
 }
 
 func newChannelOutputRecorder(writer gin.ResponseWriter, info *relaycommon.RelayInfo, retryZeroOutput bool, validateUsage bool, contentPolicy operation_setting.ResponseContentRetryPolicy, bufferLimit int) *channelOutputRecorder {
@@ -145,6 +148,16 @@ func (w *channelOutputRecorder) Write(data []byte) (int, error) {
 			}
 		}
 	}
+	if w.cacheWrite != nil && w.streamPending.Len()+w.streamTail.Len()+len(data) > w.bufferLimit {
+		w.cacheWriteBufferExceeded = true
+		if w.committed && !w.validateUsage && !w.estimateUsage && w.streamTail.Len() > 0 {
+			if err := w.writeCommitted(w.streamTail.Bytes()); err != nil {
+				return 0, err
+			}
+			w.streamTail.Reset()
+			w.holdingStreamTail = false
+		}
+	}
 	_, _ = w.streamPending.Write(data)
 	if err := w.processStreamEvents(); err != nil {
 		if w.deliveryErr == nil {
@@ -187,7 +200,7 @@ func (w *channelOutputRecorder) processStreamEvents() error {
 			return nil
 		}
 		event := w.streamPending.Next(boundaryIndex + boundaryLength)
-		isTail := (w.retryZeroOutput || w.validateUsage || w.estimateUsage) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
+		isTail := w.shouldHoldStreamTail(event)
 		observeOutput := !shouldSkipTerminalOutputObservation(w.format, event, w.effectiveOutput)
 		if err := w.observeStreamEvent(event, observeOutput); err != nil {
 			return err
@@ -353,6 +366,14 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		if usageModified || w.usageEstimated {
 			body = service.PatchUsageResponseBody(w.format, w.header.Get("Content-Type"), body, usage, simulatedModelCacheResponseModel(info), w.usageEstimated)
 		}
+		if w.cacheWrite != nil {
+			view := w.settleCacheWrite(c, info, usage, body)
+			body = patchCacheWritePayload(w.format, body, view, w.cacheWrite.TTL())
+			if w.format == types.RelayFormatOpenAI && view != nil {
+				w.header.Set(cacheWrite5mHeader, strconv.Itoa(cacheWrite5m(view)))
+				w.header.Set(cacheWrite1hHeader, strconv.Itoa(view.ClaudeCacheCreation1hTokens))
+			}
+		}
 		w.header.Set("Content-Length", strconv.Itoa(len(body)))
 		if err := w.commitHeader(); err != nil {
 			return channelZeroOutputError(err)
@@ -364,6 +385,17 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 		return nil
 	}
 
+	var cacheWriteUsage *dto.Usage
+	if w.cacheWrite != nil {
+		switch {
+		case streamInterrupted:
+			info.SimulatedCacheWriteAudit = map[string]any{"source": "upstream", "bypass_reason": "stream_interrupted"}
+		case w.cacheWriteBufferExceeded:
+			info.SimulatedCacheWriteAudit = map[string]any{"source": "upstream", "bypass_reason": "stream_buffer_limit"}
+		default:
+			cacheWriteUsage = w.settleCacheWrite(c, info, usage, w.streamTail.Bytes())
+		}
+	}
 	if !w.committed {
 		if err := w.commitHeader(); err != nil {
 			return channelZeroOutputError(err)
@@ -378,6 +410,9 @@ func (w *channelOutputRecorder) finish(c *gin.Context, info *relaycommon.RelayIn
 	if (usageModified || w.usageEstimated) && len(tail) > 0 {
 		ensureUsage := w.usageEstimated && (w.format != types.RelayFormatOpenAI || info == nil || info.ShouldIncludeUsage)
 		tail = service.PatchUsageResponseBody(w.format, "text/event-stream", tail, usage, simulatedModelCacheResponseModel(info), ensureUsage)
+	}
+	if cacheWriteUsage != nil {
+		tail = patchCacheWriteStreamTail(w.format, tail, cacheWriteUsage, w.cacheWrite.TTL(), info.ShouldIncludeUsage)
 	}
 	if err := w.writeCommitted(tail); err != nil {
 		w.markClientGone(c, info)
@@ -529,8 +564,7 @@ func (w *channelOutputRecorder) finishPendingStreamBytes() error {
 	if err := w.observeStreamEvent(pending, observeOutput); err != nil {
 		return err
 	}
-	if (w.retryZeroOutput || w.validateUsage || w.estimateUsage) &&
-		(w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, pending)) {
+	if w.shouldHoldStreamTail(pending) {
 		w.holdingStreamTail = true
 		_, _ = w.streamTail.Write(pending)
 		return nil
@@ -658,6 +692,12 @@ func channelOutputPolicyError(err error) *types.NewAPIError {
 		return channelResponseContentMatchError()
 	}
 	return channelZeroOutputError(err)
+}
+
+func (w *channelOutputRecorder) shouldHoldStreamTail(event []byte) bool {
+	holdForPolicy := w.validateUsage || w.estimateUsage || w.retryZeroOutput && !w.cacheWriteBufferExceeded
+	holdForCache := w.cacheWrite != nil && !w.cacheWriteBufferExceeded
+	return (holdForPolicy || holdForCache) && (w.holdingStreamTail || isChannelOutputStreamTailEvent(w.format, event))
 }
 
 func isChannelOutputStreamTailEvent(format types.RelayFormat, event []byte) bool {

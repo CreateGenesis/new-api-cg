@@ -126,7 +126,6 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		// prompt_tokens counts every cache write once. A 12h write without
 		// its own price joins cc at twice its count; ccTokens keeps the real
 		// count that cc takes out of p, and an unpriced cc leaves p the extra.
-		cc12h = float64(usage.PromptTokensDetails.CacheWrite12hTokens())
 		cc -= cc12h
 		ccTokens := cc
 		if usedVars["cc12h"] {
@@ -144,6 +143,8 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 		}
 		if usedVars["cc1h"] {
 			p -= cc1h
+		} else {
+			cc1h = 0
 		}
 		if usedVars["img"] {
 			p -= img

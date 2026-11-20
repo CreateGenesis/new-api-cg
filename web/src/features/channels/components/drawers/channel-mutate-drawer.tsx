@@ -253,6 +253,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  SimulatedModelCacheFields,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -5073,6 +5074,24 @@ export function ChannelMutateDrawer({
               </fieldset>
             </div>
             {upstreamModelDetectionFields}
+            <div
+              role='group'
+              aria-label={t('Simulated Model Cache')}
+              className='border-border/60 space-y-4 rounded-lg border p-4'
+            >
+              <CardHeading
+                title={t('Simulated Model Cache')}
+                icon={<Settings className='size-4' />}
+              />
+              <SimulatedModelCacheFields
+                control={form.control}
+                runtimeActive={
+                  formValues.simulated_model_cache_enabled === true ||
+                  formValues.multi_key_type === 'cache_affinity_least_requests'
+                }
+                sensitiveLocked={sensitiveLocked || isSubmitting}
+              />
+            </div>
             {notesFields}
           </>
         }

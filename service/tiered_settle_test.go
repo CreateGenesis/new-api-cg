@@ -25,6 +25,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -675,7 +676,7 @@ func TestBillingSessionStrictMediaDatabaseMatrix(t *testing.T) {
 	}
 }
 
-func setupStrictMediaBillingDB(t *testing.T, dialect string) *gorm.DB {
+func setupStrictMediaBillingDB(t *testing.T, dialect string, extraModels ...any) *gorm.DB {
 	t.Helper()
 	var driver gorm.Dialector
 	databaseDSN := "local"
@@ -720,6 +721,7 @@ func setupStrictMediaBillingDB(t *testing.T, dialect string) *gorm.DB {
 	common.SetMainDatabaseType(common.DatabaseType(dialect))
 	common.RedisEnabled, common.BatchUpdateEnabled = false, false
 	models := []any{&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}}
+	models = append(models, extraModels...)
 	t.Cleanup(func() {
 		require.NoError(t, db.Migrator().DropTable(models...))
 		// The service TestMain database is SQLite. Initialize its column names
@@ -744,6 +746,60 @@ func setupStrictMediaBillingDB(t *testing.T, dialect string) *gorm.DB {
 	require.NoError(t, db.Raw(query).Scan(&version).Error)
 	t.Logf("database version: %s", version)
 	return db
+}
+
+func TestSimulatedCacheWriteWalletSettlement(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := setupStrictMediaBillingDB(t, dialect, &model.Channel{}, &model.Log{})
+			oldLogDB, oldLogEnabled := model.LOG_DB, common.LogConsumeEnabled
+			model.LOG_DB, common.LogConsumeEnabled = db, true
+			common.SetLogDatabaseType(common.DatabaseType(dialect))
+			t.Cleanup(func() { model.LOG_DB, common.LogConsumeEnabled = oldLogDB, oldLogEnabled })
+
+			user := model.User{Username: "cache-write", AffCode: "cache-write", Quota: 3000, Group: "default"}
+			require.NoError(t, db.Create(&user).Error)
+			token := model.Token{UserId: user.Id, Key: "cache-write-token", RemainQuota: 3000}
+			require.NoError(t, db.Create(&token).Error)
+			channel := model.Channel{Name: "cache-write", Key: "upstream-test"}
+			require.NoError(t, db.Create(&channel).Error)
+
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Set("token_quota", token.RemainQuota)
+			info := makeRelayInfo(cacheExpr, 1, 300, 10)
+			info.UserId, info.TokenId, info.TokenKey = user.Id, token.Id, token.Key
+			info.ChannelMeta = &relaycommon.ChannelMeta{ChannelId: channel.Id}
+			info.OriginModelName, info.UsingGroup = "kimi-k3.1-pro", "default"
+			info.StartTime = time.Now()
+			info.PriceData.GroupRatioInfo.GroupRatio = 1
+			info.SimulatedCacheWriteAudit = map[string]any{"source": "simulated", "ttl": "1h"}
+			info.UserSetting.BillingPreference = "wallet_only"
+			info.StrictPreConsume = true
+			require.Nil(t, PreConsumeBilling(c, info.FinalPreConsumedQuota, info))
+
+			usage := SimulatedCacheWriteUsage(&dto.Usage{
+				PromptTokens: 300, CompletionTokens: 10, TotalTokens: 310,
+			}, &SimulatedCacheWrite{Write: 256, ttl: 3600}, false)
+			attempted, settled := PostSimulatedCacheWriteQuota(c, info, usage)
+			require.True(t, attempted)
+			require.True(t, settled)
+			PostTextConsumeQuota(c, info, usage, nil)
+
+			require.NoError(t, db.First(&user, user.Id).Error)
+			require.NoError(t, db.First(&token, token.Id).Error)
+			require.NoError(t, db.First(&channel, channel.Id).Error)
+			assert.Equal(t, 3000-606, user.Quota)
+			assert.Equal(t, 3000-606, token.RemainQuota)
+			assert.EqualValues(t, 606, channel.UsedQuota)
+			var logs []model.Log
+			require.NoError(t, db.Where("user_id = ?", user.Id).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.Equal(t, 606, logs[0].Quota)
+			assert.EqualValues(t, 256, gjson.Get(logs[0].Other, "cache_creation_tokens_1h").Int())
+			assert.Equal(t, "simulated", gjson.Get(logs[0].Other, "admin_info.simulated_cache_write.source").String())
+		})
+	}
 }
 
 func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {

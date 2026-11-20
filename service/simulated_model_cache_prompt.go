@@ -79,13 +79,15 @@ func (p SimulatedModelCachePrompt) DiagnosticReason() string {
 }
 
 type simulatedModelCachePromptBuilder struct {
-	model         string
-	settings      dto.SimulatedModelCacheMultimodalSettings
-	blocks        []simulatedModelCachePromptBlock
-	totalWeight   uint64
-	hasMedia      bool
-	barrierReason string
-	fatalReason   string
+	model          string
+	settings       dto.SimulatedModelCacheMultimodalSettings
+	blocks         []simulatedModelCachePromptBlock
+	totalWeight    uint64
+	hasMedia       bool
+	barrierReason  string
+	fatalReason    string
+	cacheWrite     bool
+	cacheWriteText map[int]simulatedCacheWriteText
 }
 
 func ExtractSimulatedModelCachePrompt(format types.RelayFormat, model string, body []byte, settings dto.SimulatedModelCacheSettings) SimulatedModelCachePrompt {
@@ -170,7 +172,14 @@ func (b *simulatedModelCachePromptBuilder) addText(label string, text string) {
 
 func (b *simulatedModelCachePromptBuilder) addTextChunk(label string, text string) {
 	weight := max(1, tokenkit.Estimate(b.model, text))
-	b.addWeightedBlock("text:"+label, []byte(text), uint64(weight), false, false)
+	domain := "text:" + label
+	if b.cacheWrite {
+		if b.cacheWriteText == nil {
+			b.cacheWriteText = make(map[int]simulatedCacheWriteText)
+		}
+		b.cacheWriteText[len(b.blocks)] = simulatedCacheWriteText{domain: domain, text: text}
+	}
+	b.addWeightedBlock(domain, []byte(text), uint64(weight), false, false)
 }
 
 func (b *simulatedModelCachePromptBuilder) addBarrier(reason string, weight uint64) {
@@ -188,11 +197,7 @@ func (b *simulatedModelCachePromptBuilder) addWeightedBlock(domain string, value
 		b.fatalReason = "prompt_weight_overflow"
 		return
 	}
-	digest := sha256.New()
-	_, _ = digest.Write([]byte(domain))
-	_, _ = digest.Write([]byte{0})
-	_, _ = digest.Write(value)
-	sum := digest.Sum(nil)
+	sum := simulatedModelCacheBlockHash(domain, value)
 	b.blocks = append(b.blocks, simulatedModelCachePromptBlock{
 		hashHigh: binary.BigEndian.Uint64(sum[:8]),
 		hashLow:  binary.BigEndian.Uint64(sum[8:16]),
@@ -203,7 +208,20 @@ func (b *simulatedModelCachePromptBuilder) addWeightedBlock(domain string, value
 	b.totalWeight += weight
 }
 
+func simulatedModelCacheBlockHash(domain string, value []byte) []byte {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(domain))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write(value)
+	return digest.Sum(nil)
+}
+
 func buildOpenAIChatSimulatedModelCachePrompt(builder *simulatedModelCachePromptBuilder, root map[string]any) {
+	if builder.cacheWrite {
+		builder.addCanonical("prompt_cache_key", root["prompt_cache_key"])
+		builder.addCanonical("functions", root["functions"])
+		builder.addCanonical("function_call", root["function_call"])
+	}
 	builder.addCanonical("tools", root["tools"])
 	builder.addCanonical("tool_choice", root["tool_choice"])
 	messages, _ := root["messages"].([]any)
@@ -220,6 +238,11 @@ func buildOpenAIChatSimulatedModelCachePrompt(builder *simulatedModelCachePrompt
 		}
 		if toolCallID := stringValue(message["tool_call_id"]); toolCallID != "" {
 			builder.addControl("tool_call_id", toolCallID)
+		}
+		if builder.cacheWrite {
+			for _, field := range []string{"tools", "prefix", "reasoning_content", "reasoning", "function_call"} {
+				builder.addCanonical(field, message[field])
+			}
 		}
 		addSimulatedModelCacheContent(builder, message["content"])
 		builder.addCanonical("tool_calls", message["tool_calls"])

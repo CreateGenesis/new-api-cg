@@ -115,6 +115,9 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 	if !ok {
 		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	if chatRequest, ok := request.(*dto.GeneralOpenAIRequest); ok && simulatedCacheWriteEnabled(info) && nativeMoonshotCache(info) {
+		responsesReq.PromptCacheOptions = chatRequest.PromptCacheOptions
+	}
 	return relayResponsesRequest(c, info, adaptor, responsesReq, outboundApplied)
 }
 
@@ -156,6 +159,10 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 			}
 		}
 	}
+	jsonData, err = removeLocalCacheOptions(info, jsonData)
+	if err != nil {
+		return nil, newConvertRequestFailedError(c, info, err)
+	}
 	if apiErr := requestplugin.Egress(c, info, jsonData); apiErr != nil {
 		return nil, apiErr
 	}
@@ -192,7 +199,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 		return nil, newApiErr
 	}
 
-	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt)
+	recorder := beginSimulatedModelCacheRecorder(c, info, cacheAttempt, httpResp)
 	var usage *dto.Usage
 	var newApiErr *types.NewAPIError
 	if upstreamStream && clientStream {

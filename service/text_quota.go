@@ -354,7 +354,14 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
 				// The total includes the 12h writes, which have their own ratio.
 				dCachedCreationTokens12h := decimal.NewFromInt(int64(summary.CacheCreationTokens12h))
-				cachedCreationTokensWithRatio = dCachedCreationTokens.Sub(dCachedCreationTokens12h).Mul(dCacheCreationRatio)
+				remaining := dCachedCreationTokens.Sub(dCachedCreationTokens12h)
+				if relayInfo.SimulatedCacheWriteAudit != nil && hasSplitCacheCreationTokens {
+					fiveMinute := decimal.NewFromInt(int64(summary.CacheCreationTokens5m))
+					oneHour := decimal.NewFromInt(int64(summary.CacheCreationTokens1h))
+					remaining = remaining.Sub(fiveMinute).Sub(oneHour)
+					cachedCreationTokensWithRatio = fiveMinute.Mul(dCacheCreationRatio5m).Add(oneHour.Mul(dCacheCreationRatio1h))
+				}
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(remaining.Mul(dCacheCreationRatio))
 				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(dCachedCreationTokens12h.Mul(dCacheCreationRatio12h))
 			} else {
 				remaining := max(summary.CacheCreationTokens-summary.CacheCreationTokens5m-summary.CacheCreationTokens1h, 0)
@@ -430,18 +437,30 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message) {
+	if !relayInfo.SimulatedCacheWriteSettled {
+		postTextConsumeQuota(ctx, relayInfo, usage, extraContent, false)
+	}
+}
+
+// PostSimulatedCacheWriteQuota returns whether settlement was attempted and
+// whether it succeeded. A failed attempt may have moved money and must not
+// be followed by another charge under different usage.
+func PostSimulatedCacheWriteQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) (bool, bool) {
+	attempted, settled := postTextConsumeQuota(ctx, relayInfo, usage, nil, true)
+	relayInfo.SimulatedCacheWriteSettled = attempted
+	return attempted, settled
+}
+
+func postTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message, simulated bool) (bool, bool) {
 	originUsage := usage
-	settlementUsage := prepareKimiK3OfficialBilling(relayInfo, usage)
-	recordMultiKeyOverloadUsage(ctx, relayInfo, settlementUsage)
-	recordUserRequestLimitUsage(ctx, relayInfo, settlementUsage)
+	settlementUsage := usage
+	if !simulated {
+		settlementUsage = prepareKimiK3OfficialBilling(relayInfo, usage)
+	}
 	billingUsage := effectiveBillingUsage(settlementUsage)
 	if usage == nil {
 		extraContent = append(extraContent, common.NewMessage("Upstream returned no usage"))
 	}
-	if originUsage != nil {
-		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
-	}
-
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, billingUsage)
 
@@ -472,6 +491,18 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			}
 		}
 	}
+	if simulated {
+		if summary.FixedPriceBilling || relayInfo.PriceData.UsePrice || relayInfo.PriceData.FreeModel ||
+			(snap != nil && tieredResult == nil) || relayInfo.QuotaClamp != nil {
+			return false, false
+		}
+	}
+	recordMultiKeyOverloadUsage(ctx, relayInfo, settlementUsage)
+	recordUserRequestLimitUsage(ctx, relayInfo, settlementUsage)
+	if originUsage != nil && !simulated {
+		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
+	}
+
 	streamInterruptionBilling := EvaluateStreamInterruptionBilling(relayInfo, summary.CompletionTokens, summary.Quota)
 	summary.Quota = streamInterruptionBilling.FinalQuota
 
@@ -496,12 +527,28 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, common.NewMessage("Upstream returned no usage, so nothing was charged (possibly an upstream timeout)"))
 		logger.LogError(ctx, common.LogText("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
 	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
+		if !simulated {
+			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+			model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
+		}
 	}
 
-	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
-		logger.LogError(ctx, common.LogText("error settling billing: %s", err.Error()))
+	settleErr := SettleBilling(ctx, relayInfo, summary.Quota)
+	if settleErr != nil {
+		logger.LogError(ctx, common.LogText("error settling billing: %s", settleErr.Error()))
+		if simulated {
+			relayInfo.SimulatedCacheWriteAudit["bypass_reason"] = "settlement_unconfirmed"
+			relayInfo.SimulatedCacheWriteAudit["requested_quota"] = summary.Quota
+			summary.Quota = 0
+			summary.CacheTokens = 0
+			summary.CacheCreationTokens = 0
+			summary.CacheCreationTokens5m = 0
+			summary.CacheCreationTokens1h = 0
+		}
+	} else if simulated && summary.hasBillableUsage() {
+		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
 	logModel := summary.ModelName
@@ -530,6 +577,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), settlementUsage)
 	if relayInfo.KimiK3BillingAudit != nil {
 		other.SetAdmin("kimi_k3_billing", relayInfo.KimiK3BillingAudit)
+	}
+	if relayInfo.SimulatedCacheWriteAudit != nil {
+		other.SetAdmin("simulated_cache_write", relayInfo.SimulatedCacheWriteAudit)
 	}
 	if summary.CacheUsageValidationSplit {
 		AttachUsageNormalizationAudit(ctx, relayInfo, other, summary.UsageNormalization)
@@ -599,4 +649,5 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		Other:            other,
 	})
 	relayInfo.PerformanceOutputTokens = int64(summary.CompletionTokens)
+	return true, settleErr == nil
 }

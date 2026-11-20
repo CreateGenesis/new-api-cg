@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,113 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSimulatedCacheWritePrefixClaimLifecycle(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	oldClient, oldEnabled := common.RDB, common.RedisEnabled
+	common.RDB, common.RedisEnabled = client, true
+	t.Cleanup(func() {
+		common.RDB, common.RedisEnabled = oldClient, oldEnabled
+		_ = client.Close()
+	})
+	ctx := context.Background()
+	info := &relaycommon.RelayInfo{
+		UserId: 101, OriginModelName: "kimi-k3.1-pro",
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 202, UpstreamModelName: "kimi-k3.1-pro"},
+	}
+	settings := dto.SimulatedModelCacheSettings{WriteBilling: true}
+	firstMessage := dto.Message{Role: "user", Content: strings.Repeat("red green blue yellow ", 256)}
+	body, err := common.Marshal(dto.GeneralOpenAIRequest{Messages: []dto.Message{firstMessage}})
+	require.NoError(t, err)
+	extended, err := common.Marshal(dto.GeneralOpenAIRequest{Messages: []dto.Message{
+		firstMessage, {Role: "user", Content: "extra prompt"},
+	}})
+	require.NoError(t, err)
+	prepare := func(body []byte, ttl int) *SimulatedCacheWrite {
+		return PrepareSimulatedCacheWrite(types.RelayFormatOpenAI, "kimi-k3.1-pro", body, settings, ttl)
+	}
+	initial := NormalizedInputTokens{TotalInputTokens: 300}
+	first, second := prepare(body, 300), prepare(body, 300)
+	claims := []*SimulatedCacheWrite{first, second}
+	reasons, errors := make([]string, len(claims)), make([]error, len(claims))
+	var competitors sync.WaitGroup
+	for i := range claims {
+		competitors.Go(func() { reasons[i], errors[i] = claims[i].Claim(ctx, info, initial) })
+	}
+	competitors.Wait()
+	assert.Equal(t, 256, first.Write+second.Write)
+	assert.Zero(t, first.Read+second.Read)
+	for i, claim := range claims {
+		require.NoError(t, errors[i])
+		if claim.Write == 0 {
+			assert.Equal(t, "write_in_progress", reasons[i])
+		} else {
+			assert.Empty(t, reasons[i])
+			require.NoError(t, claim.Confirm(ctx, true, false))
+		}
+	}
+
+	server.FastForward(4 * time.Minute)
+	appendClaim := prepare(extended, 3600)
+	reason, err := appendClaim.Claim(ctx, info, NormalizedInputTokens{TotalInputTokens: 600})
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	assert.Equal(t, "5m", appendClaim.TTL())
+	assert.Equal(t, 256, appendClaim.Read)
+	assert.Equal(t, 256, appendClaim.Write)
+	require.NoError(t, appendClaim.Confirm(ctx, false, false))
+
+	server.FastForward(2 * time.Minute)
+	retry := prepare(extended, 3600)
+	reason, err = retry.Claim(ctx, info, NormalizedInputTokens{TotalInputTokens: 600})
+	require.NoError(t, err)
+	assert.Equal(t, "write_in_progress", reason)
+	assert.Zero(t, retry.Write)
+	assert.Zero(t, retry.Read)
+
+	server.FastForward(4 * time.Minute)
+	rebuilt := prepare(body, 3600)
+	reason, err = rebuilt.Claim(ctx, info, initial)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	assert.Equal(t, "1h", rebuilt.TTL())
+	assert.Equal(t, 256, rebuilt.Write)
+	require.NoError(t, rebuilt.Confirm(ctx, true, false))
+
+	upstreamHit := prepare(body, 300)
+	reason, err = upstreamHit.Claim(ctx, info, NormalizedInputTokens{TotalInputTokens: 300, CacheReadInputTokens: 260})
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	assert.Zero(t, upstreamHit.Write)
+
+	firstText := strings.Repeat("项", 310)
+	short, err := common.Marshal(dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: firstText}}})
+	require.NoError(t, err)
+	long, err := common.Marshal(dto.GeneralOpenAIRequest{Messages: []dto.Message{{
+		Role: "user", Content: firstText + strings.Repeat("目", 310),
+	}}})
+	require.NoError(t, err)
+	shortWrite := prepare(short, 300)
+	reason, err = shortWrite.Claim(ctx, info, initial)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	assert.Equal(t, 256, shortWrite.Write)
+	require.NoError(t, shortWrite.Confirm(ctx, true, false))
+	longWrite := prepare(long, 300)
+	reason, err = longWrite.Claim(ctx, info, NormalizedInputTokens{TotalInputTokens: 600})
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	assert.Equal(t, 256, longWrite.Read)
+	assert.Equal(t, 256, longWrite.Write)
+
+	server.Close()
+	unavailable := prepare(body, 300)
+	reason, err = unavailable.Claim(ctx, info, initial)
+	require.Error(t, err)
+	assert.Equal(t, "redis_error", reason)
+	assert.Zero(t, unavailable.Write)
+}
 
 func simulatedModelCacheMultimodalTestSettings() dto.SimulatedModelCacheSettings {
 	imageRate := 520.0

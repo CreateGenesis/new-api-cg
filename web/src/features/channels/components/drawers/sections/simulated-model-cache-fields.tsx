@@ -109,7 +109,17 @@ export function SimulatedModelCacheFields(
     control: props.control,
     name: 'simulated_model_cache_multimodal_enabled',
   })
-  const numericFieldsDisabled = !props.runtimeActive || !multimodalEnabled
+  const legacyEnabled = useWatch({
+    control: props.control,
+    name: 'simulated_model_cache_enabled',
+  })
+  const writeBillingEnabled = useWatch({
+    control: props.control,
+    name: 'simulated_model_cache_write_billing',
+  })
+  const runtimeActive =
+    props.runtimeActive || legacyEnabled || writeBillingEnabled
+  const numericFieldsDisabled = !runtimeActive || !multimodalEnabled
 
   return (
     <fieldset
@@ -144,6 +154,55 @@ export function SimulatedModelCacheFields(
 
         <FormField
           control={props.control}
+          name='simulated_model_cache_write_billing'
+          render={({ field }) => (
+            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+              <div className='space-y-0.5'>
+                <FormLabel className='text-sm'>
+                  {t('Bill simulated cache writes')}
+                </FormLabel>
+                <FormDescription>
+                  {t(
+                    'Bill new prompt blocks once for the selected 5-minute or 1-hour cache lifetime.'
+                  )}
+                </FormDescription>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value ?? false}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+            </FormItem>
+          )}
+        />
+        {writeBillingEnabled && (
+          <FormField
+            control={props.control}
+            name='simulated_model_cache_count_write_hits'
+            render={({ field }) => (
+              <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-sm'>
+                    {t('Count hits on simulated writes')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t('When off, only upstream cache hits count.')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value ?? false}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+        )}
+
+        <FormField
+          control={props.control}
           name='simulated_model_cache_multimodal_enabled'
           render={({ field }) => (
             <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
@@ -160,7 +219,7 @@ export function SimulatedModelCacheFields(
               <FormControl>
                 <Switch
                   checked={field.value}
-                  disabled={!props.runtimeActive}
+                  disabled={!runtimeActive}
                   onCheckedChange={field.onChange}
                 />
               </FormControl>
